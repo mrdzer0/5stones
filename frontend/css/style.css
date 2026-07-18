@@ -1,0 +1,302 @@
+/* ============================================================
+   ThreatModelz Design System — Global Styles
+   Light theme, professional security tool aesthetic
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;450;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* ── Tokens ─────────────────────────────────────────────────── */
+:root {
+  /* Colors */
+  --bg:           #F7F6F3;
+  --bg-alt:       #EFEDE8;
+  --surface:      #FFFFFF;
+  --surface-2:    #F3F1EC;
+  --surface-3:    #ECEAE5;
+
+  --border:       #E0DDD8;
+  --border-strong:#C8C5BF;
+
+  --text:         #1A1917;
+  --text-2:       #3D3B38;
+  --text-muted:   #726E68;
+  --text-faint:   #A09C96;
+
+  --primary:      #18181B;
+  --primary-hover:#2D2D30;
+
+  --accent:       #D1213B;      /* Critical / danger */
+  --accent-light: #FEF2F4;
+  --accent-border:#FECDD3;
+
+  --orange:       #C2410C;      /* High risk */
+  --orange-light: #FFF7ED;
+  --orange-border:#FED7AA;
+
+  --yellow:       #B45309;      /* Medium risk */
+  --yellow-light: #FFFBEB;
+  --yellow-border:#FDE68A;
+
+  --green:        #15803D;      /* Low risk / success */
+  --green-light:  #F0FDF4;
+  --green-border: #BBF7D0;
+
+  --blue:         #1D4ED8;      /* Info / STRIDE */
+  --blue-light:   #EFF6FF;
+  --blue-border:  #BFDBFE;
+
+  --purple:       #6D28D9;      /* LINDDUN */
+  --purple-light: #F5F3FF;
+  --purple-border:#DDD6FE;
+
+  /* Sidebar */
+  --sidebar-bg:   #1A1917;
+  --sidebar-text: #D4D0C8;
+  --sidebar-text-active: #FFFFFF;
+  --sidebar-hover:#2A2825;
+  --sidebar-active:#2E2C29;
+  --sidebar-accent:#E5543A;
+  --sidebar-w:    240px;
+
+  /* Typography */
+  --font:         'Inter', -apple-system, system-ui, sans-serif;
+  --font-mono:    'JetBrains Mono', 'Fira Code', monospace;
+
+  /* Spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* Radii */
+  --r-sm: 4px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.06), 0 1px 3px rgba(0,0,0,.04);
+  --shadow-md: 0 2px 6px rgba(0,0,0,.08), 0 1px 3px rgba(0,0,0,.04);
+  --shadow-lg: 0 4px 16px rgba(0,0,0,.10), 0 2px 6px rgba(0,0,0,.06);
+
+  /* Transitions */
+  --t-fast: 120ms ease;
+  --t-mid:  200ms ease;
+}
+
+/* ── Reset ──────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { font-size: 15px; -webkit-text-size-adjust: 100%; }
+
+body {
+  font-family: var(--font);
+  font-size: 0.933rem;
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+}
+
+/* ── App Shell ──────────────────────────────────────────────── */
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+/* ── Sidebar ────────────────────────────────────────────────── */
+.sidebar {
+  width: var(--sidebar-w);
+  background: var(--sidebar-bg);
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  top: 0; left: 0; bottom: 0;
+  z-index: 100;
+  overflow-y: auto;
+}
+
+.sidebar-logo {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-5) var(--space-5);
+  border-bottom: 1px solid rgba(255,255,255,.07);
+}
+
+.sidebar-logo-icon {
+  width: 32px; height: 32px;
+  background: var(--sidebar-accent);
+  border-radius: var(--r-md);
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+
+.sidebar-logo-icon svg { width: 18px; height: 18px; color: #fff; }
+
+.sidebar-logo-text {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--sidebar-text-active);
+  letter-spacing: -0.02em;
+}
+
+.sidebar-logo-badge {
+  font-size: 0.6rem;
+  font-weight: 600;
+  background: rgba(255,255,255,.1);
+  color: var(--sidebar-text);
+  padding: 1px 5px;
+  border-radius: 3px;
+  letter-spacing: 0.04em;
+  margin-left: auto;
+}
+
+.sidebar-section {
+  padding: var(--space-4) 0 var(--space-2);
+}
+
+.sidebar-section-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,.3);
+  padding: 0 var(--space-5) var(--space-2);
+}
+
+.sidebar-nav { list-style: none; }
+
+.sidebar-nav a {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-5);
+  color: var(--sidebar-text);
+  text-decoration: none;
+  font-size: 0.875rem;
+  font-weight: 450;
+  border-radius: 0;
+  transition: background var(--t-fast), color var(--t-fast);
+  position: relative;
+}
+
+.sidebar-nav a:hover {
+  background: var(--sidebar-hover);
+  color: var(--sidebar-text-active);
+}
+
+.sidebar-nav a.active {
+  background: var(--sidebar-active);
+  color: var(--sidebar-text-active);
+  font-weight: 500;
+}
+
+.sidebar-nav a.active::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 4px; bottom: 4px;
+  width: 3px;
+  background: var(--sidebar-accent);
+  border-radius: 0 2px 2px 0;
+}
+
+.sidebar-nav a svg { width: 16px; height: 16px; opacity: 0.7; flex-shrink: 0; }
+.sidebar-nav a.active svg, .sidebar-nav a:hover svg { opacity: 1; }
+
+.sidebar-footer {
+  margin-top: auto;
+  padding: var(--space-4) var(--space-5);
+  border-top: 1px solid rgba(255,255,255,.07);
+  font-size: 0.75rem;
+  color: rgba(255,255,255,.25);
+}
+
+/* ── Main Content ────────────────────────────────────────────── */
+.main-content {
+  flex: 1;
+  margin-left: var(--sidebar-w);
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* ── Topbar ─────────────────────────────────────────────────── */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4) var(--space-8);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  min-height: 56px;
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.page-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+.page-subtitle {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/* ── Page Body ───────────────────────────────────────────────── */
+.page-body {
+  flex: 1;
+  padding: var(--space-8);
+  max-width: 1400px;
+  width: 100%;
+}
+
+/* ── Typography ─────────────────────────────────────────────── */
+h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.025em; color: var(--text); }
+h2 { font-size: 1.15rem; font-weight: 600; letter-spacing: -0.015em; color: var(--text); }
+h3 { font-size: 0.95rem; font-weight: 600; color: var(--text); }
+h4 { font-size: 0.875rem; font-weight: 600; color: var(--text-2); }
+
+p { color: var(--text-2); line-height: 1.65; }
+
+.text-muted { color: var(--text-muted); }
+.text-faint { color: var(--text-faint); }
+.text-sm { font-size: 0.8rem; }
+.text-xs { font-size: 0.72rem; }
+.mono { font-family: var(--font-mono); font-size: 0.82em; }
+
+/* ── Scrollbar ──────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
+
+/* ── Focus styles ────────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}

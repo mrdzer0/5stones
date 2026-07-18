@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Report — ThreatModelz</title>
+  <meta name="description" content="Full threat model report with export options." />
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <link rel="stylesheet" href="/static/css/components.css" />
+  <link rel="stylesheet" href="/static/css/pages.css" />
+</head>
+<body>
+<div class="app-shell">
+
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="sidebar-logo-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      </div>
+      <span class="sidebar-logo-text">ThreatModelz</span>
+      <span class="sidebar-logo-badge">MVP</span>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-section-label">Workspace</div>
+      <ul class="sidebar-nav">
+        <li><a href="/index.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+          Dashboard
+        </a></li>
+        <li><a href="/project-new.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+          New Project
+        </a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-section-label">Current Project</div>
+      <ul class="sidebar-nav">
+        <li><a href="#" id="nav-analysis">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+          Analysis
+        </a></li>
+        <li><a href="/report.html" class="active">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          Report
+        </a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-section-label">Configuration</div>
+      <ul class="sidebar-nav">
+        <li><a href="/settings.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg>
+          Settings &amp; BYOK
+        </a></li>
+      </ul>
+    </div>
+    <div class="sidebar-footer">ThreatModelz v1.0 MVP</div>
+  </aside>
+
+  <main class="main-content">
+    <div class="topbar">
+      <div class="topbar-left">
+        <a href="#" id="btn-back-to-analysis" class="btn btn-ghost btn-sm" style="padding:4px 8px;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><polyline points="15 18 9 12 15 6"/></svg>
+        </a>
+        <div>
+          <div class="page-title" id="report-page-title">Threat Model Report</div>
+          <div class="page-subtitle">Full security review output</div>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <div style="display:flex;gap:var(--space-2);">
+          <button class="btn btn-secondary btn-sm" id="export-md">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            MD
+          </button>
+          <button class="btn btn-secondary btn-sm" id="export-csv">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            CSV
+          </button>
+          <button class="btn btn-secondary btn-sm" id="export-json">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            JSON
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="page-body">
+      <!-- Report header -->
+      <div class="report-header" id="report-header">
+        <div class="report-header-title" id="report-title">Loading report…</div>
+        <div class="report-header-meta">
+          <span id="report-generated">Generated: —</span>
+          <span>•</span>
+          <span id="report-env">—</span>
+        </div>
+        <div class="report-risk-pills" id="report-risk-pills">
+          <div class="report-risk-pill critical"><div class="rp-num" id="rp-critical">—</div><div class="rp-label">Critical</div></div>
+          <div class="report-risk-pill high"><div class="rp-num" id="rp-high">—</div><div class="rp-label">High</div></div>
+          <div class="report-risk-pill medium"><div class="rp-num" id="rp-medium">—</div><div class="rp-label">Medium</div></div>
+          <div class="report-risk-pill low"><div class="rp-num" id="rp-low">—</div><div class="rp-label">Low</div></div>
+        </div>
+      </div>
+
+      <div class="alert alert-warning" style="margin-bottom:var(--space-6);">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <div>⚠️ This report is AI-generated and requires human review. Confidence labels are shown for each finding. Never treat this as a confirmed security audit without expert validation.</div>
+      </div>
+
+      <!-- Full threat table -->
+      <div class="card" style="margin-bottom:var(--space-6);">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Threat Model Table</div>
+            <div class="card-subtitle">All identified threats across STRIDE and LINDDUN frameworks</div>
+          </div>
+          <div style="display:flex;gap:var(--space-3);align-items:center;">
+            <select class="form-select" style="width:auto;" id="threat-filter-framework">
+              <option value="">All frameworks</option>
+              <option value="STRIDE">STRIDE</option>
+              <option value="LINDDUN">LINDDUN</option>
+            </select>
+            <select class="form-select" style="width:auto;" id="threat-filter-risk">
+              <option value="">All risk levels</option>
+              <option value="Critical">Critical</option>
+              <option value="High">High</option>
+              <option value="Medium">Medium</option>
+              <option value="Low">Low</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-wrap" style="border:none;border-radius:0 0 var(--r-lg) var(--r-lg);">
+          <table id="threats-table">
+            <thead>
+              <tr>
+                <th>Framework</th>
+                <th>Category</th>
+                <th>Description</th>
+                <th>Asset</th>
+                <th>Trust Boundary</th>
+                <th>Control</th>
+                <th>Evidence</th>
+                <th>Confidence</th>
+                <th>Risk</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="threats-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Controls Checklist -->
+      <div class="card" style="margin-bottom:var(--space-6);">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Control Checklist</div>
+            <div class="card-subtitle">Security controls mapped to identified threats</div>
+          </div>
+        </div>
+        <div class="table-wrap" style="border:none;border-radius:0 0 var(--r-lg) var(--r-lg);">
+          <table id="controls-table">
+            <thead>
+              <tr>
+                <th>Control</th>
+                <th>Guidance</th>
+                <th>Checklist</th>
+                <th>Status</th>
+                <th>Evidence</th>
+                <th>Owner</th>
+              </tr>
+            </thead>
+            <tbody id="controls-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Security Test Backlog -->
+      <div class="card" style="margin-bottom:var(--space-6);">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Security Test Backlog</div>
+            <div class="card-subtitle">Executable security test scenarios for QA and Red Team</div>
+          </div>
+        </div>
+        <div class="table-wrap" style="border:none;border-radius:0 0 var(--r-lg) var(--r-lg);">
+          <table id="tests-table">
+            <thead>
+              <tr>
+                <th>Test ID</th>
+                <th>Scenario</th>
+                <th>Steps</th>
+                <th>Expected Result</th>
+                <th>Priority</th>
+                <th>Owner</th>
+              </tr>
+            </thead>
+            <tbody id="tests-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Missing Info & Assumptions row -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-5);" id="gaps-assumptions-row">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Missing Information</div>
+          </div>
+          <div id="missing-info-list" style="padding:var(--space-4) var(--space-5);"></div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Assumption Register</div>
+          </div>
+          <div id="assumptions-list" style="padding:var(--space-4) var(--space-5);"></div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+
+<script src="/static/js/api.js"></script>
+<script src="/static/js/report.js"></script>
+</body>
+</html>

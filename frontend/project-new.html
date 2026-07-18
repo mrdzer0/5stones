@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>New Project — ThreatModelz</title>
+  <meta name="description" content="Create a new threat modeling project with manual intake form." />
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <link rel="stylesheet" href="/static/css/components.css" />
+  <link rel="stylesheet" href="/static/css/pages.css" />
+</head>
+<body>
+<div class="app-shell">
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="sidebar-logo-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      </div>
+      <span class="sidebar-logo-text">ThreatModelz</span>
+      <span class="sidebar-logo-badge">MVP</span>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-section-label">Workspace</div>
+      <ul class="sidebar-nav">
+        <li><a href="/index.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+          Dashboard
+        </a></li>
+        <li><a href="/project-new.html" class="active">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+          New Project
+        </a></li>
+      </ul>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-section-label">Configuration</div>
+      <ul class="sidebar-nav">
+        <li><a href="/settings.html">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg>
+          Settings &amp; BYOK
+        </a></li>
+      </ul>
+    </div>
+    <div class="sidebar-footer">ThreatModelz v1.0 MVP</div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main-content">
+    <div class="topbar">
+      <div class="topbar-left">
+        <a href="/index.html" class="btn btn-ghost btn-sm" style="padding:4px 8px;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><polyline points="15 18 9 12 15 6"/></svg>
+        </a>
+        <div>
+          <div class="page-title">New Project</div>
+          <div class="page-subtitle">Fill in the details to start threat modeling</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="page-body">
+      <div class="wizard-layout">
+
+        <!-- Wizard Steps -->
+        <div class="wizard-steps" id="wizard-steps">
+          <div class="wizard-step active" id="step-indicator-1">
+            <div class="step-num">1</div>
+            <div class="step-label">Basic Info</div>
+          </div>
+          <div class="wizard-step" id="step-indicator-2">
+            <div class="step-num">2</div>
+            <div class="step-label">Actors &amp; Scope</div>
+          </div>
+          <div class="wizard-step" id="step-indicator-3">
+            <div class="step-num">3</div>
+            <div class="step-label">Data &amp; Systems</div>
+          </div>
+          <div class="wizard-step" id="step-indicator-4">
+            <div class="step-num">4</div>
+            <div class="step-label">Artifact</div>
+          </div>
+        </div>
+
+        <div class="wizard-card">
+          <form id="project-form">
+
+            <!-- Step 1: Basic Info -->
+            <div class="wizard-body" id="step-1">
+              <h2 style="margin-bottom:var(--space-2);">Project Information</h2>
+              <p class="text-muted text-sm" style="margin-bottom:var(--space-6);">Basic details about the feature or system you're modeling threats for.</p>
+
+              <div class="form-group">
+                <label class="form-label" for="project-name">Project / Feature Name <span class="required">*</span></label>
+                <input type="text" id="project-name" class="form-input" placeholder="e.g. Checkout Payment Flow" required />
+              </div>
+
+              <div class="form-group">
+                <label class="form-label" for="project-desc">Description <span class="required">*</span></label>
+                <textarea id="project-desc" class="form-textarea" rows="3" placeholder="Describe what this feature does and its security scope…" required></textarea>
+              </div>
+
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label" for="project-env">Environment</label>
+                  <select id="project-env" class="form-select">
+                    <option value="">Select environment…</option>
+                    <option value="production">Production</option>
+                    <option value="staging">Staging</option>
+                    <option value="development">Development</option>
+                    <option value="all">All environments</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="project-policy">Data Policy</label>
+                  <select id="project-policy" class="form-select">
+                    <option value="byok_allowed">BYOK Allowed</option>
+                    <option value="cloud_allowed">Cloud LLM Allowed</option>
+                    <option value="local_only">Local LLM Only</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <!-- Step 2: Actors & Entry Points -->
+            <div class="wizard-body" id="step-2" style="display:none;">
+              <h2 style="margin-bottom:var(--space-2);">Actors &amp; Entry Points</h2>
+              <p class="text-muted text-sm" style="margin-bottom:var(--space-6);">Who interacts with the system and how they access it.</p>
+
+              <div class="form-group">
+                <label class="form-label">Actors <span class="required">*</span></label>
+                <div class="tags-input-wrap" id="actors-wrap">
+                  <input type="text" class="tags-input" id="actors-input" placeholder="Type actor name + Enter (e.g. Customer, Merchant, Admin)…" />
+                </div>
+                <div class="form-hint">Who uses or interacts with this feature? Press Enter to add each one.</div>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">Entry Points <span class="required">*</span></label>
+                <div class="tags-input-wrap" id="entry-points-wrap">
+                  <input type="text" class="tags-input" id="entry-points-input" placeholder="e.g. Web App, Mobile API, Webhook, Admin Panel…" />
+                </div>
+                <div class="form-hint">How do actors access the system?</div>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label" for="auth-method">Authentication Method</label>
+                <input type="text" id="auth-method" class="form-input" placeholder="e.g. JWT, API key, HMAC, Session cookie, OAuth2" />
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">Critical Actions</label>
+                <div class="tags-input-wrap" id="critical-actions-wrap">
+                  <input type="text" class="tags-input" id="critical-actions-input" placeholder="e.g. Create payment, Refund, Update status, Delete account…" />
+                </div>
+                <div class="form-hint">High-risk operations that could cause damage if abused.</div>
+              </div>
+            </div>
+
+            <!-- Step 3: Data & External Systems -->
+            <div class="wizard-body" id="step-3" style="display:none;">
+              <h2 style="margin-bottom:var(--space-2);">Data &amp; External Systems</h2>
+              <p class="text-muted text-sm" style="margin-bottom:var(--space-6);">What data is processed and which external systems are involved.</p>
+
+              <div class="form-group">
+                <label class="form-label">Data Involved <span class="required">*</span></label>
+                <div class="tags-input-wrap" id="data-involved-wrap">
+                  <input type="text" class="tags-input" id="data-involved-input" placeholder="e.g. customer_id, phone, amount, transaction_id, PII…" />
+                </div>
+                <div class="form-hint">List all data fields that flow through this feature, especially PII or financial data.</div>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">External Systems</label>
+                <div class="tags-input-wrap" id="external-systems-wrap">
+                  <input type="text" class="tags-input" id="external-systems-input" placeholder="e.g. Payment Gateway, Merchant Server, SMS Provider…" />
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">Existing Security Controls</label>
+                <div class="tags-input-wrap" id="existing-controls-wrap">
+                  <input type="text" class="tags-input" id="existing-controls-input" placeholder="e.g. WAF, Rate limit, RBAC, HMAC…" />
+                </div>
+                <div class="form-hint">Controls already confirmed to be in place. Leave empty if unknown.</div>
+              </div>
+            </div>
+
+            <!-- Step 4: Artifact Upload -->
+            <div class="wizard-body" id="step-4" style="display:none;">
+              <h2 style="margin-bottom:var(--space-2);">Artifact (Optional)</h2>
+              <p class="text-muted text-sm" style="margin-bottom:var(--space-6);">Paste or upload an artifact to give the AI more context. This greatly improves analysis quality.</p>
+
+              <div class="form-group">
+                <label class="form-label" for="artifact-type">Artifact Type</label>
+                <select id="artifact-type" class="form-select">
+                  <option value="">No artifact — use manual input only</option>
+                  <option value="prd">PRD / Product Requirements</option>
+                  <option value="openapi">OpenAPI / Swagger Spec</option>
+                  <option value="postman">Postman Collection (JSON)</option>
+                  <option value="markdown">Markdown Document</option>
+                  <option value="database_schema">Database Schema</option>
+                  <option value="csv">CSV API List</option>
+                  <option value="har">HAR / HTTP Archive</option>
+                  <option value="text">Plain Text</option>
+                </select>
+              </div>
+
+              <div class="form-group" id="artifact-file-group" style="display:none;">
+                <label class="form-label" for="artifact-file">Upload Artifact File</label>
+                <input id="artifact-file" type="file" class="form-input" />
+                <div class="form-hint" id="artifact-file-hint">Max 5 MB. Allowed formats depend on artifact type.</div>
+              </div>
+
+              <div class="alert alert-info" style="margin-top:var(--space-4);">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                <div>Even without an artifact, the AI will generate threats based on your manual inputs. Artifacts significantly improve confidence and reduce missing information.</div>
+              </div>
+            </div>
+
+          </form>
+
+          <!-- Wizard Nav -->
+          <div class="wizard-nav">
+            <button type="button" class="btn btn-secondary" id="btn-prev" style="visibility:hidden;">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+              Previous
+            </button>
+            <span class="text-sm text-muted" id="step-counter">Step 1 of 4</span>
+            <button type="button" class="btn btn-primary" id="btn-next">
+              Next
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="/static/js/api.js"></script>
+<script src="/static/js/project.js"></script>
+</body>
+</html>

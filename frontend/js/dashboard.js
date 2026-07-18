@@ -1,0 +1,106 @@
+/**
+ * Dashboard — project list, stats, search
+ */
+document.addEventListener('DOMContentLoaded', async () => {
+  await loadDashboard();
+
+  document.getElementById('search-input').addEventListener('input', (e) => {
+    filterProjects(e.target.value.toLowerCase());
+  });
+});
+
+let allProjects = [];
+
+async function loadDashboard() {
+  try {
+    allProjects = await API.projects.list();
+    renderStats(allProjects);
+    renderProjects(allProjects);
+  } catch (err) {
+    document.getElementById('projects-container').innerHTML =
+      `<div class="alert alert-danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg><div>Could not load projects. Make sure the backend is running on port 8000.<br><small>${escHtml(err.message)}</small></div></div>`;
+  }
+}
+
+function renderStats(projects) {
+  let critical = 0, high = 0, open = 0;
+  for (const p of projects) {
+    const rs = p.risk_summary || {};
+    critical += rs.critical || 0;
+    high += rs.high || 0;
+    open += (rs.total || 0);
+  }
+  document.getElementById('stat-total').textContent = projects.length;
+  document.getElementById('stat-critical').textContent = critical;
+  document.getElementById('stat-high').textContent = high;
+  document.getElementById('stat-open').textContent = open;
+}
+
+function renderProjects(projects) {
+  const container = document.getElementById('projects-container');
+
+  if (!projects.length) {
+    container.innerHTML = `
+      <div class="empty-state" style="padding:var(--space-12);">
+        <div class="empty-state-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </div>
+        <h3>No projects yet</h3>
+        <p>Create your first threat model to get started with security analysis.</p>
+        <a href="/project-new.html" class="btn btn-primary">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Create First Project
+        </a>
+      </div>`;
+    return;
+  }
+
+  container.innerHTML = `<div class="project-grid" id="projects-grid">${projects.map(projectCardHtml).join('')}</div>`;
+}
+
+function projectCardHtml(p) {
+  const rs = p.risk_summary || {};
+  const hasReport = p.has_report || rs.total > 0;
+
+  const riskPills = hasReport ? `
+    <div class="project-risk-pills">
+      ${rs.critical ? `<span class="risk-pill badge-critical">${rs.critical} Critical</span>` : ''}
+      ${rs.high ? `<span class="risk-pill badge-high">${rs.high} High</span>` : ''}
+      ${rs.medium ? `<span class="risk-pill badge-medium">${rs.medium} Medium</span>` : ''}
+      ${rs.low ? `<span class="risk-pill badge-low">${rs.low} Low</span>` : ''}
+    </div>` : `<div class="text-sm text-muted">No analysis yet</div>`;
+
+  const status = p.analysis_status === 'completed'
+    ? `<span class="badge badge-mitigated">Analyzed</span>`
+    : `<span class="badge badge-neutral">Pending</span>`;
+
+  const href = hasReport ? `/report.html?id=${p.project_id}` : `/analysis.html?id=${p.project_id}`;
+  const readiness = Number.isFinite(p.completeness_score) ? p.completeness_score : (p.completeness_score || 0);
+
+  return `
+  <a class="project-card" href="${href}" data-name="${escHtml(p.name?.toLowerCase())}">
+    <div class="project-card-header">
+      <div class="project-card-name">${escHtml(p.name)}</div>
+      ${status}
+    </div>
+    ${p.description ? `<div class="project-card-desc">${escHtml(p.description)}</div>` : ''}
+    <div style="display:flex;align-items:center;gap:var(--space-2);margin-bottom:var(--space-3);">
+      <div style="height:6px;background:var(--surface-3);border-radius:999px;overflow:hidden;flex:1;">
+        <div style="height:100%;width:${Math.max(0, Math.min(100, readiness))}%;background:${readiness >= 85 ? 'var(--green)' : readiness >= 65 ? 'var(--orange)' : 'var(--accent)'};"></div>
+      </div>
+      <span class="text-xs text-muted">${readiness}/100</span>
+    </div>
+    ${riskPills}
+    <div class="project-card-meta">
+      <span>${p.environment ? escHtml(p.environment) : 'No env set'}</span>
+      <span>${relativeTime(p.updated_at)}</span>
+    </div>
+  </a>`;
+}
+
+function filterProjects(query) {
+  const filtered = query
+    ? allProjects.filter(p => (p.name || '').toLowerCase().includes(query) || (p.description || '').toLowerCase().includes(query))
+    : allProjects;
+  renderProjects(filtered);
+}

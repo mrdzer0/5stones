@@ -1,0 +1,137 @@
+[
+  {
+    "id": "ctrl-001",
+    "name": "Object Ownership Validation",
+    "description": "Ensure every resource access is validated against the requesting user's ownership or permission.",
+    "implementation_guidance": "Add ownership check in every GET/PUT/DELETE endpoint using user_id from JWT claim. Return 403 if mismatch.",
+    "mitigates": ["IDOR", "Information Disclosure", "Elevation of Privilege"],
+    "owner": "Backend",
+    "tags": ["authorization", "idor", "access-control"]
+  },
+  {
+    "id": "ctrl-002",
+    "name": "HMAC Webhook Signature Verification",
+    "description": "Verify incoming webhook payloads using HMAC-SHA256 signature.",
+    "implementation_guidance": "Compare X-Signature header (HMAC-SHA256 of raw body using shared secret) before processing webhook. Include nonce and timestamp to prevent replay.",
+    "mitigates": ["Spoofing", "Tampering", "Replay Attack"],
+    "owner": "Backend",
+    "tags": ["webhook", "signature", "integrity"]
+  },
+  {
+    "id": "ctrl-003",
+    "name": "Server-Side Amount/Value Calculation",
+    "description": "Never trust client-submitted financial or critical values. Always recalculate on the server.",
+    "implementation_guidance": "Retrieve price/amount from authoritative source (DB or pricing service) server-side. Ignore or validate client-submitted values.",
+    "mitigates": ["Tampering", "Amount Manipulation"],
+    "owner": "Backend",
+    "tags": ["business-logic", "validation", "tampering"]
+  },
+  {
+    "id": "ctrl-004",
+    "name": "PII Data Minimization and Masking",
+    "description": "Only collect, process, and expose the minimum PII required. Mask sensitive fields in responses and logs.",
+    "implementation_guidance": "Remove unnecessary PII from API responses. Mask phone numbers (e.g. +62812****1234). Filter PII from log output.",
+    "mitigates": ["Disclosure of Information", "PII Leakage", "Non-compliance"],
+    "owner": "Backend",
+    "tags": ["privacy", "pii", "masking", "linddun"]
+  },
+  {
+    "id": "ctrl-005",
+    "name": "Nonce and Timestamp Validation",
+    "description": "Prevent replay attacks by validating request freshness and uniqueness.",
+    "implementation_guidance": "Include timestamp in signed payload. Reject requests older than 5 minutes. Store and check nonce for uniqueness within time window.",
+    "mitigates": ["Replay Attack", "Tampering"],
+    "owner": "Backend",
+    "tags": ["replay", "integrity", "webhook"]
+  },
+  {
+    "id": "ctrl-006",
+    "name": "Server-Side RBAC / ABAC",
+    "description": "Enforce role-based or attribute-based access control on every API endpoint server-side.",
+    "implementation_guidance": "Validate user roles/permissions from JWT or session on every request. Do not rely on client-side role checks.",
+    "mitigates": ["Elevation of Privilege", "Unauthorized Access"],
+    "owner": "Backend",
+    "tags": ["authorization", "rbac", "access-control"]
+  },
+  {
+    "id": "ctrl-007",
+    "name": "Immutable Audit Log",
+    "description": "Log all critical actions in an append-only, tamper-evident audit trail.",
+    "implementation_guidance": "Use append-only log storage. Log: user ID, action, resource ID, timestamp, IP. Do not allow log deletion via application API.",
+    "mitigates": ["Repudiation", "Missing Audit Trail"],
+    "owner": "Backend",
+    "tags": ["audit", "logging", "non-repudiation"]
+  },
+  {
+    "id": "ctrl-008",
+    "name": "Log Masking and PII Filtering",
+    "description": "Prevent PII and sensitive data from being written to application logs.",
+    "implementation_guidance": "Use log middleware to mask known PII patterns (phone, email, card number). Avoid logging raw request bodies for authenticated endpoints.",
+    "mitigates": ["Sensitive Log Exposure", "Non-compliance"],
+    "owner": "Backend",
+    "tags": ["logging", "privacy", "masking"]
+  },
+  {
+    "id": "ctrl-009",
+    "name": "Rate Limiting / Throttling",
+    "description": "Limit request rate per user/IP to prevent abuse and DoS.",
+    "implementation_guidance": "Apply rate limiting at API gateway or application level. Use sliding window algorithm. Return 429 with Retry-After header.",
+    "mitigates": ["Denial of Service", "Brute Force", "Abuse"],
+    "owner": "DevOps",
+    "tags": ["rate-limit", "dos", "abuse-prevention"]
+  },
+  {
+    "id": "ctrl-010",
+    "name": "Input Validation and Sanitization",
+    "description": "Validate and sanitize all user input before processing.",
+    "implementation_guidance": "Use allowlist validation on all input fields. Reject unexpected fields. Validate data types, length, and format.",
+    "mitigates": ["Injection", "Tampering", "Spoofing"],
+    "owner": "Backend",
+    "tags": ["input-validation", "injection"]
+  },
+  {
+    "id": "ctrl-011",
+    "name": "Secure Token / JWT Validation",
+    "description": "Validate JWT signature, expiry, issuer, and audience on every request.",
+    "implementation_guidance": "Verify JWT signature using asymmetric key. Check exp, iss, aud claims. Maintain token revocation list for sensitive sessions.",
+    "mitigates": ["Spoofing", "Elevation of Privilege"],
+    "owner": "Backend",
+    "tags": ["authentication", "jwt", "token"]
+  },
+  {
+    "id": "ctrl-012",
+    "name": "Encryption in Transit (TLS)",
+    "description": "Enforce HTTPS/TLS for all data in transit.",
+    "implementation_guidance": "Enforce HTTPS-only. Use TLS 1.2 minimum. Configure HSTS header. Reject HTTP connections.",
+    "mitigates": ["Information Disclosure", "Linkability"],
+    "owner": "DevOps",
+    "tags": ["encryption", "tls", "transit"]
+  },
+  {
+    "id": "ctrl-013",
+    "name": "Data Retention and Deletion Policy",
+    "description": "Define and enforce data retention periods. Provide user data deletion capability.",
+    "implementation_guidance": "Implement data TTL for personal data. Provide user data deletion endpoint. Document retention periods per data type.",
+    "mitigates": ["Non-compliance", "Unawareness"],
+    "owner": "Backend",
+    "tags": ["privacy", "gdpr", "retention", "linddun"]
+  },
+  {
+    "id": "ctrl-014",
+    "name": "Error Message Sanitization",
+    "description": "Do not expose internal implementation details in error responses.",
+    "implementation_guidance": "Return generic error messages to clients. Log detailed error server-side only. Never expose stack traces or SQL errors.",
+    "mitigates": ["Information Disclosure"],
+    "owner": "Backend",
+    "tags": ["error-handling", "information-disclosure"]
+  },
+  {
+    "id": "ctrl-015",
+    "name": "Consent and Transparency Mechanism",
+    "description": "Obtain explicit user consent for data processing. Display clear privacy notice.",
+    "implementation_guidance": "Show data processing purpose before collection. Store consent records. Provide opt-out mechanism.",
+    "mitigates": ["Unawareness", "Non-compliance"],
+    "owner": "Product",
+    "tags": ["consent", "transparency", "privacy", "linddun"]
+  }
+]
