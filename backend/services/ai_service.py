@@ -40,6 +40,7 @@ async def chat_complete(
     api_key: Optional[str] = None,
     max_tokens: int = 4096,
     response_format: Optional[str] = None,
+    use_json_format: bool = False,
 ) -> str:
     """Send a chat completion request and return the response text."""
     client = _get_client(base_url=base_url, api_key=api_key)
@@ -52,11 +53,23 @@ async def chat_complete(
         max_tokens=max_tokens,
         temperature=0.2,
     )
-    if response_format == "json":
+    # Only pass response_format for cloud providers (OpenAI, Azure, OpenRouter).
+    # Local LLMs (Ollama, LM Studio, vLLM) often don't support it and will 400.
+    if use_json_format and _is_cloud_provider(base_url):
         kwargs["response_format"] = {"type": "json_object"}
 
     response = await client.chat.completions.create(**kwargs)
     return response.choices[0].message.content
+
+
+def _is_cloud_provider(base_url: Optional[str]) -> bool:
+    """Return True if the base_url points to a known cloud provider that supports response_format."""
+    if not base_url:
+        url = os.getenv("OPENAI_BASE_URL", "")
+    else:
+        url = base_url
+    cloud_hosts = ("openai.com", "azure.com", "openrouter.ai", "googleapis.com")
+    return any(h in url for h in cloud_hosts)
 
 
 async def chat_complete_json(
@@ -67,7 +80,7 @@ async def chat_complete_json(
     api_key: Optional[str] = None,
     max_tokens: int = 4096,
 ) -> dict | list:
-    """Chat complete and parse JSON from response."""
+    """Chat complete and parse JSON from response. Works with local and cloud LLMs."""
     raw = await chat_complete(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
@@ -75,13 +88,23 @@ async def chat_complete_json(
         base_url=base_url,
         api_key=api_key,
         max_tokens=max_tokens,
-        response_format="json",
+        use_json_format=True,  # only applied for cloud providers
     )
-    # strip markdown code fences if present
-    text = raw.strip()
+    # Strip markdown code fences if present
+    text = raw.strip() if raw else ""
     if text.startswith("```"):
-        text = "\n".join(text.split("\n")[1:])
-        text = text.rstrip("`").strip()
+        lines = text.split("\n")
+        # drop first line (```json or ```) and last line (```)
+        text = "\n".join(lines[1:]).rstrip("`").strip()
+    # Find the outermost JSON object or array
+    for start_char, end_char in (('[', ']'), ('{', '}')):
+        start = text.find(start_char)
+        end = text.rfind(end_char)
+        if start != -1 and end != -1 and end > start:
+            try:
+                return json.loads(text[start:end + 1])
+            except json.JSONDecodeError:
+                continue
     return json.loads(text)
 
 

@@ -69,10 +69,6 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
               Local LLM
             </a></li>
-            <li><a href="#mcp-servers" id="snav-mcp">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/></svg>
-              MCP Servers
-            </a></li>
             <li><a href="#audit-log" id="snav-audit">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
               Audit Log
@@ -82,6 +78,30 @@
 
         <!-- Settings content -->
         <div>
+
+        <!-- Active Provider Banner -->
+        <div class="card" id="active-provider-banner" style="margin-bottom:var(--space-6);border:2px solid var(--border);">
+          <div class="card-body" style="padding:var(--space-4) var(--space-5);">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);flex-wrap:wrap;">
+              <div>
+                <div style="font-size:0.78rem;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);margin-bottom:var(--space-1);">Active AI Source for Analysis</div>
+                <div id="active-source-label" style="font-size:1rem;font-weight:700;color:var(--text);display:flex;align-items:center;gap:var(--space-2);">
+                  <div class="loading-spinner" style="width:16px;height:16px;"></div> Loading…
+                </div>
+              </div>
+              <div style="display:flex;gap:var(--space-2);">
+                <button id="btn-use-byok" class="btn btn-secondary" onclick="switchActiveSource('byok')" title="Use BYOK Cloud Provider">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                  Use Cloud (BYOK)
+                </button>
+                <button id="btn-use-local" class="btn btn-secondary" onclick="switchActiveSource('local')" title="Use Local LLM">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+                  Use Local LLM
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
 
           <!-- AI Providers -->
           <section class="settings-section" id="ai-providers">
@@ -106,14 +126,15 @@
                 <div class="form-row">
                   <div class="form-group">
                     <label class="form-label" for="p-name">Provider Name <span class="required">*</span></label>
-                    <input type="text" id="p-name" class="form-input" placeholder="e.g. OpenAI GPT-4o" />
+                    <input type="text" id="p-name" class="form-input" placeholder="e.g. Gemini Flash" />
                   </div>
                   <div class="form-group">
                     <label class="form-label" for="p-type">Provider Type</label>
                     <select id="p-type" class="form-select">
                       <option value="openai">OpenAI Compatible</option>
-                      <option value="azure">Azure OpenAI</option>
+                      <option value="gemini">Google Gemini</option>
                       <option value="openrouter">OpenRouter</option>
+                      <option value="azure">Azure OpenAI</option>
                       <option value="custom">Custom / Internal Gateway</option>
                     </select>
                   </div>
@@ -121,23 +142,34 @@
                 <div class="form-group">
                   <label class="form-label" for="p-base-url">Base URL <span class="required">*</span></label>
                   <input type="url" id="p-base-url" class="form-input" placeholder="https://api.openai.com/v1" value="https://api.openai.com/v1" />
-                </div>
-                <div class="form-row">
-                  <div class="form-group">
-                    <label class="form-label" for="p-model">Model <span class="required">*</span></label>
-                    <input type="text" id="p-model" class="form-input" placeholder="gpt-4o" />
-                  </div>
-                  <div class="form-group">
-                    <label class="form-label" for="p-max-tokens">Max Tokens</label>
-                    <input type="number" id="p-max-tokens" class="form-input" value="4096" min="512" max="128000" />
-                  </div>
+                  <div class="form-hint" id="p-url-hint">OpenAI-compatible chat completions endpoint.</div>
                 </div>
                 <div class="form-group">
                   <label class="form-label" for="p-api-key">API Key <span class="required">*</span></label>
-                  <input type="password" id="p-api-key" class="form-input" placeholder="sk-…" autocomplete="off" />
+                  <input type="password" id="p-api-key" class="form-input" placeholder="sk-… or AIza…" autocomplete="off" />
                   <div class="form-hint">Will be encrypted before storage. Cannot be retrieved after saving.</div>
                 </div>
-                <div style="display:flex;justify-content:flex-end;">
+
+                <!-- Model picker — auto-populated after API key is entered -->
+                <div class="form-group">
+                  <label class="form-label" for="p-model">Model <span class="required">*</span></label>
+                  <input type="text" id="p-model" class="form-input" placeholder="Enter model name or fetch from API key above" />
+                  <div id="p-model-picker" style="display:none;margin-top:var(--space-3);"></div>
+                </div>
+
+                <div class="form-group">
+                  <label class="form-label" for="p-max-tokens">Max Tokens</label>
+                  <input type="number" id="p-max-tokens" class="form-input" value="4096" min="512" max="128000" />
+                </div>
+
+                <!-- Connection check result -->
+                <div id="provider-conn-result" style="display:none;margin-bottom:var(--space-4);"></div>
+
+                <div style="display:flex;gap:var(--space-3);justify-content:flex-end;">
+                  <button class="btn btn-secondary" id="btn-check-provider" type="button">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                    Check Connection
+                  </button>
                   <button class="btn btn-primary" id="btn-add-provider">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                     Add Provider
@@ -157,66 +189,29 @@
             </div>
 
             <div class="card">
-              <div class="card-body">
-                <div class="form-group">
-                  <label class="form-label" for="local-endpoint">Local LLM Endpoint</label>
-                  <input type="url" id="local-endpoint" class="form-input" placeholder="http://localhost:11434/v1" />
-                  <div class="form-hint">OpenAI-compatible endpoint (Ollama, LM Studio, vLLM, etc.)</div>
-                </div>
-                <div class="form-group">
-                  <label class="form-label" for="local-model">Local Model Name</label>
-                  <input type="text" id="local-model" class="form-input" placeholder="llama3.2, mistral, codellama…" />
-                </div>
-                <div style="display:flex;justify-content:flex-end;">
-                  <button class="btn btn-primary" id="btn-save-local">Save Local LLM Config</button>
-                </div>
-              </div>
-            </div>
-          </section>
+               <div class="card-body">
+                 <div class="form-group">
+                   <label class="form-label" for="local-endpoint">Local LLM Endpoint</label>
+                   <input type="url" id="local-endpoint" class="form-input" placeholder="http://localhost:11434/v1" />
+                   <div class="form-hint">OpenAI-compatible endpoint (Ollama, LM Studio, vLLM, etc.)</div>
+                 </div>
+                 <div class="form-group">
+                   <label class="form-label" for="local-model">Local Model Name</label>
+                   <input type="text" id="local-model" class="form-input" placeholder="llama3.2, mistral, codellama…" />
+                 </div>
 
-          <!-- MCP Servers -->
-          <section class="settings-section" id="mcp-servers">
-            <div class="settings-section-title">MCP Servers (Client Mode)</div>
+                 <!-- Connection check result -->
+                 <div id="local-conn-result" style="display:none;margin-bottom:var(--space-4);"></div>
 
-            <div class="alert alert-info" style="margin-bottom:var(--space-5);">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-              <div>Connect external MCP servers to pull context (e.g. repo, docs, Jira) directly into your threat model. Only whitelisted servers are allowed.</div>
-            </div>
-
-            <div id="mcp-servers-list" style="margin-bottom:var(--space-5);">
-              <div class="empty-state" style="padding:var(--space-8);border:1px dashed var(--border);border-radius:var(--r-lg);">
-                <div class="empty-state-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/></svg></div>
-                <h3>No MCP servers configured</h3>
-                <p>Add an MCP server to pull context from external sources.</p>
-              </div>
-            </div>
-
-            <div class="card">
-              <div class="card-header"><div class="card-title">Add MCP Server</div></div>
-              <div class="card-body">
-                <div class="form-row">
-                  <div class="form-group">
-                    <label class="form-label" for="mcp-name">Server Name</label>
-                    <input type="text" id="mcp-name" class="form-input" placeholder="e.g. Company Repo MCP" />
-                  </div>
-                  <div class="form-group">
-                    <label class="form-label" for="mcp-transport">Transport</label>
-                    <select id="mcp-transport" class="form-select">
-                      <option value="stdio">stdio (local process)</option>
-                      <option value="http">Streamable HTTP (remote)</option>
-                    </select>
-                  </div>
-                </div>
-                <div class="form-group">
-                  <label class="form-label" for="mcp-command">Command / URL</label>
-                  <input type="text" id="mcp-command" class="form-input" placeholder="npx @your-org/mcp-server or https://mcp.your-org.com" />
-                  <div class="form-hint">For stdio: the command to spawn. For HTTP: the remote endpoint URL.</div>
-                </div>
-                <div style="display:flex;justify-content:flex-end;">
-                  <button class="btn btn-primary" id="btn-add-mcp">Add MCP Server</button>
-                </div>
-              </div>
-            </div>
+                 <div style="display:flex;gap:var(--space-3);justify-content:flex-end;">
+                   <button class="btn btn-secondary" id="btn-check-local" type="button">
+                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                     Check Connection
+                   </button>
+                   <button class="btn btn-primary" id="btn-save-local">Save Local LLM Config</button>
+                 </div>
+               </div>
+             </div>
           </section>
 
           <!-- Audit Log -->

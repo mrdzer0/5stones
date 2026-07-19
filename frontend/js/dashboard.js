@@ -78,24 +78,41 @@ function projectCardHtml(p) {
   const readiness = Number.isFinite(p.completeness_score) ? p.completeness_score : (p.completeness_score || 0);
 
   return `
-  <a class="project-card" href="${href}" data-name="${escHtml(p.name?.toLowerCase())}">
-    <div class="project-card-header">
-      <div class="project-card-name">${escHtml(p.name)}</div>
-      ${status}
-    </div>
-    ${p.description ? `<div class="project-card-desc">${escHtml(p.description)}</div>` : ''}
-    <div style="display:flex;align-items:center;gap:var(--space-2);margin-bottom:var(--space-3);">
-      <div style="height:6px;background:var(--surface-3);border-radius:999px;overflow:hidden;flex:1;">
-        <div style="height:100%;width:${Math.max(0, Math.min(100, readiness))}%;background:${readiness >= 85 ? 'var(--green)' : readiness >= 65 ? 'var(--orange)' : 'var(--accent)'};"></div>
+  <div class="project-card" data-name="${escHtml(p.name?.toLowerCase())}" style="display:flex;flex-direction:column;cursor:default;">
+    <a href="${href}" style="display:contents;text-decoration:none;color:inherit;">
+      <div class="project-card-header">
+        <div class="project-card-name">${escHtml(p.name)}</div>
+        ${status}
       </div>
-      <span class="text-xs text-muted">${readiness}/100</span>
+      ${p.description ? `<div class="project-card-desc">${escHtml(p.description)}</div>` : ''}
+      <div style="display:flex;align-items:center;gap:var(--space-2);margin-bottom:var(--space-3);">
+        <div style="height:6px;background:var(--surface-3);border-radius:999px;overflow:hidden;flex:1;">
+          <div style="height:100%;width:${Math.max(0, Math.min(100, readiness))}%;background:${readiness >= 85 ? 'var(--green)' : readiness >= 65 ? 'var(--orange)' : 'var(--accent)'};"></div>
+        </div>
+        <span class="text-xs text-muted">${readiness}/100</span>
+      </div>
+      ${riskPills}
+      <div class="project-card-meta">
+        <span>${p.environment ? escHtml(p.environment) : 'No env set'}</span>
+        <span>${relativeTime(p.updated_at)}</span>
+      </div>
+    </a>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:var(--space-4);padding-top:var(--space-3);border-top:1px solid var(--border);gap:var(--space-2);">
+      <a href="${href}" class="btn btn-secondary btn-sm" style="flex:1;justify-content:center;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        View
+      </a>
+      <button
+        class="btn btn-ghost btn-sm"
+        onclick="deleteProject('${p.project_id}', '${escHtml(p.name).replace(/'/g, "&apos;")}')"
+        title="Delete project"
+        style="color:var(--accent);flex-shrink:0;"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+        Delete
+      </button>
     </div>
-    ${riskPills}
-    <div class="project-card-meta">
-      <span>${p.environment ? escHtml(p.environment) : 'No env set'}</span>
-      <span>${relativeTime(p.updated_at)}</span>
-    </div>
-  </a>`;
+  </div>`;
 }
 
 function filterProjects(query) {
@@ -104,3 +121,16 @@ function filterProjects(query) {
     : allProjects;
   renderProjects(filtered);
 }
+
+window.deleteProject = async function(projectId, projectName) {
+  const confirmed = confirm(`Delete "${projectName}"?\n\nThis will permanently remove the project and all its analysis reports. This action cannot be undone.`);
+  if (!confirmed) return;
+
+  try {
+    await API.projects.delete(projectId);
+    showToast(`Project "${projectName}" deleted`, 'info');
+    await loadDashboard();
+  } catch (err) {
+    showToast('Failed to delete project: ' + err.message, 'error');
+  }
+};

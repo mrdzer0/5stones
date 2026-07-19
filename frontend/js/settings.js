@@ -1,14 +1,36 @@
 /**
- * Settings page — BYOK providers, Local LLM, MCP servers, Audit log
+ * Settings page — BYOK providers, Local LLM, Audit log
  */
+
+// Provider type presets
+const PROVIDER_PRESETS = {
+  openai:     { url: 'https://api.openai.com/v1',                                  placeholder: 'sk-…',    hint: 'OpenAI API key. Get one at platform.openai.com.' },
+  gemini:     { url: 'https://generativelanguage.googleapis.com/v1beta/openai/',    placeholder: 'AIza…',  hint: 'Google AI Studio API key. Get one at aistudio.google.com.' },
+  openrouter: { url: 'https://openrouter.ai/api/v1',                               placeholder: 'sk-or-…', hint: 'OpenRouter API key. Get one at openrouter.ai.' },
+  azure:      { url: 'https://<resource>.openai.azure.com/openai/deployments/<dep>', placeholder: 'sk-…',  hint: 'Azure OpenAI key. Replace <resource> and <dep> in the URL.' },
+  custom:     { url: '',                                                             placeholder: 'key…',   hint: 'Custom endpoint compatible with the OpenAI chat completions API.' },
+};
+
 document.addEventListener('DOMContentLoaded', async () => {
   await loadSettings();
   await loadAuditLog();
 
   document.getElementById('btn-add-provider').addEventListener('click', addProvider);
+  document.getElementById('btn-check-provider').addEventListener('click', checkProviderConnection);
   document.getElementById('btn-save-local').addEventListener('click', saveLocalLLM);
-  document.getElementById('btn-add-mcp').addEventListener('click', addMcpServer);
+  document.getElementById('btn-check-local').addEventListener('click', checkLocalConnection);
   document.getElementById('btn-refresh-audit').addEventListener('click', loadAuditLog);
+
+  // Provider type → auto-fill URL
+  document.getElementById('p-type').addEventListener('change', onProviderTypeChange);
+
+  // API key entered → auto-fetch model list
+  document.getElementById('p-api-key').addEventListener('change', fetchAndShowProviderModels);
+  document.getElementById('p-api-key').addEventListener('blur',   fetchAndShowProviderModels);
+
+  // Auto-fetch model list when Local LLM endpoint changes
+  document.getElementById('local-endpoint').addEventListener('change', fetchAndShowLocalModels);
+  document.getElementById('local-endpoint').addEventListener('blur',   fetchAndShowLocalModels);
 
   // Settings nav smooth scroll
   document.querySelectorAll('.settings-nav a').forEach(link => {
@@ -28,14 +50,16 @@ async function loadSettings() {
   try {
     settings = await API.settings.get();
     renderProviders(settings.providers || []);
+    renderActiveBanner(settings);
 
     if (settings.local_llm_endpoint) {
       document.getElementById('local-endpoint').value = settings.local_llm_endpoint;
+      // Auto-fetch models if endpoint already saved
+      fetchAndShowLocalModels();
     }
     if (settings.local_llm_model) {
       document.getElementById('local-model').value = settings.local_llm_model;
     }
-    renderMcpServers(settings.mcp_servers || []);
   } catch (err) {
     showToast('Could not load settings: ' + err.message, 'error');
   }
@@ -68,6 +92,126 @@ function renderProviders(providers) {
   `).join('');
 }
 
+// ── Active Source Banner ───────────────────────────────────────────────────────
+function renderActiveBanner(cfg) {
+  const label  = document.getElementById('active-source-label');
+  const banner = document.getElementById('active-provider-banner');
+  const btnByok  = document.getElementById('btn-use-byok');
+  const btnLocal = document.getElementById('btn-use-local');
+  if (!label) return;
+
+  const source = cfg.active_source || 'none';
+  const hasLocal     = !!(cfg.local_llm_endpoint && cfg.local_llm_model);
+  const hasProviders = (cfg.providers || []).length > 0;
+
+  const sourceInfo = {
+    byok:  { icon: '🌐', text: 'Cloud Provider (BYOK)', color: '#2563EB', border: '#2563EB' },
+    local: { icon: '💻', text: 'Local LLM', color: 'var(--green)', border: 'var(--green)' },
+    none:  { icon: '⚠️', text: 'Not configured — using fallback templates', color: 'var(--orange)', border: 'var(--orange)' },
+  };
+  const info = sourceInfo[source] || sourceInfo.none;
+
+  label.innerHTML = `<span style="font-size:1.1em;">${info.icon}</span><span style="color:${info.color};">${info.text}</span>`;
+  banner.style.borderColor = info.border;
+
+  // Highlight active button
+  btnByok.className  = source === 'byok'  ? 'btn btn-primary' : 'btn btn-secondary';
+  btnLocal.className = source === 'local' ? 'btn btn-primary' : 'btn btn-secondary';
+
+  // Disable unavailable options
+  btnByok.disabled  = !hasProviders;
+  btnLocal.disabled = !hasLocal;
+  btnByok.title  = hasProviders ? 'Use BYOK Cloud Provider for analysis'  : 'Add a BYOK provider first';
+  btnLocal.title = hasLocal     ? 'Use Local LLM for analysis'             : 'Configure Local LLM first';
+}
+
+window.switchActiveSource = async function(source) {
+  try {
+    const data = { source };
+    if (source === 'byok' && settings.active_provider_id) {
+      data.provider_id = settings.active_provider_id;
+    }
+    await API.settings.setActiveSource(data);
+    await loadSettings();
+    const label = source === 'byok' ? 'Cloud Provider (BYOK)' : 'Local LLM';
+    showToast(`🔄 Switched to ${label}`, 'success');
+  } catch (err) {
+    showToast('Could not switch: ' + err.message, 'error');
+  }
+};
+
+// ── Provider type preset handler ──────────────────────────────────────────────
+function onProviderTypeChange() {
+  const type = document.getElementById('p-type').value;
+  const preset = PROVIDER_PRESETS[type] || PROVIDER_PRESETS.custom;
+  const urlEl = document.getElementById('p-base-url');
+  const keyEl = document.getElementById('p-api-key');
+  const hintEl = document.getElementById('p-url-hint');
+
+  if (preset.url) urlEl.value = preset.url;
+  keyEl.placeholder = preset.placeholder;
+  hintEl.textContent = preset.hint;
+
+  // Clear model picker when type changes
+  hideModelPicker();
+  document.getElementById('p-model').value = '';
+  hideConnResult('provider-conn-result');
+}
+
+// ── Auto-fetch models for BYOK provider ───────────────────────────────────────
+async function fetchAndShowProviderModels() {
+  const baseUrl = document.getElementById('p-base-url').value.trim();
+  const apiKey  = document.getElementById('p-api-key').value.trim();
+  if (!baseUrl || !apiKey) return;
+
+  const picker = document.getElementById('p-model-picker');
+  picker.style.display = 'block';
+  picker.innerHTML = `
+    <div style="padding:var(--space-3) var(--space-4);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-md);font-size:0.82rem;color:var(--text-muted);display:flex;align-items:center;gap:var(--space-2);">
+      <div class="loading-spinner" style="width:14px;height:14px;"></div> Fetching available models…
+    </div>`;
+
+  try {
+    const res = await API.settings.listModels(baseUrl, apiKey);
+    if (res.ok && res.models && res.models.length > 0) {
+      const currentModel = document.getElementById('p-model').value.trim();
+      picker.innerHTML = `
+        <div style="padding:var(--space-3) var(--space-4);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-md);font-size:0.82rem;">
+          <div style="font-weight:600;margin-bottom:var(--space-2);color:var(--text);">📡 Available models — click to select:</div>
+          <div style="display:flex;flex-wrap:wrap;gap:var(--space-2);">
+            ${res.models.map(m => `
+              <button
+                class="btn btn-sm ${m === currentModel ? 'btn-primary' : 'btn-secondary'}"
+                onclick="selectProviderModel('${escHtml(m)}')"
+                title="${escHtml(m)}"
+              >${escHtml(m.length > 40 ? m.slice(0, 38) + '…' : m)}</button>
+            `).join('')}
+          </div>
+        </div>`;
+    } else if (res.ok) {
+      picker.innerHTML = `<div style="padding:var(--space-2) var(--space-3);font-size:0.82rem;color:var(--text-muted);">No models returned. Enter model name manually.</div>`;
+    } else {
+      // API key may be wrong
+      picker.style.display = 'none';
+    }
+  } catch {
+    picker.style.display = 'none';
+  }
+}
+
+window.selectProviderModel = function(modelId) {
+  document.getElementById('p-model').value = modelId;
+  // Highlight selected
+  document.querySelectorAll('#p-model-picker button').forEach(btn => {
+    btn.className = btn.title === modelId ? 'btn btn-sm btn-primary' : 'btn btn-sm btn-secondary';
+  });
+};
+
+function hideModelPicker() {
+  const picker = document.getElementById('p-model-picker');
+  if (picker) { picker.style.display = 'none'; picker.innerHTML = ''; }
+}
+
 async function addProvider() {
   const name = document.getElementById('p-name').value.trim();
   const type = document.getElementById('p-type').value;
@@ -86,13 +230,15 @@ async function addProvider() {
   btn.innerHTML = '<div class="loading-spinner"></div> Saving…';
 
   try {
-    const provider = await API.settings.addProvider({ name, provider_type: type, base_url: baseUrl, model, max_tokens: maxTokens, api_key: apiKey });
+    await API.settings.addProvider({ name, provider_type: type, base_url: baseUrl, model, max_tokens: maxTokens, api_key: apiKey });
     await loadSettings();
 
     // Clear form
     document.getElementById('p-name').value = '';
     document.getElementById('p-api-key').value = '';
     document.getElementById('p-model').value = '';
+    hideModelPicker();
+    hideConnResult('provider-conn-result');
 
     showToast('Provider added successfully', 'success');
   } catch (err) {
@@ -124,9 +270,37 @@ window.deleteProvider = async function(id) {
   }
 };
 
+// ── Check Connection — AI Provider form ───────────────────────────────────────
+async function checkProviderConnection() {
+  const baseUrl = document.getElementById('p-base-url').value.trim();
+  const model   = document.getElementById('p-model').value.trim();
+  const apiKey  = document.getElementById('p-api-key').value.trim();
+
+  if (!baseUrl || !model || !apiKey) {
+    showToast('Base URL, Model, and API Key are required to test connection', 'warn');
+    return;
+  }
+
+  const btn = document.getElementById('btn-check-provider');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="loading-spinner"></div> Testing…';
+  hideConnResult('provider-conn-result');
+
+  try {
+    const result = await API.settings.checkConnection({ base_url: baseUrl, model, api_key: apiKey });
+    showConnResult('provider-conn-result', result);
+  } catch (err) {
+    showConnResult('provider-conn-result', { ok: false, error: err.message, latency_ms: 0 });
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg> Check Connection';
+  }
+}
+
+// ── Local LLM save ────────────────────────────────────────────────────────────
 async function saveLocalLLM() {
   const endpoint = document.getElementById('local-endpoint').value.trim();
-  const model = document.getElementById('local-model').value.trim();
+  const model    = document.getElementById('local-model').value.trim();
 
   const btn = document.getElementById('btn-save-local');
   btn.disabled = true;
@@ -143,50 +317,143 @@ async function saveLocalLLM() {
   }
 }
 
-function renderMcpServers(servers) {
-  const el = document.getElementById('mcp-servers-list');
-  if (!servers.length) {
-    el.innerHTML = `
-      <div class="empty-state" style="padding:var(--space-8);border:1px dashed var(--border);border-radius:var(--r-lg);">
-        <div class="empty-state-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/></svg></div>
-        <h3>No MCP servers configured</h3>
-        <p>Add an MCP server to pull context from external sources.</p>
-      </div>`;
+// ── Check Connection — Local LLM ──────────────────────────────────────────────
+async function checkLocalConnection() {
+  const endpoint = document.getElementById('local-endpoint').value.trim();
+  const model    = document.getElementById('local-model').value.trim();
+
+  if (!endpoint || !model) {
+    showToast('Endpoint and Model are required to test connection', 'warn');
     return;
   }
-  el.innerHTML = servers.map(s => `
-    <div class="provider-card">
-      <div style="width:8px;height:8px;border-radius:50%;background:var(--green);flex-shrink:0;"></div>
-      <div class="provider-info">
-        <div class="provider-name">${escHtml(s.name)}</div>
-        <div class="provider-meta">${escHtml(s.transport)} · ${escHtml(s.command_or_url || '')}</div>
-      </div>
-    </div>
-  `).join('');
-}
 
-async function addMcpServer() {
-  const name = document.getElementById('mcp-name').value.trim();
-  const transport = document.getElementById('mcp-transport').value;
-  const command = document.getElementById('mcp-command').value.trim();
-
-  if (!name || !command) { showToast('Server name and command/URL are required', 'warn'); return; }
-
-  const current = settings.mcp_servers || [];
-  current.push({ name, transport, command_or_url: command });
+  const btn = document.getElementById('btn-check-local');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="loading-spinner"></div> Testing…';
+  hideConnResult('local-conn-result');
 
   try {
-    await API.settings.update({ mcp_servers: current });
-    settings.mcp_servers = current;
-    renderMcpServers(current);
-    document.getElementById('mcp-name').value = '';
-    document.getElementById('mcp-command').value = '';
-    showToast('MCP server added', 'success');
+    const result = await API.settings.checkConnection({ base_url: endpoint, model, api_key: 'ollama' });
+    showConnResult('local-conn-result', result);
   } catch (err) {
-    showToast('Error: ' + err.message, 'error');
+    showConnResult('local-conn-result', { ok: false, error: err.message, latency_ms: 0 });
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg> Check Connection';
   }
 }
 
+// Auto-fetch available models from local LLM endpoint
+async function fetchAndShowLocalModels() {
+  const endpoint = document.getElementById('local-endpoint').value.trim();
+  if (!endpoint) return;
+
+  const resultEl = document.getElementById('local-conn-result');
+  resultEl.style.display = 'block';
+  resultEl.innerHTML = `
+    <div style="padding:var(--space-3) var(--space-4);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-md);font-size:0.82rem;color:var(--text-muted);display:flex;align-items:center;gap:var(--space-2);">
+      <div class="loading-spinner" style="width:14px;height:14px;"></div> Fetching available models…
+    </div>`;
+
+  try {
+    const res = await API.settings.listModels(endpoint);
+    if (res.ok && res.models.length > 0) {
+      const modelInput = document.getElementById('local-model');
+      const currentModel = modelInput.value.trim();
+      const modelMatch = currentModel && res.models.includes(currentModel);
+
+      resultEl.innerHTML = `
+        <div style="padding:var(--space-3) var(--space-4);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-md);font-size:0.82rem;">
+          <div style="font-weight:600;margin-bottom:var(--space-2);color:var(--text);">📡 Models available at this endpoint:</div>
+          <div style="display:flex;flex-wrap:wrap;gap:var(--space-2);">
+            ${res.models.map(m => `
+              <button
+                class="btn btn-sm ${m === currentModel ? 'btn-primary' : 'btn-secondary'}"
+                onclick="document.getElementById('local-model').value='${escHtml(m)}'"
+                title="Click to use this model"
+              >${escHtml(m)}</button>
+            `).join('')}
+          </div>
+          ${!modelMatch && currentModel ? `<div style="margin-top:var(--space-2);color:var(--orange);font-size:0.8rem;">⚠️ Current model "${escHtml(currentModel)}" not found in list above.</div>` : ''}
+        </div>`;
+    } else if (res.ok && res.models.length === 0) {
+      resultEl.innerHTML = `
+        <div style="padding:var(--space-3) var(--space-4);background:rgba(217,119,6,0.10);border:1px solid rgba(217,119,6,0.35);border-radius:var(--r-md);font-size:0.82rem;color:var(--orange);">
+          ⚠️ Server reachable but <strong>no models are loaded</strong>. Load a model in LM Studio → Developer tab first.
+        </div>`;
+    } else {
+      resultEl.innerHTML = '';
+      resultEl.style.display = 'none';
+    }
+  } catch {
+    resultEl.innerHTML = '';
+    resultEl.style.display = 'none';
+  }
+}
+
+// ── Connection result helpers ─────────────────────────────────────────────────
+function showConnResult(elementId, result) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+
+  const modelsHtml = (result.available_models && result.available_models.length)
+    ? `<div style="margin-top:var(--space-2);font-size:0.8rem;color:var(--text-muted);">Available models: ${result.available_models.map(m => `<code style="background:var(--surface-3);padding:1px 6px;border-radius:4px;font-size:0.78rem;">${escHtml(m)}</code>`).join(' ')}</div>`
+    : '';
+
+  if (result.ok) {
+    el.innerHTML = `
+      <div style="
+        display:flex;align-items:flex-start;gap:var(--space-3);
+        padding:var(--space-3) var(--space-4);
+        background:rgba(21,128,61,0.12);
+        border:1px solid rgba(21,128,61,0.35);
+        border-radius:var(--r-md);
+        font-size:0.845rem;
+      ">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#15803D" stroke-width="2.5" style="width:18px;height:18px;flex-shrink:0;margin-top:1px;">
+          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
+        </svg>
+        <div>
+          <span style="color:#15803D;font-weight:600;">Connected</span>
+          <span style="color:var(--text-muted);margin-left:var(--space-2);">Model: <strong>${escHtml(result.model || '—')}</strong> &nbsp;·&nbsp; Latency: <strong>${result.latency_ms}ms</strong></span>
+          ${modelsHtml}
+        </div>
+      </div>`;
+  } else {
+    const hintHtml = result.hint
+      ? `<div style="margin-top:var(--space-2);padding:var(--space-2) var(--space-3);background:rgba(217,119,6,0.12);border-radius:var(--r-sm);color:var(--orange);font-size:0.8rem;">💡 ${escHtml(result.hint)}</div>`
+      : '';
+    el.innerHTML = `
+      <div style="
+        display:flex;align-items:flex-start;gap:var(--space-3);
+        padding:var(--space-3) var(--space-4);
+        background:rgba(220,38,38,0.10);
+        border:1px solid rgba(220,38,38,0.35);
+        border-radius:var(--r-md);
+        font-size:0.845rem;
+      ">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#DC2626" stroke-width="2.5" style="width:18px;height:18px;flex-shrink:0;margin-top:1px;">
+          <circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
+        </svg>
+        <div style="flex:1;">
+          <span style="color:#DC2626;font-weight:600;">Connection failed</span>
+          ${result.latency_ms ? `<span style="color:var(--text-muted);margin-left:var(--space-2);">(${result.latency_ms}ms)</span>` : ''}
+          <div style="color:var(--text-muted);margin-top:2px;word-break:break-word;">${escHtml(result.error || 'Unknown error')}</div>
+          ${hintHtml}
+          ${modelsHtml}
+        </div>
+      </div>`;
+  }
+
+  el.style.display = 'block';
+}
+
+function hideConnResult(elementId) {
+  const el = document.getElementById(elementId);
+  if (el) { el.style.display = 'none'; el.innerHTML = ''; }
+}
+
+// ── Audit Log ─────────────────────────────────────────────────────────────────
 async function loadAuditLog() {
   const el = document.getElementById('audit-log-list');
   try {
@@ -197,15 +464,15 @@ async function loadAuditLog() {
     }
 
     const typeColors = {
-      'project.created': 'badge-mitigated',
-      'project.deleted': 'badge-critical',
-      'analysis.started': 'badge-info',
-      'analysis.completed': 'badge-mitigated',
-      'artifact.upload': 'badge-info',
-      'report.exported': 'badge-neutral',
-      'settings.provider_added': 'badge-info',
-      'settings.provider_activated': 'badge-mitigated',
-      'settings.provider_deleted': 'badge-critical',
+      'project.created':            'badge-mitigated',
+      'project.deleted':            'badge-critical',
+      'analysis.started':           'badge-info',
+      'analysis.completed':         'badge-mitigated',
+      'artifact.upload':            'badge-info',
+      'report.exported':            'badge-neutral',
+      'settings.provider_added':    'badge-info',
+      'settings.provider_activated':'badge-mitigated',
+      'settings.provider_deleted':  'badge-critical',
     };
 
     el.innerHTML = events.map(e => {

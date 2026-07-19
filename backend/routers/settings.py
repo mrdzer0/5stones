@@ -45,6 +45,17 @@ async def get_app_settings():
         p_safe.pop("_api_key", None)
         p_safe["api_key_masked"] = p.get("api_key_masked", "****")
         safe["providers"].append(p_safe)
+
+    # Compute active_source so the UI always knows what's in use
+    active_id = settings.get("active_provider_id")
+    has_local = bool(settings.get("local_llm_endpoint") and settings.get("local_llm_model"))
+    if active_id and any(p["provider_id"] == active_id for p in settings.get("providers", [])):
+        safe["active_source"] = "byok"
+    elif has_local:
+        safe["active_source"] = "local"
+    else:
+        safe["active_source"] = "none"
+
     return safe
 
 
@@ -58,6 +69,48 @@ async def update_app_settings(data: dict):
             settings[key] = data[key]
     save_settings(settings)
     return {"success": True}
+
+
+@router.put("/active-source")
+async def set_active_source(data: dict):
+    """Switch the active LLM source. source='byok' requires provider_id; source='local' clears active_provider_id."""
+    source = data.get("source")
+    settings = get_settings()
+
+    if source == "byok":
+        provider_id = data.get("provider_id")
+        if not provider_id:
+            # Use the currently active BYOK or first available
+            provider_id = settings.get("active_provider_id")
+            if not provider_id:
+                providers = settings.get("providers", [])
+                if providers:
+                    provider_id = providers[0]["provider_id"]
+        if not provider_id:
+            raise HTTPException(status_code=400, detail="No BYOK provider configured. Add one first.")
+        # Verify provider exists
+        found = any(p["provider_id"] == provider_id for p in settings.get("providers", []))
+        if not found:
+            raise HTTPException(status_code=404, detail="Provider not found")
+        for p in settings.get("providers", []):
+            p["is_active"] = (p["provider_id"] == provider_id)
+        settings["active_provider_id"] = provider_id
+        log_event("settings.active_source_changed", details={"source": "byok", "provider_id": provider_id})
+
+    elif source == "local":
+        if not (settings.get("local_llm_endpoint") and settings.get("local_llm_model")):
+            raise HTTPException(status_code=400, detail="Local LLM not configured. Set endpoint and model first.")
+        # Deactivate all BYOK providers
+        for p in settings.get("providers", []):
+            p["is_active"] = False
+        settings["active_provider_id"] = None
+        log_event("settings.active_source_changed", details={"source": "local"})
+
+    else:
+        raise HTTPException(status_code=400, detail="source must be 'byok' or 'local'")
+
+    save_settings(settings)
+    return {"success": True, "active_source": source}
 
 
 @router.post("/providers")
@@ -118,6 +171,84 @@ async def delete_provider(provider_id: str):
     save_settings(settings)
     log_event("settings.provider_deleted", details={"provider_id": provider_id})
     return {"success": True}
+
+
+@router.get("/list-models")
+async def list_models(base_url: str, api_key: str = "ollama"):
+    """Fetch available models from a local or remote LLM endpoint."""
+    from openai import AsyncOpenAI
+    client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+    try:
+        models = await client.models.list()
+        return {
+            "ok": True,
+            "models": [m.id for m in models.data],
+        }
+    except Exception as exc:
+        return {"ok": False, "models": [], "error": str(exc)}
+
+
+@router.post("/check-connection")
+async def check_connection(data: dict):
+    """Test LLM connectivity. First lists available models, then does a chat completion."""
+    import time
+    from openai import AsyncOpenAI
+
+    base_url = data.get("base_url") or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    api_key = data.get("api_key") or os.getenv("OPENAI_API_KEY", "ollama")
+    model = data.get("model") or os.getenv("OPENAI_MODEL", "gpt-4o")
+
+    if data.get("encrypted_api_key"):
+        try:
+            api_key = _decrypt(data["encrypted_api_key"])
+        except Exception:
+            pass
+
+    client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+
+    # Step 1: fetch available models (helps diagnose "no model loaded" vs wrong name)
+    available_models: list[str] = []
+    try:
+        models_resp = await client.models.list()
+        available_models = [m.id for m in models_resp.data]
+    except Exception:
+        pass  # not all providers expose /v1/models — that's fine
+
+    # Step 2: attempt a minimal chat completion
+    start = time.time()
+    try:
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "Reply with the single word: OK"}],
+            max_tokens=5,
+            temperature=0,
+        )
+        elapsed_ms = int((time.time() - start) * 1000)
+        reply = (resp.choices[0].message.content or "").strip()
+        return {
+            "ok": True,
+            "model": resp.model or model,
+            "reply": reply,
+            "latency_ms": elapsed_ms,
+            "available_models": available_models,
+        }
+    except Exception as exc:
+        elapsed_ms = int((time.time() - start) * 1000)
+        error_msg = str(exc)
+        # Helpful hint when no model is loaded in LM Studio
+        hint = None
+        if "No models loaded" in error_msg:
+            if available_models:
+                hint = f"No model is loaded. Available models: {', '.join(available_models)}. Load one in LM Studio then retry."
+            else:
+                hint = "No model is loaded in LM Studio. Open LM Studio → Developer tab → load a model, then retry."
+        return {
+            "ok": False,
+            "error": error_msg,
+            "hint": hint,
+            "latency_ms": elapsed_ms,
+            "available_models": available_models,
+        }
 
 
 @router.get("/audit")
