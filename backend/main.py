@@ -1,4 +1,4 @@
-"""ThreatModelz — FastAPI main application."""
+"""5STONES — FastAPI main application."""
 from __future__ import annotations
 import os
 from pathlib import Path
@@ -13,7 +13,7 @@ load_dotenv()
 from backend.routers import projects, analysis, artifacts, export, settings
 
 app = FastAPI(
-    title="ThreatModelz API",
+    title="5STONES API",
     description="AI-Assisted Threat Modeling Platform",
     version="1.0.0-mvp",
     docs_url="/api/docs",

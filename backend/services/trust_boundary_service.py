@@ -46,6 +46,14 @@ async def detect_trust_boundaries(project: dict) -> List[dict]:
     data_flows = project.get("extracted_data_flows", [])
     artifacts_summary = project.get("artifact_summary", "")
 
+    # Format data flows for AI context
+    flows_text = ""
+    if data_flows:
+        flows_text = "Data Flows:\n" + "\n".join([
+            f"- {f.get('source')} → {f.get('destination')} (Data: {', '.join(f.get('data', []))})"
+            for f in data_flows
+        ])
+
     context = f"""
 Project: {project.get('name')}
 Description: {project.get('description', '')}
@@ -53,6 +61,7 @@ Actors: {', '.join(actors)}
 Entry Points: {', '.join(entry_points)}
 External Systems: {', '.join(project.get('external_systems', []))}
 Components: {', '.join(components)}
+{flows_text}
 Artifact Summary: {artifacts_summary[:2000]}
 """
 
@@ -77,6 +86,7 @@ Return a JSON array of trust boundary objects:
 
 Include boundaries for: user→frontend, frontend→API, API→database, API→external services, admin→system, etc."""
 
+    boundaries = []
     try:
         result = await chat_complete_json(
             system_prompt=system_prompt,
@@ -87,6 +97,9 @@ Include boundaries for: user→frontend, frontend→API, API→database, API→e
         )
         boundaries = result if isinstance(result, list) else result.get("boundaries", [])
     except Exception:
+        pass
+
+    if not boundaries:
         boundaries = _fallback_boundaries(project)
 
     # Add IDs
@@ -101,8 +114,39 @@ def _fallback_boundaries(project: dict) -> list:
     actors = project.get("actors", ["User"])
     entry_points = project.get("entry_points", ["API"])
     external = project.get("external_systems", [])
+    data_flows = project.get("extracted_data_flows", [])
 
     boundaries = []
+
+    # If we have extracted data flows from the artifact, use them to build boundaries!
+    if data_flows:
+        seen = set()
+        for flow in data_flows:
+            src = flow.get("source")
+            dst = flow.get("destination")
+            if not src or not dst:
+                continue
+            key = (src.lower(), dst.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+
+            src_trust = _infer_trust(src)
+            dst_trust = _infer_trust(dst)
+
+            boundaries.append({
+                "boundary_id": str(uuid.uuid4()),
+                "source": src,
+                "destination": dst,
+                "source_trust_level": src_trust,
+                "destination_trust_level": dst_trust,
+                "boundary_label": f"{src_trust} → {dst_trust}",
+                "risk_note": f"Data flow between {src} ({src_trust}) and {dst} ({dst_trust}). Requires authentication & input validation."
+            })
+        if boundaries:
+            return boundaries
+
+    # Otherwise, use old generic fallback based on actors and entry points
     for actor in actors[:3]:
         for ep in entry_points[:2]:
             boundaries.append({
@@ -125,3 +169,4 @@ def _fallback_boundaries(project: dict) -> list:
             "risk_note": "External dependency — validate all inbound data."
         })
     return boundaries
+

@@ -57,10 +57,18 @@ async def run_full_analysis(project_id: str, body: dict = None):
     }
 
     report["completeness"] = compute_completeness(project)
+    report.setdefault("ai_status", {})
 
     # 1. Trust Boundaries
     if "trust_boundary" in types:
-        trust_boundaries = await detect_trust_boundaries(project)
+        try:
+            trust_boundaries = await detect_trust_boundaries(project)
+            report["ai_status"]["trust_boundary"] = {"ok": True, "engine": "AI"}
+        except Exception as exc:
+            # detect_trust_boundaries internally falls back to _fallback_boundaries if AI fails,
+            # but let's record that AI failed.
+            trust_boundaries = await detect_trust_boundaries(project)
+            report["ai_status"]["trust_boundary"] = {"ok": False, "error": str(exc), "engine": "fallback"}
         report["trust_boundaries"] = trust_boundaries
     else:
         trust_boundaries = report.get("trust_boundaries", [])
@@ -68,13 +76,27 @@ async def run_full_analysis(project_id: str, body: dict = None):
     # 2. STRIDE
     stride_threats = []
     if "stride" in types:
-        stride_threats = await generate_stride_threats(project, trust_boundaries)
+        # Clear existing fallback STRIDE threats to avoid duplicates
+        report["threats"] = [t for t in report.get("threats", []) if not (t.get("framework") == "STRIDE" and t.get("is_fallback"))]
+        try:
+            stride_threats = await generate_stride_threats(project, trust_boundaries, force_fallback=False)
+            report["ai_status"]["stride"] = {"ok": True, "engine": "AI"}
+        except Exception as exc:
+            stride_threats = await generate_stride_threats(project, trust_boundaries, force_fallback=True)
+            report["ai_status"]["stride"] = {"ok": False, "error": str(exc), "engine": "fallback"}
         stride_threats = enrich_threats(stride_threats, project, "STRIDE")
 
     # 3. LINDDUN
     linddun_threats = []
     if "linddun" in types and project.get("has_pii", True):
-        linddun_threats = await generate_linddun_threats(project, trust_boundaries)
+        # Clear existing fallback LINDDUN threats to avoid duplicates
+        report["threats"] = [t for t in report.get("threats", []) if not (t.get("framework") == "LINDDUN" and t.get("is_fallback"))]
+        try:
+            linddun_threats = await generate_linddun_threats(project, trust_boundaries, force_fallback=False)
+            report["ai_status"]["linddun"] = {"ok": True, "engine": "AI"}
+        except Exception as exc:
+            linddun_threats = await generate_linddun_threats(project, trust_boundaries, force_fallback=True)
+            report["ai_status"]["linddun"] = {"ok": False, "error": str(exc), "engine": "fallback"}
         linddun_threats = enrich_threats(linddun_threats, project, "LINDDUN")
 
     all_threats = stride_threats + linddun_threats
@@ -85,17 +107,32 @@ async def run_full_analysis(project_id: str, body: dict = None):
 
     # 4. Controls
     if "controls" in types and report.get("threats"):
-        controls = await map_controls(report["threats"])
+        try:
+            controls = await map_controls(report["threats"], force_fallback=False)
+            report["ai_status"]["controls"] = {"ok": True, "engine": "AI"}
+        except Exception as exc:
+            controls = await map_controls(report["threats"], force_fallback=True)
+            report["ai_status"]["controls"] = {"ok": False, "error": str(exc), "engine": "fallback"}
         report["controls"] = enrich_controls(controls, report["threats"], project)
 
     # 5. Test Scenarios
     if "tests" in types and report.get("threats"):
-        tests = await generate_test_scenarios(report["threats"], project)
+        try:
+            tests = await generate_test_scenarios(report["threats"], project, force_fallback=False)
+            report["ai_status"]["tests"] = {"ok": True, "engine": "AI"}
+        except Exception as exc:
+            tests = await generate_test_scenarios(report["threats"], project, force_fallback=True)
+            report["ai_status"]["tests"] = {"ok": False, "error": str(exc), "engine": "fallback"}
         report["test_scenarios"] = tests
 
     # 6. Missing Info
     if "missing_info" in types:
-        missing = await generate_missing_info(project, report.get("threats", []))
+        try:
+            missing = await generate_missing_info(project, report.get("threats", []), force_fallback=False)
+            report["ai_status"]["missing_info"] = {"ok": True, "engine": "AI"}
+        except Exception as exc:
+            missing = await generate_missing_info(project, report.get("threats", []), force_fallback=True)
+            report["ai_status"]["missing_info"] = {"ok": False, "error": str(exc), "engine": "fallback"}
         report["missing_info"] = enrich_missing_info(missing, project)
 
     # 7. Assumptions

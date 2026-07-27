@@ -1,4 +1,4 @@
-"""File-based JSON storage for ThreatModelz MVP."""
+"""File-based JSON storage for 5STONES MVP."""
 from __future__ import annotations
 import json
 import os

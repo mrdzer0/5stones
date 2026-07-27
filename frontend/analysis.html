@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Analysis — ThreatModelz</title>
+  <title>Analysis — 5STONES</title>
   <meta name="description" content="Run AI-powered STRIDE and LINDDUN threat analysis." />
   <link rel="stylesheet" href="/static/css/style.css" />
   <link rel="stylesheet" href="/static/css/components.css" />
@@ -15,11 +15,10 @@
 
   <aside class="sidebar">
     <div class="sidebar-logo">
-      <div class="sidebar-logo-icon">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-      </div>
-      <span class="sidebar-logo-text">ThreatModelz</span>
-      <span class="sidebar-logo-badge">MVP</span>
+      <a href="/index.html" style="display:flex;align-items:center;gap:var(--space-3);text-decoration:none;width:100%;">
+        <img src="/static/logo.png" alt="5STONES" class="sidebar-logo-img" />
+        <span class="sidebar-logo-badge" style="margin-left:auto;">MVP</span>
+      </a>
     </div>
     <div class="sidebar-section">
       <div class="sidebar-section-label">Workspace</div>
@@ -56,7 +55,7 @@
         </a></li>
       </ul>
     </div>
-    <div class="sidebar-footer">ThreatModelz v1.0 MVP</div>
+    <div class="sidebar-footer">5STONES v1.0 · AI Threat Modeling</div>
   </aside>
 
   <main class="main-content">
@@ -190,6 +189,14 @@
                 <div class="analyzing-step-item" id="as-gaps">
                   <div class="step-dot"></div>
                   Identifying information gaps
+                </div>
+              </div>
+              <div id="analyzing-actions" style="display:none;margin-top:var(--space-6);padding-top:var(--space-4);border-top:1px solid var(--border);text-align:center;width:100%;">
+                <p class="text-xs text-muted" style="margin-bottom:var(--space-3);">Some steps used fallbacks because AI was unavailable. You can retry them or proceed to see results.</p>
+                <div style="display:flex;gap:var(--space-3);justify-content:center;">
+                  <button class="btn btn-primary" id="btn-proceed-results">
+                    Proceed to Results &rarr;
+                  </button>
                 </div>
               </div>
             </div>

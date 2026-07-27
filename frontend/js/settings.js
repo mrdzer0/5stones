@@ -2,6 +2,8 @@
  * Settings page — BYOK providers, Local LLM, Audit log
  */
 
+let editingProviderId = null;
+
 // Provider type presets
 const PROVIDER_PRESETS = {
   openai:     { url: 'https://api.openai.com/v1',                                  placeholder: 'sk-…',    hint: 'OpenAI API key. Get one at platform.openai.com.' },
@@ -16,6 +18,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadAuditLog();
 
   document.getElementById('btn-add-provider').addEventListener('click', addProvider);
+  document.getElementById('btn-cancel-edit').addEventListener('click', cancelEditProvider);
   document.getElementById('btn-check-provider').addEventListener('click', checkProviderConnection);
   document.getElementById('btn-save-local').addEventListener('click', saveLocalLLM);
   document.getElementById('btn-check-local').addEventListener('click', checkLocalConnection);
@@ -82,10 +85,13 @@ function renderProviders(providers) {
         <div class="provider-name">${escHtml(p.name)}</div>
         <div class="provider-meta">${escHtml(p.model)} · ${escHtml(p.base_url)} · Key: ${escHtml(p.api_key_masked || '****')}</div>
       </div>
-      <div style="display:flex;gap:var(--space-2);">
+      <div style="display:flex;gap:var(--space-2);align-items:center;">
         ${!p.is_active ? `<button class="btn btn-sm btn-secondary" onclick="activateProvider('${p.provider_id}')">Set Active</button>` : `<span class="badge badge-mitigated">Active</span>`}
+        <button class="btn btn-sm btn-ghost" onclick="startEditProvider('${p.provider_id}')" title="Edit provider">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;color:var(--text-muted);"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </button>
         <button class="btn btn-sm btn-ghost" onclick="deleteProvider('${p.provider_id}')" title="Remove">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--accent);"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;color:var(--accent);"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
         </button>
       </div>
     </div>
@@ -162,7 +168,9 @@ function onProviderTypeChange() {
 async function fetchAndShowProviderModels() {
   const baseUrl = document.getElementById('p-base-url').value.trim();
   const apiKey  = document.getElementById('p-api-key').value.trim();
-  if (!baseUrl || !apiKey) return;
+  
+  // If editing and apiKey is empty, we pass the provider_id to listModels
+  if (!baseUrl || (!apiKey && !editingProviderId)) return;
 
   const picker = document.getElementById('p-model-picker');
   picker.style.display = 'block';
@@ -172,7 +180,7 @@ async function fetchAndShowProviderModels() {
     </div>`;
 
   try {
-    const res = await API.settings.listModels(baseUrl, apiKey);
+    const res = await API.settings.listModels(baseUrl, apiKey || 'ollama', editingProviderId || '');
     if (res.ok && res.models && res.models.length > 0) {
       const currentModel = document.getElementById('p-model').value.trim();
       picker.innerHTML = `
@@ -188,14 +196,18 @@ async function fetchAndShowProviderModels() {
             `).join('')}
           </div>
         </div>`;
-    } else if (res.ok) {
-      picker.innerHTML = `<div style="padding:var(--space-2) var(--space-3);font-size:0.82rem;color:var(--text-muted);">No models returned. Enter model name manually.</div>`;
     } else {
-      // API key may be wrong
-      picker.style.display = 'none';
+      const errorMsg = res.error || 'Connection failed or returned empty list';
+      picker.innerHTML = `
+        <div style="padding:var(--space-3) var(--space-4);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-md);font-size:0.82rem;color:var(--orange);">
+          ⚠️ Could not fetch models: ${escHtml(errorMsg)}
+        </div>`;
     }
-  } catch {
-    picker.style.display = 'none';
+  } catch (err) {
+    picker.innerHTML = `
+      <div style="padding:var(--space-3) var(--space-4);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-md);font-size:0.82rem;color:var(--orange);">
+        ⚠️ Could not fetch models: ${escHtml(err.message)}
+      </div>`;
   }
 }
 
@@ -212,6 +224,73 @@ function hideModelPicker() {
   if (picker) { picker.style.display = 'none'; picker.innerHTML = ''; }
 }
 
+window.startEditProvider = function(id) {
+  const p = (settings.providers || []).find(x => x.provider_id === id);
+  if (!p) return;
+
+  editingProviderId = id;
+  document.getElementById('p-name').value = p.name || '';
+  document.getElementById('p-type').value = p.provider_type || 'openai';
+  document.getElementById('p-base-url').value = p.base_url || '';
+  document.getElementById('p-model').value = p.model || '';
+  document.getElementById('p-max-tokens').value = p.max_tokens || 4096;
+  
+  const keyInput = document.getElementById('p-api-key');
+  keyInput.value = '';
+  keyInput.placeholder = '(Unchanged)';
+  keyInput.disabled = true; // Disable API key editing
+
+  // Change form header and submit button
+  const formCard = document.querySelector('#ai-providers .card');
+  const titleEl = formCard.querySelector('.card-title');
+  if (titleEl) titleEl.textContent = 'Edit Provider';
+
+  const btnAdd = document.getElementById('btn-add-provider');
+  if (btnAdd) {
+    btnAdd.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> Save Changes';
+  }
+
+  // Show Cancel Edit button
+  document.getElementById('btn-cancel-edit').style.display = 'inline-flex';
+
+  // Scroll to form
+  formCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  
+  // Automatically trigger model list fetch using stored key
+  fetchAndShowProviderModels();
+};
+
+window.cancelEditProvider = function() {
+  editingProviderId = null;
+
+  // Clear form inputs
+  document.getElementById('p-name').value = '';
+  document.getElementById('p-base-url').value = 'https://api.openai.com/v1';
+  document.getElementById('p-model').value = '';
+  document.getElementById('p-max-tokens').value = 4096;
+  
+  const keyInput = document.getElementById('p-api-key');
+  keyInput.value = '';
+  keyInput.disabled = false; // Re-enable API key input
+  const preset = PROVIDER_PRESETS[document.getElementById('p-type').value] || PROVIDER_PRESETS.openai;
+  keyInput.placeholder = preset.placeholder;
+
+  // Reset headers and buttons
+  const formCard = document.querySelector('#ai-providers .card');
+  const titleEl = formCard.querySelector('.card-title');
+  if (titleEl) titleEl.textContent = 'Add New Provider';
+
+  const btnAdd = document.getElementById('btn-add-provider');
+  if (btnAdd) {
+    btnAdd.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Add Provider';
+  }
+
+  // Hide Cancel button
+  document.getElementById('btn-cancel-edit').style.display = 'none';
+  hideModelPicker();
+  hideConnResult('provider-conn-result');
+};
+
 async function addProvider() {
   const name = document.getElementById('p-name').value.trim();
   const type = document.getElementById('p-type').value;
@@ -220,8 +299,12 @@ async function addProvider() {
   const maxTokens = parseInt(document.getElementById('p-max-tokens').value) || 4096;
   const apiKey = document.getElementById('p-api-key').value.trim();
 
-  if (!name || !baseUrl || !model || !apiKey) {
-    showToast('All required fields must be filled', 'warn');
+  if (!name || !baseUrl || !model) {
+    showToast('Name, Base URL, and Model are required', 'warn');
+    return;
+  }
+  if (!editingProviderId && !apiKey) {
+    showToast('API Key is required', 'warn');
     return;
   }
 
@@ -230,22 +313,33 @@ async function addProvider() {
   btn.innerHTML = '<div class="loading-spinner"></div> Saving…';
 
   try {
-    await API.settings.addProvider({ name, provider_type: type, base_url: baseUrl, model, max_tokens: maxTokens, api_key: apiKey });
+    if (editingProviderId) {
+      const payload = { name, provider_type: type, base_url: baseUrl, model, max_tokens: maxTokens };
+      if (apiKey) payload.api_key = apiKey;
+      await API.settings.updateProvider(editingProviderId, payload);
+      showToast('Provider updated successfully', 'success');
+      cancelEditProvider();
+    } else {
+      await API.settings.addProvider({ name, provider_type: type, base_url: baseUrl, model, max_tokens: maxTokens, api_key: apiKey });
+      showToast('Provider added successfully', 'success');
+      
+      // Clear form
+      document.getElementById('p-name').value = '';
+      document.getElementById('p-api-key').value = '';
+      document.getElementById('p-model').value = '';
+      hideModelPicker();
+      hideConnResult('provider-conn-result');
+    }
     await loadSettings();
-
-    // Clear form
-    document.getElementById('p-name').value = '';
-    document.getElementById('p-api-key').value = '';
-    document.getElementById('p-model').value = '';
-    hideModelPicker();
-    hideConnResult('provider-conn-result');
-
-    showToast('Provider added successfully', 'success');
   } catch (err) {
     showToast('Error: ' + err.message, 'error');
   } finally {
     btn.disabled = false;
-    btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Add Provider';
+    if (editingProviderId) {
+      btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> Save Changes';
+    } else {
+      btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Add Provider';
+    }
   }
 }
 
@@ -260,7 +354,7 @@ window.activateProvider = async function(id) {
 };
 
 window.deleteProvider = async function(id) {
-  if (!confirm('Remove this provider? The API key will be permanently deleted.')) return;
+  if (!confirm('Are you sure you want to remove this provider?')) return;
   try {
     await API.settings.deleteProvider(id);
     await loadSettings();
@@ -276,7 +370,7 @@ async function checkProviderConnection() {
   const model   = document.getElementById('p-model').value.trim();
   const apiKey  = document.getElementById('p-api-key').value.trim();
 
-  if (!baseUrl || !model || !apiKey) {
+  if (!baseUrl || !model || (!editingProviderId && !apiKey)) {
     showToast('Base URL, Model, and API Key are required to test connection', 'warn');
     return;
   }
@@ -287,7 +381,11 @@ async function checkProviderConnection() {
   hideConnResult('provider-conn-result');
 
   try {
-    const result = await API.settings.checkConnection({ base_url: baseUrl, model, api_key: apiKey });
+    const payload = { base_url: baseUrl, model };
+    if (apiKey) payload.api_key = apiKey;
+    if (editingProviderId) payload.provider_id = editingProviderId;
+    
+    const result = await API.settings.checkConnection(payload);
     showConnResult('provider-conn-result', result);
   } catch (err) {
     showConnResult('provider-conn-result', { ok: false, error: err.message, latency_ms: 0 });

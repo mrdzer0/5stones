@@ -18,8 +18,11 @@ STRIDE_CATEGORIES = [
 ]
 
 
-async def generate_stride_threats(project: dict, trust_boundaries: List[dict]) -> List[dict]:
+async def generate_stride_threats(project: dict, trust_boundaries: List[dict], force_fallback: bool = False) -> List[dict]:
     """Generate STRIDE threats from project context and trust boundaries."""
+    if force_fallback:
+        return _fallback_stride(project, trust_boundaries)
+
     cfg = get_active_provider_config()
 
     context = _build_context(project)
@@ -58,18 +61,17 @@ Generate 8-15 specific STRIDE threats. Return a JSON array:
   }}
 ]"""
 
-    try:
-        result = await chat_complete_json(
-            system_prompt=STRIDE_SYSTEM_PROMPT,
-            user_prompt=user_prompt,
-            base_url=cfg.get("base_url"),
-            api_key=cfg.get("api_key"),
-            model=cfg.get("model"),
-            max_tokens=6000,
-        )
-        threats = result if isinstance(result, list) else result.get("threats", [])
-    except Exception:
-        threats = _fallback_stride(project, trust_boundaries)
+    result = await chat_complete_json(
+        system_prompt=STRIDE_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        base_url=cfg.get("base_url"),
+        api_key=cfg.get("api_key"),
+        model=cfg.get("model"),
+        max_tokens=6000,
+    )
+    threats = result if isinstance(result, list) else result.get("threats", [])
+    if not threats:
+        raise ValueError("AI returned empty or invalid threats list")
 
     for t in threats:
         t["threat_id"] = t.get("threat_id") or str(uuid.uuid4())
@@ -148,6 +150,7 @@ def _fallback_stride(project: dict, trust_boundaries: list) -> list:
     for i, t in enumerate(templates):
         t["threat_id"] = str(uuid.uuid4())
         t["framework"] = "STRIDE"
+        t["is_fallback"] = True
         t.setdefault("component", entry_points[0] if entry_points else "API")
         t.setdefault("source", actors[0] if actors else "User")
         t.setdefault("destination", entry_points[0] if entry_points else "API")

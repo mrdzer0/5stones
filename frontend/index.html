@@ -1,123 +1,141 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ThreatModelz — Dashboard</title>
-  <meta name="description" content="AI-Assisted Threat Modeling Platform. Security design review powered by STRIDE and LINDDUN." />
+  <title>5STONES — Threat Modeling Platform</title>
+  <meta name="description"
+    content="Start with what you have. AI-assisted threat modeling powered by STRIDE and LINDDUN — output every role can act on." />
   <link rel="stylesheet" href="/static/css/style.css" />
   <link rel="stylesheet" href="/static/css/components.css" />
   <link rel="stylesheet" href="/static/css/pages.css" />
 </head>
+
 <body>
-<div class="app-shell">
+  <div class="app-shell">
 
-  <!-- Sidebar -->
-  <aside class="sidebar">
-    <div class="sidebar-logo">
-      <div class="sidebar-logo-icon">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-        </svg>
-      </div>
-      <span class="sidebar-logo-text">ThreatModelz</span>
-      <span class="sidebar-logo-badge">MVP</span>
-    </div>
-
-    <div class="sidebar-section">
-      <div class="sidebar-section-label">Workspace</div>
-      <ul class="sidebar-nav">
-        <li><a href="/index.html" class="active" id="nav-dashboard">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-          Dashboard
-        </a></li>
-        <li><a href="/project-new.html" id="nav-new">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
-          New Project
-        </a></li>
-      </ul>
-    </div>
-
-    <div class="sidebar-section">
-      <div class="sidebar-section-label">Configuration</div>
-      <ul class="sidebar-nav">
-        <li><a href="/settings.html" id="nav-settings">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg>
-          Settings &amp; BYOK
-        </a></li>
-      </ul>
-    </div>
-
-    <div class="sidebar-footer">
-      ThreatModelz v1.0 MVP
-    </div>
-  </aside>
-
-  <!-- Main -->
-  <main class="main-content">
-    <div class="topbar">
-      <div class="topbar-left">
-        <div>
-          <div class="page-title">Dashboard</div>
-          <div class="page-subtitle">All threat modeling projects</div>
-        </div>
-      </div>
-      <div class="topbar-actions">
-        <a href="/project-new.html" class="btn btn-primary">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          New Project
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-logo">
+        <a href="/index.html"
+          style="display:flex;align-items:center;gap:var(--space-3);text-decoration:none;width:100%;">
+          <img src="/static/logo2.png" alt="5STONES" class="sidebar-logo-img" />
+          <span class="sidebar-logo-badge" style="margin-left:auto;">MVP</span>
         </a>
       </div>
-    </div>
 
-    <div class="page-body">
+      <div class="sidebar-section">
+        <div class="sidebar-section-label">Workspace</div>
+        <ul class="sidebar-nav">
+          <li><a href="/index.html" class="active" id="nav-dashboard">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="7" height="7" />
+                <rect x="14" y="3" width="7" height="7" />
+                <rect x="14" y="14" width="7" height="7" />
+                <rect x="3" y="14" width="7" height="7" />
+              </svg>
+              Dashboard
+            </a></li>
+          <li><a href="/project-new.html" id="nav-new">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="8" x2="12" y2="16" />
+                <line x1="8" y1="12" x2="16" y2="12" />
+              </svg>
+              New Project
+            </a></li>
+        </ul>
+      </div>
 
-      <!-- Stats -->
-      <div class="stats-row" id="stats-row">
-        <div class="stat-card">
-          <div class="stat-label">Total Projects</div>
-          <div class="stat-value" id="stat-total">—</div>
-          <div class="stat-sub">All workspaces</div>
+      <div class="sidebar-section">
+        <div class="sidebar-section-label">Configuration</div>
+        <ul class="sidebar-nav">
+          <li><a href="/settings.html" id="nav-settings">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14" />
+              </svg>
+              Settings &amp; BYOK
+            </a></li>
+        </ul>
+      </div>
+
+      <div class="sidebar-footer">
+        5STONES v1.0 · AI Threat Modeling
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="main-content">
+      <div class="topbar">
+        <div class="topbar-left">
+          <div>
+            <div class="page-title">Dashboard</div>
+            <div class="page-subtitle">All threat modeling projects</div>
+          </div>
         </div>
-        <div class="stat-card danger">
-          <div class="stat-label">Critical Threats</div>
-          <div class="stat-value" id="stat-critical">—</div>
-          <div class="stat-sub">Across all projects</div>
-        </div>
-        <div class="stat-card warning">
-          <div class="stat-label">High Risk</div>
-          <div class="stat-value" id="stat-high">—</div>
-          <div class="stat-sub">Need attention</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">Open Threats</div>
-          <div class="stat-value" id="stat-open">—</div>
-          <div class="stat-sub">Pending review</div>
+        <div class="topbar-actions">
+          <a href="/project-new.html" class="btn btn-primary">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            New Project
+          </a>
         </div>
       </div>
 
-      <!-- Project List -->
-      <div class="section-header">
-        <h2 class="section-title">Projects</h2>
-        <div style="display:flex;gap:var(--space-3);align-items:center;">
-          <input type="search" class="form-input" style="width:220px;" placeholder="Search projects…" id="search-input" />
+      <div class="page-body">
+
+        <!-- Stats -->
+        <div class="stats-row" id="stats-row">
+          <div class="stat-card">
+            <div class="stat-label">Total Projects</div>
+            <div class="stat-value" id="stat-total">—</div>
+            <div class="stat-sub">All workspaces</div>
+          </div>
+          <div class="stat-card danger">
+            <div class="stat-label">Critical Threats</div>
+            <div class="stat-value" id="stat-critical">—</div>
+            <div class="stat-sub">Across all projects</div>
+          </div>
+          <div class="stat-card warning">
+            <div class="stat-label">High Risk</div>
+            <div class="stat-value" id="stat-high">—</div>
+            <div class="stat-sub">Need attention</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Open Threats</div>
+            <div class="stat-value" id="stat-open">—</div>
+            <div class="stat-sub">Pending review</div>
+          </div>
         </div>
-      </div>
 
-      <div id="projects-container">
-        <!-- Skeleton loading -->
-        <div class="project-grid" id="skeleton-grid">
-          <div class="skeleton" style="height:160px;border-radius:var(--r-lg);"></div>
-          <div class="skeleton" style="height:160px;border-radius:var(--r-lg);"></div>
-          <div class="skeleton" style="height:160px;border-radius:var(--r-lg);"></div>
+        <!-- Project List -->
+        <div class="section-header">
+          <h2 class="section-title">Projects</h2>
+          <div style="display:flex;gap:var(--space-3);align-items:center;">
+            <input type="search" class="form-input" style="width:220px;" placeholder="Search projects…"
+              id="search-input" />
+          </div>
         </div>
+
+        <div id="projects-container">
+          <!-- Skeleton loading -->
+          <div class="project-grid" id="skeleton-grid">
+            <div class="skeleton" style="height:160px;border-radius:var(--r-lg);"></div>
+            <div class="skeleton" style="height:160px;border-radius:var(--r-lg);"></div>
+            <div class="skeleton" style="height:160px;border-radius:var(--r-lg);"></div>
+          </div>
+        </div>
+
       </div>
+    </main>
+  </div>
 
-    </div>
-  </main>
-</div>
-
-<script src="/static/js/api.js"></script>
-<script src="/static/js/dashboard.js"></script>
+  <script src="/static/js/api.js"></script>
+  <script src="/static/js/dashboard.js"></script>
 </body>
+
 </html>

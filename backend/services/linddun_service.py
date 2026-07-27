@@ -19,8 +19,11 @@ LINDDUN_CATEGORIES = [
 ]
 
 
-async def generate_linddun_threats(project: dict, trust_boundaries: List[dict]) -> List[dict]:
+async def generate_linddun_threats(project: dict, trust_boundaries: List[dict], force_fallback: bool = False) -> List[dict]:
     """Generate LINDDUN privacy threats from project context."""
+    if force_fallback:
+        return _fallback_linddun(project)
+
     cfg = get_active_provider_config()
 
     context = _build_privacy_context(project)
@@ -60,18 +63,17 @@ Return a JSON array:
   }}
 ]"""
 
-    try:
-        result = await chat_complete_json(
-            system_prompt=LINDDUN_SYSTEM_PROMPT,
-            user_prompt=user_prompt,
-            base_url=cfg.get("base_url"),
-            api_key=cfg.get("api_key"),
-            model=cfg.get("model"),
-            max_tokens=4096,
-        )
-        threats = result if isinstance(result, list) else result.get("threats", [])
-    except Exception:
-        threats = _fallback_linddun(project)
+    result = await chat_complete_json(
+        system_prompt=LINDDUN_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        base_url=cfg.get("base_url"),
+        api_key=cfg.get("api_key"),
+        model=cfg.get("model"),
+        max_tokens=4096,
+    )
+    threats = result if isinstance(result, list) else result.get("threats", [])
+    if not threats:
+        raise ValueError("AI returned empty or invalid threats list")
 
     for t in threats:
         t["threat_id"] = t.get("threat_id") or str(uuid.uuid4())
@@ -145,6 +147,7 @@ def _fallback_linddun(project: dict) -> list:
     for t in templates:
         t["threat_id"] = str(uuid.uuid4())
         t["framework"] = "LINDDUN"
+        t["is_fallback"] = True
         t.setdefault("component", "API / Data Store")
         t.setdefault("source", actors[0] if actors else "User")
         t.setdefault("destination", "Data Store")

@@ -8,25 +8,27 @@ SYSTEM_PROMPT = """You are a security test engineer creating security test scena
 Each scenario must be actionable, specific, and executable. Return strict JSON."""
 
 
-async def generate_test_scenarios(threats: List[dict], project: dict) -> List[dict]:
-    """Generate test scenarios for each threat."""
+async def generate_test_scenarios(threats: List[dict], project: dict, force_fallback: bool = False) -> List[dict]:
+    """Generate test scenarios mapped to generated threats."""
+    if force_fallback:
+        return _fallback_scenarios(threats)
+
     cfg = get_active_provider_config()
 
     threats_summary = "\n".join([
-        f"- ID:{t.get('threat_id','?')} [{t.get('threat_category')}] {t.get('threat_description','')} | Control: {t.get('recommended_control','')}"
-        for t in threats[:20]
+        f"- ID: {t['threat_id']}\n  Category: {t['threat_category']}\n  Description: {t['threat_description']}\n  Recommended Control: {t.get('recommended_control','')}"
+        for t in threats[:15]
     ])
 
-    user_prompt = f"""Generate security test scenarios for these threats.
+    user_prompt = f"""Generate security test scenarios mapped to the following threat catalog.
 
-PROJECT: {project.get('name')}
-ACTORS: {', '.join(project.get('actors', []))}
-ENTRY POINTS: {', '.join(project.get('entry_points', []))}
+PROJECT ENVIRONMENT:
+{project.get('environment', 'production')}
 
 THREATS:
 {threats_summary}
 
-Generate one test scenario per threat (or combine similar threats). Return JSON array:
+Return a JSON array of test scenarios:
 [
   {{
     "scenario_name": "descriptive test name",
@@ -41,18 +43,17 @@ Generate one test scenario per threat (or combine similar threats). Return JSON 
   }}
 ]"""
 
-    try:
-        result = await chat_complete_json(
-            system_prompt=SYSTEM_PROMPT,
-            user_prompt=user_prompt,
-            base_url=cfg.get("base_url"),
-            api_key=cfg.get("api_key"),
-            model=cfg.get("model"),
-            max_tokens=5000,
-        )
-        scenarios = result if isinstance(result, list) else result.get("scenarios", [])
-    except Exception:
-        scenarios = _fallback_scenarios(threats)
+    result = await chat_complete_json(
+        system_prompt=SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        base_url=cfg.get("base_url"),
+        api_key=cfg.get("api_key"),
+        model=cfg.get("model"),
+        max_tokens=5000,
+    )
+    scenarios = result if isinstance(result, list) else result.get("scenarios", [])
+    if not scenarios:
+        raise ValueError("AI returned empty or invalid test scenarios list")
 
     for s in scenarios:
         s["test_id"] = s.get("test_id") or f"TM-{str(uuid.uuid4())[:6].upper()}"
@@ -190,8 +191,11 @@ def _fallback_scenarios(threats: list) -> list:
     return scenarios
 
 
-async def generate_missing_info(project: dict, threats: List[dict]) -> List[dict]:
+async def generate_missing_info(project: dict, threats: List[dict], force_fallback: bool = False) -> List[dict]:
     """Generate list of missing information needed for better threat modeling."""
+    if force_fallback:
+        return _fallback_missing_info(project)
+
     cfg = get_active_provider_config()
 
     context = f"""Project: {project.get('name')}
@@ -230,17 +234,16 @@ Return a JSON array:
 
 Generate 5-8 questions covering the most critical gaps. Phrase questions so they can be pasted directly into Jira, Slack, or a review comment."""
 
-    try:
-        result = await chat_complete_json(
-            system_prompt="You are a security analyst identifying information gaps for threat modeling. Return strict JSON.",
-            user_prompt=user_prompt,
-            base_url=cfg.get("base_url"),
-            api_key=cfg.get("api_key"),
-            model=cfg.get("model"),
-        )
-        items = result if isinstance(result, list) else result.get("items", [])
-    except Exception:
-        items = _fallback_missing_info(project)
+    result = await chat_complete_json(
+        system_prompt="You are a security analyst identifying information gaps for threat modeling. Return strict JSON.",
+        user_prompt=user_prompt,
+        base_url=cfg.get("base_url"),
+        api_key=cfg.get("api_key"),
+        model=cfg.get("model"),
+    )
+    items = result if isinstance(result, list) else result.get("items", [])
+    if not items:
+        raise ValueError("AI returned empty or invalid missing info list")
 
     for item in items:
         item["missing_id"] = str(uuid.uuid4())

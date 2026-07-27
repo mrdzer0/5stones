@@ -1,5 +1,5 @@
 /* ============================================================
-   ThreatModelz Design System — Global Styles
+   5STONES — Design System
    Light theme, professional security tool aesthetic
    ============================================================ */
 
@@ -8,22 +8,23 @@
 /* ── Tokens ─────────────────────────────────────────────────── */
 :root {
   /* Colors */
-  --bg:           #F7F6F3;
-  --bg-alt:       #EFEDE8;
+  --bg:           #F5F6F8;
+  --bg-alt:       #ECEEF2;
   --surface:      #FFFFFF;
-  --surface-2:    #F3F1EC;
-  --surface-3:    #ECEAE5;
+  --surface-2:    #F0F2F6;
+  --surface-3:    #E8EBF1;
 
-  --border:       #E0DDD8;
-  --border-strong:#C8C5BF;
+  --border:       #DDE1EA;
+  --border-strong:#C2C8D6;
 
-  --text:         #1A1917;
-  --text-2:       #3D3B38;
-  --text-muted:   #726E68;
-  --text-faint:   #A09C96;
+  --text:         #0F1624;
+  --text-2:       #2B3247;
+  --text-muted:   #626D85;
+  --text-faint:   #9BA5BB;
 
-  --primary:      #18181B;
-  --primary-hover:#2D2D30;
+  /* Brand navy from logo */
+  --primary:      #131B2E;
+  --primary-hover:#1E2A45;
 
   --accent:       #D1213B;      /* Critical / danger */
   --accent-light: #FEF2F4;
@@ -49,14 +50,15 @@
   --purple-light: #F5F3FF;
   --purple-border:#DDD6FE;
 
-  /* Sidebar */
-  --sidebar-bg:   #1A1917;
-  --sidebar-text: #D4D0C8;
+  /* Sidebar — deep navy matching logo */
+  --sidebar-bg:        #0F1624;
+  --sidebar-bg-mid:    #131B2E;
+  --sidebar-text:      #A8B3CC;
   --sidebar-text-active: #FFFFFF;
-  --sidebar-hover:#2A2825;
-  --sidebar-active:#2E2C29;
-  --sidebar-accent:#E5543A;
-  --sidebar-w:    240px;
+  --sidebar-hover:     #1A2440;
+  --sidebar-active:    #1E2A4A;
+  --sidebar-accent:    #2E5BFF;   /* electric blue accent */
+  --sidebar-w:         248px;
 
   /* Typography */
   --font:         'Inter', -apple-system, system-ui, sans-serif;
@@ -80,9 +82,9 @@
   --r-xl: 16px;
 
   /* Shadows */
-  --shadow-sm: 0 1px 2px rgba(0,0,0,.06), 0 1px 3px rgba(0,0,0,.04);
-  --shadow-md: 0 2px 6px rgba(0,0,0,.08), 0 1px 3px rgba(0,0,0,.04);
-  --shadow-lg: 0 4px 16px rgba(0,0,0,.10), 0 2px 6px rgba(0,0,0,.06);
+  --shadow-sm: 0 1px 2px rgba(15,22,36,.06), 0 1px 3px rgba(15,22,36,.04);
+  --shadow-md: 0 2px 8px rgba(15,22,36,.10), 0 1px 3px rgba(15,22,36,.05);
+  --shadow-lg: 0 4px 20px rgba(15,22,36,.12), 0 2px 8px rgba(15,22,36,.06);
 
   /* Transitions */
   --t-fast: 120ms ease;
@@ -113,7 +115,7 @@ body {
 /* ── Sidebar ────────────────────────────────────────────────── */
 .sidebar {
   width: var(--sidebar-w);
-  background: var(--sidebar-bg);
+  background: linear-gradient(180deg, var(--sidebar-bg) 0%, #0C1220 100%);
   display: flex;
   flex-direction: column;
   position: fixed;
@@ -126,10 +128,23 @@ body {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-5) var(--space-5);
+  padding: var(--space-5) var(--space-5) var(--space-4);
   border-bottom: 1px solid rgba(255,255,255,.07);
 }
 
+/* Logo image replaces icon+text */
+.sidebar-logo-img {
+  height: 28px;
+  width: auto;
+  display: block;
+  /* invert to white on dark sidebar */
+  filter: brightness(0) invert(1);
+  opacity: 0.92;
+  transition: opacity var(--t-mid);
+}
+.sidebar-logo-img:hover { opacity: 1; }
+
+/* Legacy icon support (unused) */
 .sidebar-logo-icon {
   width: 32px; height: 32px;
   background: var(--sidebar-accent);
@@ -137,7 +152,6 @@ body {
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
 }
-
 .sidebar-logo-icon svg { width: 18px; height: 18px; color: #fff; }
 
 .sidebar-logo-text {
@@ -150,12 +164,13 @@ body {
 .sidebar-logo-badge {
   font-size: 0.6rem;
   font-weight: 600;
-  background: rgba(255,255,255,.1);
-  color: var(--sidebar-text);
-  padding: 1px 5px;
+  background: rgba(46,91,255,.25);
+  color: rgba(255,255,255,.7);
+  padding: 1px 6px;
   border-radius: 3px;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   margin-left: auto;
+  border: 1px solid rgba(46,91,255,.3);
 }
 
 .sidebar-section {
@@ -214,8 +229,9 @@ body {
   margin-top: auto;
   padding: var(--space-4) var(--space-5);
   border-top: 1px solid rgba(255,255,255,.07);
-  font-size: 0.75rem;
-  color: rgba(255,255,255,.25);
+  font-size: 0.68rem;
+  color: rgba(255,255,255,.22);
+  line-height: 1.5;
 }
 
 /* ── Main Content ────────────────────────────────────────────── */

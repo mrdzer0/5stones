@@ -18,6 +18,47 @@ async def get_artifact_policy():
     return allowed_file_policy()
 
 
+def clean_and_merge_similar_strings(items: list[str]) -> list[str]:
+    """Normalize and deduplicate similar strings (e.g. plurals, capitalization differences) case-insensitively while preserving order."""
+    if not items:
+        return []
+    normalized_map = {}
+    for item in items:
+        if not item or not isinstance(item, str):
+            continue
+        orig = item.strip()
+        if not orig:
+            continue
+        # Normalize: lowercase, strip 's' at the end for plurals, hyphens to spaces
+        norm = orig.lower().replace('_', ' ').replace('-', ' ').strip()
+        if norm.endswith('s') and len(norm) > 3:
+            norm = norm[:-1]
+        
+        if norm not in normalized_map:
+            normalized_map[norm] = orig
+        else:
+            existing = normalized_map[norm]
+            if len(orig) < len(existing) and existing.lower().startswith(orig.lower()):
+                normalized_map[norm] = orig
+            elif existing.islower() and not orig.islower():
+                normalized_map[norm] = orig
+                
+    result = []
+    seen = set()
+    for item in items:
+        if not item or not isinstance(item, str):
+            continue
+        orig = item.strip()
+        norm = orig.lower().replace('_', ' ').replace('-', ' ').strip()
+        if norm.endswith('s') and len(norm) > 3:
+            norm = norm[:-1]
+        best = normalized_map.get(norm, orig)
+        if best.lower() not in seen:
+            seen.add(best.lower())
+            result.append(best)
+    return result
+
+
 @router.post("/{project_id}/artifact")
 async def upload_artifact(project_id: str, data: ArtifactUpload, upload_meta: dict = None):
     """Upload and parse an artifact for a project."""
@@ -47,8 +88,14 @@ async def upload_artifact(project_id: str, data: ArtifactUpload, upload_meta: di
         }.get(field, field.replace("_involved", "_fields").replace("entry_points", "endpoints"))
         extracted = parsed.get(src_key, parsed.get(field.replace("_", "_"), []))
         existing = project.get(field, [])
-        merged = list(dict.fromkeys(existing + extracted))  # deduplicate preserving order
+        merged = clean_and_merge_similar_strings(existing + extracted)
         project[field] = merged
+
+    # Merge auth_methods if project.auth_method is empty or '-'
+    if parsed.get("auth_methods"):
+        clean_methods = clean_and_merge_similar_strings(parsed["auth_methods"])
+        if clean_methods and (not project.get("auth_method") or project.get("auth_method").strip() in ("", "-", "Unknown")):
+            project["auth_method"] = ", ".join(clean_methods)
 
     project["has_pii"] = parsed.get("has_pii", project.get("has_pii", False))
     project["artifact_summary"] = parsed.get("summary", "")

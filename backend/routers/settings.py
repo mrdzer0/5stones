@@ -162,6 +162,40 @@ async def activate_provider(provider_id: str):
     return {"success": True}
 
 
+@router.put("/providers/{provider_id}")
+async def update_provider(provider_id: str, data: dict):
+    """Update details of an existing BYOK provider."""
+    settings = get_settings()
+    provider = None
+    for p in settings.get("providers", []):
+        if p["provider_id"] == provider_id:
+            provider = p
+            break
+
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    if "name" in data:
+        provider["name"] = data["name"]
+    if "base_url" in data:
+        provider["base_url"] = data["base_url"]
+    if "model" in data:
+        provider["model"] = data["model"]
+    if "max_tokens" in data:
+        provider["max_tokens"] = int(data["max_tokens"])
+    if "api_key" in data and data["api_key"].strip() != "":
+        api_key = data["api_key"]
+        provider["api_key_masked"] = _mask(api_key)
+        provider["_api_key"] = _encrypt(api_key)
+
+    save_settings(settings)
+    log_event("settings.provider_updated", details={"provider_id": provider_id, "model": provider.get("model")})
+
+    safe = dict(provider)
+    safe.pop("_api_key", None)
+    return safe
+
+
 @router.delete("/providers/{provider_id}")
 async def delete_provider(provider_id: str):
     settings = get_settings()
@@ -174,11 +208,27 @@ async def delete_provider(provider_id: str):
 
 
 @router.get("/list-models")
-async def list_models(base_url: str, api_key: str = "ollama"):
-    """Fetch available models from a local or remote LLM endpoint."""
-    from openai import AsyncOpenAI
-    client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+async def list_models(base_url: str, api_key: str = "ollama", provider_id: Optional[str] = None):
+    """Fetch available models from a local or remote LLM endpoint. Supports stored provider key fallback."""
     try:
+        if provider_id and (not api_key or api_key == "ollama" or api_key.startswith("***") or api_key == ""):
+            settings = get_settings()
+            for p in settings.get("providers", []):
+                if p.get("provider_id") == provider_id:
+                    decrypted = _decrypt(p.get("_api_key", ""))
+                    if decrypted:
+                        api_key = decrypted
+                    else:
+                        raise ValueError("Stored API key could not be decrypted (Fernet decryption failed). Please re-add the provider or re-enter the key.")
+                    if not base_url:
+                        base_url = p.get("base_url")
+                    break
+
+        if not api_key:
+            raise ValueError("API key is empty or not provided.")
+
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         models = await client.models.list()
         return {
             "ok": True,
@@ -190,33 +240,62 @@ async def list_models(base_url: str, api_key: str = "ollama"):
 
 @router.post("/check-connection")
 async def check_connection(data: dict):
-    """Test LLM connectivity. First lists available models, then does a chat completion."""
+    """Test LLM connectivity. First lists available models, then does a chat completion. Supports stored provider decryption."""
     import time
     from openai import AsyncOpenAI
 
-    base_url = data.get("base_url") or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-    api_key = data.get("api_key") or os.getenv("OPENAI_API_KEY", "ollama")
-    model = data.get("model") or os.getenv("OPENAI_MODEL", "gpt-4o")
+    try:
+        provider_id = data.get("provider_id")
+        base_url = data.get("base_url")
+        api_key = data.get("api_key")
+        model = data.get("model")
 
-    if data.get("encrypted_api_key"):
+        if provider_id:
+            settings = get_settings()
+            for p in settings.get("providers", []):
+                if p.get("provider_id") == provider_id:
+                    if not api_key or api_key.strip() == "":
+                        decrypted = _decrypt(p.get("_api_key", ""))
+                        if decrypted:
+                            api_key = decrypted
+                        else:
+                            raise ValueError("Stored API key could not be decrypted.")
+                    if not base_url:
+                        base_url = p.get("base_url")
+                    if not model:
+                        model = p.get("model")
+                    break
+
+        if not base_url:
+            base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        if not api_key:
+            api_key = os.getenv("OPENAI_API_KEY", "ollama")
+        if not model:
+            model = os.getenv("OPENAI_MODEL", "gpt-4o")
+
+        if data.get("encrypted_api_key"):
+            try:
+                decrypted = _decrypt(data["encrypted_api_key"])
+                if decrypted:
+                    api_key = decrypted
+            except Exception:
+                pass
+
+        if not api_key:
+            raise ValueError("API key is empty.")
+
+        client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+
+        # Step 1: fetch available models
+        available_models: list[str] = []
         try:
-            api_key = _decrypt(data["encrypted_api_key"])
+            models_resp = await client.models.list()
+            available_models = [m.id for m in models_resp.data]
         except Exception:
             pass
 
-    client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-
-    # Step 1: fetch available models (helps diagnose "no model loaded" vs wrong name)
-    available_models: list[str] = []
-    try:
-        models_resp = await client.models.list()
-        available_models = [m.id for m in models_resp.data]
-    except Exception:
-        pass  # not all providers expose /v1/models — that's fine
-
-    # Step 2: attempt a minimal chat completion
-    start = time.time()
-    try:
+        # Step 2: attempt minimal chat completion
+        start = time.time()
         resp = await client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": "Reply with the single word: OK"}],
@@ -233,14 +312,10 @@ async def check_connection(data: dict):
             "available_models": available_models,
         }
     except Exception as exc:
-        elapsed_ms = int((time.time() - start) * 1000)
         error_msg = str(exc)
         # Helpful hint when no model is loaded in LM Studio
         hint = None
         if "No models loaded" in error_msg:
-            if available_models:
-                hint = f"No model is loaded. Available models: {', '.join(available_models)}. Load one in LM Studio then retry."
-            else:
                 hint = "No model is loaded in LM Studio. Open LM Studio → Developer tab → load a model, then retry."
         return {
             "ok": False,

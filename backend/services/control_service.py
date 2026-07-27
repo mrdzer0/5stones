@@ -6,26 +6,30 @@ from backend.utils.storage import get_controls_catalog
 from backend.services.ai_service import chat_complete_json, get_active_provider_config
 
 
-async def map_controls(threats: List[dict]) -> List[dict]:
-    """Map a list of threats to recommended controls."""
+async def map_controls(threats: List[dict], force_fallback: bool = False) -> List[dict]:
+    """Map recommended controls from catalog or generate them using AI."""
+    if not threats:
+        return []
+
     catalog = get_controls_catalog()
+    if force_fallback:
+        return _catalog_fallback(threats, catalog)
+
     cfg = get_active_provider_config()
 
-    # Build a dict for fast lookup
     catalog_summary = "\n".join([
-        f"- {c['id']}: {c['name']} (mitigates: {', '.join(c.get('mitigates', []))})"
-        for c in catalog
+        f"- {c.get('name')}: {c.get('description')}" for c in catalog[:15]
     ])
 
     threats_summary = "\n".join([
-        f"- {t.get('threat_id', 'unknown')}: [{t.get('framework')}:{t.get('threat_category')}] {t.get('threat_description', '')}"
-        for t in threats[:20]
+        f"- Threat: {t.get('threat_category')} - {t.get('threat_description')} (Component: {t.get('component')}) (ID: {t.get('threat_id')})"
+        for t in threats
     ])
 
-    system_prompt = """You are a security control advisor. Map each threat to the most relevant controls from the catalog.
-Return strict JSON."""
+    system_prompt = """You are a senior security engineer mapping threat mitigations (controls).
+Map controls to specific threat IDs. Return strict JSON array."""
 
-    user_prompt = f"""Map each threat to relevant controls from our catalog. You may also suggest additional controls not in the catalog.
+    user_prompt = f"""Select or generate controls for the following threats, using the reference control catalog where applicable.
 
 CONTROL CATALOG:
 {catalog_summary}
@@ -48,18 +52,18 @@ Return a JSON array of control objects:
 
 Deduplicate: one control can address multiple threats."""
 
-    try:
-        result = await chat_complete_json(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            base_url=cfg.get("base_url"),
-            api_key=cfg.get("api_key"),
-            model=cfg.get("model"),
-            max_tokens=4096,
-        )
-        controls = result if isinstance(result, list) else result.get("controls", [])
-    except Exception:
-        controls = _catalog_fallback(threats, catalog)
+    result = await chat_complete_json(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        base_url=cfg.get("base_url"),
+        api_key=cfg.get("api_key"),
+        model=cfg.get("model"),
+        max_tokens=4096,
+    )
+    controls = result if isinstance(result, list) else result.get("controls", [])
+    
+    if not controls:
+        raise ValueError("AI returned empty or invalid controls list")
 
     for c in controls:
         c["control_id"] = c.get("control_id") or str(uuid.uuid4())

@@ -1,4 +1,4 @@
-"""Audit logging for ThreatModelz."""
+"""Audit logging for 5STONES."""
 from __future__ import annotations
 import json
 import os

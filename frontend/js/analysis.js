@@ -50,6 +50,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (reportLink) reportLink.href = `/report.html?id=${projectId}`;
   const reportBtn = document.getElementById('btn-view-report');
   if (reportBtn) reportBtn.href = `/report.html?id=${projectId}`;
+
+  document.getElementById('btn-proceed-results')?.addEventListener('click', () => {
+    document.getElementById('analyzing-card').style.display = 'none';
+    if (currentReport) renderResults(currentReport);
+  });
 });
 
 // ── Project loading ────────────────────────────────────────────────────────────
@@ -132,6 +137,15 @@ async function tryLoadExistingReport() {
 }
 
 // ── Analysis pipeline ──────────────────────────────────────────────────────────
+const originalLabels = {
+  'as-trust': 'Detecting trust boundaries',
+  'as-stride': 'Generating STRIDE threats',
+  'as-linddun': 'Generating LINDDUN privacy threats',
+  'as-controls': 'Mapping security controls',
+  'as-tests': 'Generating test scenarios',
+  'as-gaps': 'Identifying information gaps'
+};
+
 async function runFullAnalysis() {
   await runAnalysis(['trust_boundary', 'stride', 'linddun', 'controls', 'tests', 'missing_info', 'assumptions']);
 }
@@ -140,39 +154,311 @@ async function runAnalysis(types) {
   document.getElementById('empty-analysis-card').style.display = 'none';
   document.getElementById('results-tabs').style.display = 'none';
   document.getElementById('analyzing-card').style.display = '';
+  document.getElementById('analyzing-actions').style.display = 'none';
+  
+  const titleEl = document.querySelector('#analyzing-card h3');
+  if (titleEl) titleEl.textContent = 'Analyzing threats…';
 
   const stepIds = ['as-trust', 'as-stride', 'as-linddun', 'as-controls', 'as-tests', 'as-gaps'];
-  let stepIndex = 0;
-  const stepInterval = setInterval(() => {
-    if (stepIndex > 0) {
-      document.getElementById(stepIds[stepIndex - 1])?.classList.replace('active', 'done');
+  stepIds.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.className = 'analyzing-step-item';
+      el.style.opacity = '';
+      el.innerHTML = `
+        <div class="step-dot"></div>
+        <span>${originalLabels[id]}</span>
+      `;
     }
-    if (stepIndex < stepIds.length) {
-      document.getElementById(stepIds[stepIndex])?.classList.add('active');
-      stepIndex++;
+  });
+
+  const setActiveStep = (id) => {
+    const el = document.getElementById(id);
+    if (el) { el.classList.remove('done', 'skipped'); el.classList.add('active'); }
+  };
+
+  const setStepDone = (id, aiStatus = { ok: true }) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+
+    if (aiStatus && aiStatus.ok === false) {
+      el.className = 'analyzing-step-item error';
+      el.innerHTML = `
+        <div class="step-dot" style="background:#DC2626;box-shadow:none;"></div>
+        <div style="flex:1;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:var(--space-2);width:100%;">
+            <span style="color:#DC2626;font-weight:500;">${originalLabels[id]}</span>
+            <button class="btn btn-sm btn-ghost" onclick="event.stopPropagation(); retryStage('${id}')" style="color:#2563EB;padding:2px 8px;font-size:0.72rem;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--surface);">
+              🔄 Retry AI
+            </button>
+          </div>
+          <div class="step-subtext" style="font-size:0.72rem;color:var(--orange);margin-top:2px;line-height:1.2;">
+            ⚠️ Fallback used. AI Error: ${escHtml(aiStatus.error || 'No response')}
+          </div>
+        </div>
+      `;
+    } else {
+      el.className = 'analyzing-step-item done';
+      el.innerHTML = `
+        <div class="step-dot" style="background:var(--green);box-shadow:none;"></div>
+        <span style="color:var(--green);">${originalLabels[id]}</span>
+      `;
     }
-  }, 1800);
+  };
+
+  const setStepSkipped = (id) => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.classList.remove('active', 'done');
+      el.classList.add('skipped');
+      el.style.opacity = '0.5';
+      el.innerHTML = `
+        <div class="step-dot" style="background:var(--border);box-shadow:none;"></div>
+        <span style="color:var(--text-muted);">${originalLabels[id]} (skipped)</span>
+      `;
+    }
+  };
+
+  let anyFailed = false;
+
+  // 1. Trust Boundaries
+  if (types.includes('trust_boundary')) {
+    setActiveStep('as-trust');
+    try {
+      await API.analysis.run(projectId, ['trust_boundary']);
+      const report = await API.analysis.report(projectId);
+      const aiStatus = report.ai_status?.trust_boundary || { ok: true };
+      if (!aiStatus.ok) anyFailed = true;
+      setStepDone('as-trust', aiStatus);
+    } catch (err) {
+      anyFailed = true;
+      setStepDone('as-trust', { ok: false, error: err.message });
+    }
+  } else {
+    setStepSkipped('as-trust');
+  }
+
+  // 2. STRIDE
+  if (types.includes('stride')) {
+    setActiveStep('as-stride');
+    try {
+      await API.analysis.run(projectId, ['stride']);
+      const report = await API.analysis.report(projectId);
+      const aiStatus = report.ai_status?.stride || { ok: true };
+      if (!aiStatus.ok) anyFailed = true;
+      setStepDone('as-stride', aiStatus);
+    } catch (err) {
+      anyFailed = true;
+      setStepDone('as-stride', { ok: false, error: err.message });
+    }
+  } else {
+    setStepSkipped('as-stride');
+  }
+
+  // 3. LINDDUN
+  if (types.includes('linddun')) {
+    setActiveStep('as-linddun');
+    try {
+      await API.analysis.run(projectId, ['linddun']);
+      const report = await API.analysis.report(projectId);
+      const aiStatus = report.ai_status?.linddun || { ok: true };
+      if (!aiStatus.ok) anyFailed = true;
+      setStepDone('as-linddun', aiStatus);
+    } catch (err) {
+      anyFailed = true;
+      setStepDone('as-linddun', { ok: false, error: err.message });
+    }
+  } else {
+    setStepSkipped('as-linddun');
+  }
+
+  // 4. Controls
+  if (types.includes('controls')) {
+    setActiveStep('as-controls');
+    try {
+      await API.analysis.run(projectId, ['controls']);
+      const report = await API.analysis.report(projectId);
+      const aiStatus = report.ai_status?.controls || { ok: true };
+      if (!aiStatus.ok) anyFailed = true;
+      setStepDone('as-controls', aiStatus);
+    } catch (err) {
+      anyFailed = true;
+      setStepDone('as-controls', { ok: false, error: err.message });
+    }
+  } else {
+    setStepSkipped('as-controls');
+  }
+
+  // 5. Test Scenarios
+  if (types.includes('tests')) {
+    setActiveStep('as-tests');
+    try {
+      await API.analysis.run(projectId, ['tests']);
+      const report = await API.analysis.report(projectId);
+      const aiStatus = report.ai_status?.tests || { ok: true };
+      if (!aiStatus.ok) anyFailed = true;
+      setStepDone('as-tests', aiStatus);
+    } catch (err) {
+      anyFailed = true;
+      setStepDone('as-tests', { ok: false, error: err.message });
+    }
+  } else {
+    setStepSkipped('as-tests');
+  }
+
+  // 6. Gaps (missing info + assumptions)
+  const gapTypes = [];
+  if (types.includes('missing_info')) gapTypes.push('missing_info');
+  if (types.includes('assumptions')) gapTypes.push('assumptions');
+
+  if (gapTypes.length > 0) {
+    setActiveStep('as-gaps');
+    try {
+      await API.analysis.run(projectId, gapTypes);
+      const report = await API.analysis.report(projectId);
+      const aiStatus = report.ai_status?.missing_info || { ok: true };
+      if (!aiStatus.ok) anyFailed = true;
+      setStepDone('as-gaps', aiStatus);
+    } catch (err) {
+      anyFailed = true;
+      setStepDone('as-gaps', { ok: false, error: err.message });
+    }
+  } else {
+    setStepSkipped('as-gaps');
+  }
 
   try {
-    const report = await API.analysis.run(projectId, types);
-    clearInterval(stepInterval);
-    stepIds.forEach(id => {
-      const el = document.getElementById(id);
-      if (el) { el.classList.remove('active'); el.classList.add('done'); }
-    });
-    await new Promise(r => setTimeout(r, 400));
+    const report = await API.analysis.report(projectId);
     currentReport = report;
-    document.getElementById('analyzing-card').style.display = 'none';
-    renderResults(report);
-    document.getElementById('btn-view-report').style.display = '';
-    showToast(`Analysis complete — ${report.risk_summary?.total || 0} threats identified`, 'success');
+
+    if (anyFailed) {
+      if (titleEl) titleEl.textContent = 'Analysis finished (with fallbacks)';
+      document.getElementById('analyzing-actions').style.display = 'block';
+      showToast('Analysis finished, but some AI requests failed. Fallback data was used.', 'warn');
+    } else {
+      document.getElementById('analyzing-card').style.display = 'none';
+      renderResults(report);
+      document.getElementById('btn-view-report').style.display = '';
+      showToast(`Analysis complete — ${report.risk_summary?.total || 0} threats identified`, 'success');
+    }
   } catch (err) {
-    clearInterval(stepInterval);
     document.getElementById('analyzing-card').style.display = 'none';
     document.getElementById('empty-analysis-card').style.display = '';
-    showToast('Analysis failed: ' + err.message, 'error');
+    showToast('Analysis failed to load report: ' + err.message, 'error');
   }
 }
+
+window.retryStage = async function(stepId) {
+  const stepToTypes = {
+    'as-trust': ['trust_boundary'],
+    'as-stride': ['stride'],
+    'as-linddun': ['linddun'],
+    'as-controls': ['controls'],
+    'as-tests': ['tests'],
+    'as-gaps': ['missing_info', 'assumptions']
+  };
+
+  const types = stepToTypes[stepId];
+  if (!types) return;
+
+  const el = document.getElementById(stepId);
+  if (el) {
+    el.className = 'analyzing-step-item active';
+    el.innerHTML = `
+      <div class="step-dot"></div>
+      <span style="font-weight:500;">${originalLabels[stepId]} (Retrying…)</span>
+    `;
+  }
+
+  try {
+    await API.analysis.run(projectId, types);
+    const report = await API.analysis.report(projectId);
+    currentReport = report;
+
+    const statusMap = {
+      'as-trust': 'trust_boundary',
+      'as-stride': 'stride',
+      'as-linddun': 'linddun',
+      'as-controls': 'controls',
+      'as-tests': 'tests',
+      'as-gaps': 'missing_info'
+    };
+    const key = statusMap[stepId];
+    const aiStatus = report.ai_status?.[key] || { ok: true };
+
+    const originalSetStepDone = (id, aiStat) => {
+      const targetEl = document.getElementById(id);
+      if (!targetEl) return;
+      if (aiStat && aiStat.ok === false) {
+        targetEl.className = 'analyzing-step-item error';
+        targetEl.innerHTML = `
+          <div class="step-dot" style="background:#DC2626;box-shadow:none;"></div>
+          <div style="flex:1;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:var(--space-2);width:100%;">
+              <span style="color:#DC2626;font-weight:500;">${originalLabels[id]}</span>
+              <button class="btn btn-sm btn-ghost" onclick="event.stopPropagation(); retryStage('${id}')" style="color:#2563EB;padding:2px 8px;font-size:0.72rem;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--surface);">
+                🔄 Retry AI
+              </button>
+            </div>
+            <div class="step-subtext" style="font-size:0.72rem;color:var(--orange);margin-top:2px;line-height:1.2;">
+              ⚠️ Fallback used. AI Error: ${escHtml(aiStat.error || 'No response')}
+            </div>
+          </div>
+        `;
+      } else {
+        targetEl.className = 'analyzing-step-item done';
+        targetEl.innerHTML = `
+          <div class="step-dot" style="background:var(--green);box-shadow:none;"></div>
+          <span style="color:var(--green);">${originalLabels[id]}</span>
+        `;
+      }
+    };
+
+    originalSetStepDone(stepId, aiStatus);
+    renderResults(report);
+
+    if (aiStatus.ok) {
+      showToast('Stage re-analyzed successfully with AI!', 'success');
+      
+      // Auto-proceed if all active/non-skipped steps are now green/done
+      const anyRemainingFailed = Object.keys(statusMap).some(sid => {
+        const k = statusMap[sid];
+        const itemEl = document.getElementById(sid);
+        if (!itemEl || itemEl.classList.contains('skipped')) return false;
+        return report.ai_status?.[k]?.ok === false;
+      });
+      if (!anyRemainingFailed) {
+        document.getElementById('analyzing-card').style.display = 'none';
+        document.getElementById('btn-view-report').style.display = '';
+      }
+    } else {
+      showToast('Re-analysis failed: fallback still used.', 'warn');
+    }
+  } catch (err) {
+    showToast('Re-analysis failed: ' + err.message, 'error');
+    // Restore error state
+    const originalSetStepDone = (id, aiStat) => {
+      const targetEl = document.getElementById(id);
+      if (!targetEl) return;
+      targetEl.className = 'analyzing-step-item error';
+      targetEl.innerHTML = `
+        <div class="step-dot" style="background:#DC2626;box-shadow:none;"></div>
+        <div style="flex:1;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:var(--space-2);width:100%;">
+            <span style="color:#DC2626;font-weight:500;">${originalLabels[id]}</span>
+            <button class="btn btn-sm btn-ghost" onclick="event.stopPropagation(); retryStage('${id}')" style="color:#2563EB;padding:2px 8px;font-size:0.72rem;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--surface);">
+              🔄 Retry AI
+            </button>
+          </div>
+          <div class="step-subtext" style="font-size:0.72rem;color:var(--orange);margin-top:2px;line-height:1.2;">
+            ⚠️ Fallback used. Error: ${escHtml(err.message)}
+          </div>
+        </div>
+      `;
+    };
+    originalSetStepDone(stepId, { ok: false, error: err.message });
+  }
+};
 
 // ── Result rendering ───────────────────────────────────────────────────────────
 function renderResults(report) {
