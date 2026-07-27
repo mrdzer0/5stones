@@ -1,4 +1,4 @@
-<img src="logo2.png" alt="5STONES" width="220" />
+<img src="logo.png" alt="5STONES" width="220" />
 
 # 5STONES — AI-Assisted Threat Modeling Platform
 
