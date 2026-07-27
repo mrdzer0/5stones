@@ -4,9 +4,7 @@
 
 > *Start with what you have, be transparent about what you don't know, and produce output that every role can act on.*
 
-5STONES is an open-source threat modeling platform built for teams that need to ship fast without skipping security. It uses STRIDE and LINDDUN frameworks — augmented by AI — to generate structured threat analysis, control mappings, and test scenarios from whatever artifacts you already have: a PRD, an API spec, a database schema, or just a rough description.
-
-No security PhD required. No black-box output. Every result includes a confidence score and an explicit list of what the model didn't know.
+5STONES is an open-source threat modeling platform built for teams that need to ship fast without skipping security. It uses STRIDE and LINDDUN frameworks, augmented by AI, to generate structured threat analysis, control mappings, and test scenarios from whatever artifacts you already have: a PRD, an API spec, a database schema, or just a rough description.
 
 ---
 
@@ -45,19 +43,15 @@ Navigate to **http://127.0.0.1:8000** in your browser.
 | Capability | Status |
 |---|---|
 | Project management | ✅ |
-| Multi-step intake wizard | ✅ |
 | Artifact upload & AI parsing | ✅ |
 | Trust boundary detection | ✅ |
 | STRIDE threat generation | ✅ |
 | LINDDUN privacy threat generation | ✅ |
 | Control mapping (built-in catalog) | ✅ |
 | Test scenario generation | ✅ |
-| Confidence scoring & assumption register | ✅ |
-| Missing information tracker | ✅ |
 | BYOK AI provider (OpenAI-compatible) | ✅ |
 | Local LLM support | ✅ |
 | Export: Markdown, CSV, JSON | ✅ |
-| MCP client configuration | ✅ |
 | Audit logging | ✅ |
 
 ---
@@ -89,51 +83,9 @@ Any OpenAI-compatible endpoint works out of the box:
 
 ---
 
-## API Docs
-
-Once the server is running:
-
-- **Swagger UI** → http://127.0.0.1:8000/api/docs
-- **ReDoc** → http://127.0.0.1:8000/api/redoc
-
----
-
-## Security
-
-- API keys are **encrypted at rest** using Fernet symmetric encryption
-- API keys are **never logged** or returned in API responses
-- Set a strong `APP_SECRET_KEY` in `.env` before any production use
-- For sensitive workspaces, use `data_policy: local_only` and a locally-hosted model
-- All MCP invocations are written to the audit log
-
----
-
-## Project Structure
-
-```
-5stones/
-├── backend/
-│   ├── main.py              # FastAPI app entry point
-│   ├── models/schemas.py    # Pydantic data models
-│   ├── routers/             # API route handlers
-│   ├── services/            # Business logic (AI, parsing, threat generation)
-│   ├── utils/               # Storage, encryption, audit logging
-│   └── data/                # JSON file storage
-└── frontend/
-    ├── index.html           # Dashboard
-    ├── project-new.html     # New project wizard
-    ├── analysis.html        # Analysis workspace
-    ├── report.html          # Full report view
-    ├── settings.html        # BYOK & LLM configuration
-    ├── css/                 # Design system
-    └── js/                  # Page controllers
-```
-
----
-
 ## Design Principles
 
-**Work with incomplete information.** Real threat modeling rarely starts with a complete picture. 5STONES accepts partial inputs and surfaces confidence scores alongside every finding — so teams know exactly which risks are well-understood and which need more investigation.
+**Work with incomplete information.** Real threat modeling rarely starts with a complete picture. 5STONES accepts partial inputs and surfaces confidence scores alongside every finding, so teams know exactly which risks are well-understood and which need more investigation.
 
 **Role-aware output.** A security finding is only useful if the right person can act on it. The output is structured for three distinct audiences: developers need test scenarios and control guidance; security teams need threat classification and risk ratings; QA teams need concrete test cases.
 
@@ -141,4 +93,4 @@ Once the server is running:
 
 ---
 
-*5STONES is named after the principle that a small, well-aimed effort — built on what you already have — is more effective than a perfect tool you never use.*
+*5STONES is named after the principle that a small, well-aimed effort, built on what you already have, is more effective than a perfect tool you never use.*
