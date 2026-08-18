@@ -27,7 +27,7 @@ async def map_controls(threats: List[dict], force_fallback: bool = False) -> Lis
     ])
 
     system_prompt = """You are a senior security engineer mapping threat mitigations (controls).
-Map controls to specific threat IDs. Return strict JSON array."""
+Map controls to specific threat IDs. Return one strict JSON object."""
 
     user_prompt = f"""Select or generate controls for the following threats, using the reference control catalog where applicable.
 
@@ -37,9 +37,10 @@ CONTROL CATALOG:
 THREATS:
 {threats_summary}
 
-Return a JSON array of control objects:
-[
-  {{
+Return one JSON object with a "controls" array:
+{{
+  "controls": [
+    {{
     "name": "control name",
     "description": "what this control does",
     "implementation_guidance": "specific how-to guidance",
@@ -47,8 +48,9 @@ Return a JSON array of control objects:
     "evidence": "what evidence is needed to confirm status",
     "owner": "Backend|DevOps|QA|Security|Product",
     "threat_ids": ["list of threat_ids this control addresses"]
-  }}
-]
+    }}
+  ]
+}}
 
 Deduplicate: one control can address multiple threats."""
 
@@ -58,12 +60,12 @@ Deduplicate: one control can address multiple threats."""
         base_url=cfg.get("base_url"),
         api_key=cfg.get("api_key"),
         model=cfg.get("model"),
-        max_tokens=4096,
+        max_tokens=3000,
     )
     controls = result if isinstance(result, list) else result.get("controls", [])
     
     if not controls:
-        raise ValueError("AI returned empty or invalid controls list")
+        raise ValueError("Analysis engine returned an empty or invalid controls list")
 
     for c in controls:
         c["control_id"] = c.get("control_id") or str(uuid.uuid4())

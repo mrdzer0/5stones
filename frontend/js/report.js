@@ -3,6 +3,7 @@
  */
 let projectId = null;
 let currentReport = null;
+let reportSearchQuery = '';
 
 document.addEventListener('DOMContentLoaded', async () => {
   projectId = getProjectId();
@@ -11,6 +12,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Inject project ID into navigation links
   const navAnalysis = document.getElementById('nav-analysis');
   if (navAnalysis) navAnalysis.href = `/analysis.html?id=${projectId}`;
+  const navReport = document.getElementById('nav-report');
+  if (navReport) navReport.href = `/report.html?id=${projectId}`;
   const btnBack = document.getElementById('btn-back-to-analysis');
   if (btnBack) btnBack.href = `/analysis.html?id=${projectId}`;
 
@@ -20,8 +23,44 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('export-csv').addEventListener('click', () => exportReport('csv'));
   document.getElementById('export-json').addEventListener('click', () => exportReport('json'));
 
-  document.getElementById('threat-filter-framework').addEventListener('change', applyFilters);
-  document.getElementById('threat-filter-risk').addEventListener('change', applyFilters);
+  document.getElementById('threat-filter-framework').addEventListener('change', renderFilteredReport);
+  document.getElementById('threat-filter-risk').addEventListener('change', renderFilteredReport);
+  const searchInput = document.getElementById('report-search');
+  const clearSearch = document.getElementById('report-search-clear');
+  searchInput.addEventListener('input', () => {
+    reportSearchQuery = searchInput.value.trim().toLowerCase();
+    clearSearch.hidden = !reportSearchQuery;
+    renderFilteredReport();
+  });
+  clearSearch.addEventListener('click', () => {
+    searchInput.value = '';
+    reportSearchQuery = '';
+    clearSearch.hidden = true;
+    renderFilteredReport();
+    searchInput.focus();
+  });
+  document.addEventListener('keydown', event => {
+    const isTyping = /input|textarea|select/i.test(document.activeElement?.tagName || '');
+    if (event.key === '/' && !isTyping) {
+      event.preventDefault();
+      searchInput.focus();
+    }
+    if (event.key === 'Escape' && document.activeElement === searchInput && searchInput.value) {
+      clearSearch.click();
+    }
+  });
+  setupReportNavigation();
+  if (window.location.hash) {
+    window.setTimeout(() => {
+      const target = document.querySelector(window.location.hash);
+      target?.scrollIntoView();
+      if (target) {
+        document.querySelectorAll('.report-toc a').forEach(link => {
+          link.classList.toggle('active', link.dataset.reportSection === target.id);
+        });
+      }
+    }, 350);
+  }
 });
 
 async function loadReport() {
@@ -37,12 +76,18 @@ async function loadReport() {
     showToast('Could not load report: ' + err.message, 'error');
     document.getElementById('report-header').innerHTML = `
       <div class="report-header-title">Report not available</div>
-      <div class="report-header-meta">Run analysis first to generate a report.</div>`;
+      <div class="report-header-meta">Complete the analysis stages before preparing a report.</div>`;
   }
 }
 
 function renderReport(project, report) {
-  const rs = report.risk_summary || {};
+  const visibleThreats = analysisVisibility(report).threats;
+  const rs = {
+    critical: visibleThreats.filter(item => item.risk_level === 'Critical').length,
+    high: visibleThreats.filter(item => item.risk_level === 'High').length,
+    medium: visibleThreats.filter(item => item.risk_level === 'Medium').length,
+    low: visibleThreats.filter(item => item.risk_level === 'Low').length,
+  };
 
   document.getElementById('report-title').textContent = project.name + ' — Threat Model Report';
   document.getElementById('report-generated').textContent = 'Generated: ' + (report.generated_at ? new Date(report.generated_at + 'Z').toLocaleString() : '—');
@@ -57,11 +102,7 @@ function renderReport(project, report) {
     level: project.completeness_level || 'Not scored',
   }));
 
-  renderThreatsTable(report.threats || []);
-  renderControlsTable(report.controls || []);
-  renderTestsTable(report.test_scenarios || []);
-  renderMissingInfo(report.missing_info || []);
-  renderAssumptions(report.assumptions || []);
+  renderFilteredReport();
 }
 
 function renderCompleteness(completeness) {
@@ -86,48 +127,178 @@ function renderCompleteness(completeness) {
   header.appendChild(el);
 }
 
-function applyFilters() {
+function reportItemMatches(item) {
+  if (!reportSearchQuery) return true;
+  try {
+    return JSON.stringify(item).toLowerCase().includes(reportSearchQuery);
+  } catch (_) {
+    return false;
+  }
+}
+
+function renderFilteredReport() {
+  if (!currentReport) return;
+  const visibility = analysisVisibility(currentReport);
   const framework = document.getElementById('threat-filter-framework').value;
   const risk = document.getElementById('threat-filter-risk').value;
-  const threats = (currentReport?.threats || []).filter(t =>
+  const boundaries = (currentReport.trust_boundaries || []).filter(reportItemMatches);
+  const threats = visibility.threats.filter(t =>
     (!framework || t.framework === framework) &&
-    (!risk || t.risk_level === risk)
+    (!risk || t.risk_level === risk) &&
+    reportItemMatches(t)
   );
+  const controls = visibility.controls.filter(reportItemMatches);
+  const tests = visibility.tests.filter(reportItemMatches);
+  const gaps = visibility.missingInfo.filter(reportItemMatches);
+  const assumptions = visibility.assumptions.filter(reportItemMatches);
+
+  renderTrustBoundariesReport(boundaries, visibility);
   renderThreatsTable(threats);
+  renderControlsTable(controls);
+  renderTestsTable(tests);
+  renderMissingInfo(gaps);
+  renderAssumptions(assumptions);
+  updateReportNavigationCounts({ boundaries, threats, controls, tests, gaps, assumptions });
+}
+
+function updateReportNavigationCounts(filtered) {
+  const visibility = analysisVisibility(currentReport);
+  const totals = {
+    boundaries: (currentReport.trust_boundaries || []).length,
+    threats: visibility.threats.length,
+    controls: visibility.controls.length,
+    tests: visibility.tests.length,
+    gaps: visibility.missingInfo.length,
+    assumptions: visibility.assumptions.length,
+  };
+  const keys = Object.keys(totals);
+  keys.forEach(key => {
+    const count = filtered[key].length;
+    const countEl = document.getElementById(`toc-count-${key}`);
+    if (countEl) countEl.textContent = reportSearchQuery ? `${count}/${totals[key]}` : String(totals[key]);
+    document.querySelector(`[data-report-section="report-${key}"]`)?.classList.toggle('is-empty', count === 0);
+  });
+  const visible = keys.reduce((sum, key) => sum + filtered[key].length, 0);
+  const total = keys.reduce((sum, key) => sum + totals[key], 0);
+  const sectionCount = keys.filter(key => filtered[key].length > 0).length;
+  const summary = document.getElementById('report-search-summary');
+  summary.textContent = reportSearchQuery
+    ? `${visible} matching items across ${sectionCount} sections · ${total} indexed`
+    : `${totals.boundaries} boundaries · ${totals.threats} visible threats · ${totals.controls} controls · ${totals.tests} tests · ${totals.gaps + totals.assumptions} review notes${visibility.hidden.threats ? ` · ${visibility.hidden.threats} threats hidden by boundary review` : ''}`;
+}
+
+function renderTrustBoundariesReport(boundaries, visibility = analysisVisibility(currentReport)) {
+  const el = document.getElementById('report-boundaries-list');
+  if (!el) return;
+  if (!boundaries.length) {
+    el.innerHTML = '<div class="report-empty">No trust boundaries match the current search.</div>';
+    return;
+  }
+  const badgeClass = status => status === 'Confirmed' ? 'badge-low' : status === 'Rejected' ? 'badge-high' : 'badge-medium';
+  const hiddenTotal = Object.values(visibility.hidden).reduce((sum, value) => sum + value, 0);
+  el.innerHTML = `${hiddenTotal ? `<div class="trust-visibility-note"><strong>${hiddenTotal} dependent items hidden</strong><span>They remain stored and will reappear when a rejected boundary is restored to Candidate or Confirmed.</span></div>` : ''}${boundaries.map((boundary, index) => `
+    <article class="report-list-item trust-report-item ${boundary.status === 'Rejected' ? 'is-rejected' : ''}" id="${reportRowId('boundary', boundary.boundary_id, index)}">
+      <div class="trust-report-head">
+        <div>
+          <div class="report-finding-title">${escHtml(boundary.source || 'Unknown source')} → ${escHtml(boundary.destination || 'Unknown destination')}</div>
+          <div class="text-xs text-muted">${escHtml(boundary.boundary_label || 'Zone transition')} · ${escHtml(boundary.confidence || 'Low')} confidence</div>
+        </div>
+        <span class="badge ${badgeClass(boundary.status)}">${escHtml(boundary.status || 'Candidate')}</span>
+      </div>
+      <div class="report-finding-description">${escHtml(boundary.basis || 'No evidence basis recorded.')}</div>
+      ${boundary.review_note ? `<div class="trust-report-note"><strong>Review note:</strong> ${escHtml(boundary.review_note)}</div>` : ''}
+      <details class="report-row-details"><summary>${(boundary.evidence_refs || []).length} supporting references</summary><div><ul class="report-checklist">${(boundary.evidence_refs || []).map(ref => `<li>${escHtml(ref)}</li>`).join('') || '<li>No supporting reference recorded.</li>'}</ul></div></details>
+    </article>
+  `).join('')}`;
+}
+
+function setupReportNavigation() {
+  const links = [...document.querySelectorAll('.report-toc a[data-report-section]')];
+  const sections = links.map(link => document.getElementById(link.dataset.reportSection)).filter(Boolean);
+  links.forEach(link => link.addEventListener('click', () => {
+    links.forEach(item => item.classList.toggle('active', item === link));
+  }));
+  if (!('IntersectionObserver' in window)) return;
+  const observer = new IntersectionObserver(entries => {
+    const visible = entries
+      .filter(entry => entry.isIntersecting)
+      .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+    if (!visible) return;
+    links.forEach(link => link.classList.toggle('active', link.dataset.reportSection === visible.target.id));
+  }, { rootMargin: '-190px 0px -60% 0px', threshold: [0, .1] });
+  sections.forEach(section => observer.observe(section));
 }
 
 function renderThreatsTable(threats) {
   const tbody = document.getElementById('threats-tbody');
   if (!threats.length) {
-    tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:var(--space-8);color:var(--text-muted);">No threats match filters</td></tr>`;
+    const hidden = !reportSearchQuery && analysisVisibility(currentReport).hidden.threats > 0;
+    tbody.innerHTML = `<tr><td colspan="5"><div class="report-empty">${hidden ? 'Threat findings are hidden by the rejected boundary. Restore it to Candidate or Confirmed to show them again.' : 'No threats match the current search and filters.'}</div></td></tr>`;
     return;
   }
 
-  tbody.innerHTML = threats.map(t => `
-    <tr>
-      <td>${badgeHtml(t.framework, 'framework')}</td>
-      <td><span style="font-size:0.8rem;font-weight:500;">${escHtml(t.threat_category)}</span></td>
-      <td style="max-width:280px;">
-        <div style="font-size:0.82rem;color:var(--text);">${escHtml(t.threat_description || '')}</div>
-        ${t.abuse_case ? `<div style="font-size:0.75rem;color:var(--text-muted);margin-top:2px;"><em>${escHtml(t.abuse_case)}</em></div>` : ''}
+  tbody.innerHTML = threats.map((t, index) => `
+    <tr id="${reportRowId('threat', t.threat_id, index)}">
+      <td data-label="Finding">
+        <div class="report-finding-head">
+          <div class="report-finding-badges">${badgeHtml(t.framework, 'framework')}<span class="mono text-xs report-case-id" title="${escHtml(t.threat_id || '')}">${escHtml(shortReportCaseId(t.threat_id, 'T', index))}</span></div>
+          <div class="report-finding-title">${escHtml(t.threat_category || 'Uncategorized threat')}</div>
+          <div class="report-finding-description">${escHtml(t.threat_description || 'No description provided.')}</div>
+        </div>
       </td>
-      <td><span style="font-size:0.8rem;">${escHtml(t.asset || '—')}</span></td>
-      <td><span style="font-size:0.78rem;color:var(--text-muted);">${escHtml(t.trust_boundary || '—')}</span></td>
-      <td><span style="font-size:0.78rem;">${escHtml(t.recommended_control || '—')}</span></td>
-      <td style="max-width:220px;">
-        <div style="font-size:0.76rem;color:var(--text);">${escHtml(t.evidence_source || '—')}</div>
-        <div style="font-size:0.72rem;color:var(--text-muted);margin-top:2px;">${escHtml(t.confidence_reason || t.evidence_snippet || '—')}</div>
+      <td data-label="Context">
+        <div class="report-cell-stack">
+          <div><div class="report-cell-label">Asset</div><div class="report-cell-value">${escHtml(t.asset || '—')}</div></div>
+          <div><div class="report-cell-label">Boundary</div><div class="report-cell-value">${escHtml(t.trust_boundary || '—')}</div></div>
+          <div><div class="report-cell-label">Model targets</div>${reportTargetRefsHtml(t)}</div>
+        </div>
       </td>
-      <td>${confidenceDots(t.confidence)}</td>
-      <td>${badgeHtml(t.risk_level, 'risk')}</td>
-      <td>${threatStatusSelectHtml(t)}</td>
+      <td data-label="Evidence">${evidenceCompactHtml(t)}</td>
+      <td data-label="Risk">
+        <div class="report-cell-stack">${badgeHtml(t.risk_level, 'risk')}<div>${confidenceDots(t.confidence)} <span class="text-xs text-muted">${escHtml(t.confidence || 'Unknown')}</span></div></div>
+      </td>
+      <td data-label="Review">
+        <div class="report-review-cell">
+          ${threatStatusSelectHtml(t)}
+          <details class="report-row-details"><summary>Control &amp; scenario details</summary><div>
+            <p><strong>Recommended control:</strong> ${escHtml(t.recommended_control || 'Not mapped')}</p>
+            ${t.abuse_case ? `<p><strong>Abuse case:</strong> ${escHtml(t.abuse_case)}</p>` : ''}
+            ${t.confidence_reason ? `<p><strong>Confidence:</strong> ${escHtml(t.confidence_reason)}</p>` : ''}
+          </div></details>
+        </div>
+      </td>
     </tr>
   `).join('');
 }
 
+function reportTargetRefsHtml(item) {
+  const refs = (item?.target_refs || []).filter(ref => ref?.id);
+  if (!refs.length) return '<div class="report-target-empty">Unmapped — requires triage</div>';
+  const priority = { scenario: 0, service: 1, context: 2, asset: 3 };
+  const sorted = [...refs].sort((a, b) => (priority[a.model_level] ?? 9) - (priority[b.model_level] ?? 9));
+  const visible = sorted.slice(0, 4);
+  const typeLabel = { external_entity: 'Entity', external_system: 'External', process: 'Process', data_store: 'Store', data_flow: 'Flow', trust_boundary: 'Boundary', scenario: 'Scenario', data_asset: 'Data' };
+  return `<div class="report-target-list">${visible.map(ref => `
+    <span class="report-target-chip" title="${escHtml(`${ref.model_level || 'model'} · ${ref.id}`)}"><b>${escHtml(typeLabel[ref.type] || ref.type)}</b>${escHtml(ref.label || ref.id)}</span>`).join('')}
+    ${refs.length > visible.length ? `<span class="report-target-more">+${refs.length - visible.length} targets</span>` : ''}
+  </div>`;
+}
+
+function reportRowId(prefix, value, index) {
+  const safe = String(value || index + 1).replace(/[^a-zA-Z0-9_-]+/g, '-');
+  return `${prefix}-${safe}`;
+}
+
+function shortReportCaseId(value, prefix, index) {
+  const id = String(value || '').trim();
+  if (!id) return `${prefix}-${index + 1}`;
+  if (/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(id)) return `${prefix}-${id.slice(0, 8).toUpperCase()}`;
+  return id.length > 18 ? `${id.slice(0, 15)}…` : id;
+}
+
 function threatStatusSelectHtml(t) {
   const statuses = ['Open', 'Needs Info', 'Reviewed', 'Accepted', 'Mitigation Planned', 'Mitigated', 'Verified'];
-  return `<select class="form-select" style="height:30px;font-size:0.76rem;min-width:130px;" onchange="updateThreatStatus('${escHtml(t.threat_id)}', this.value)">
+  return `<select class="form-select report-status-select" aria-label="Review status for ${escHtml(t.threat_category || 'threat')}" onchange="updateThreatStatus('${escHtml(t.threat_id)}', this.value)">
     ${statuses.map(s => `<option value="${s}" ${t.status === s ? 'selected' : ''}>${s}</option>`).join('')}
   </select>`;
 }
@@ -146,25 +317,27 @@ window.updateThreatStatus = async function(threatId, status) {
 function renderControlsTable(controls) {
   const tbody = document.getElementById('controls-tbody');
   if (!controls.length) {
-    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:var(--space-6);color:var(--text-muted);">No controls mapped</td></tr>`;
+    const hidden = !reportSearchQuery && analysisVisibility(currentReport).hidden.controls > 0;
+    tbody.innerHTML = `<tr><td colspan="4"><div class="report-empty">${hidden ? 'Control mappings are hidden by the rejected boundary.' : 'No controls match the current search.'}</div></td></tr>`;
     return;
   }
 
   const statusColor = { Implemented: 'badge-mitigated', Partial: 'badge-medium', Missing: 'badge-critical', Unknown: 'badge-neutral' };
 
-  tbody.innerHTML = controls.map(c => `
-    <tr>
-      <td><div style="font-weight:500;font-size:0.845rem;">${escHtml(c.name)}</div></td>
-      <td style="max-width:300px;"><span style="font-size:0.8rem;color:var(--text-muted);">${escHtml(c.implementation_guidance || c.description || '—')}</span></td>
-      <td style="max-width:280px;">
-        <ul style="margin:0;padding-left:16px;font-size:0.76rem;color:var(--text-muted);">
-          ${(c.checklist_items || []).slice(0, 3).map(item => `<li>${escHtml(item)}</li>`).join('') || '<li>Confirm implementation evidence.</li>'}
-        </ul>
-        ${c.verification_method ? `<div style="font-size:0.72rem;color:var(--green);margin-top:4px;">${escHtml(c.verification_method)}</div>` : ''}
+  tbody.innerHTML = controls.map((c, index) => `
+    <tr id="${reportRowId('control', c.control_id || c.name, index)}">
+      <td data-label="Control">
+        <div class="report-cell-stack"><div class="report-finding-title">${escHtml(c.name || 'Unnamed control')}</div><span class="badge ${statusColor[c.status] || 'badge-neutral'}">${escHtml(c.review_status || c.status || 'Unknown')}</span></div>
       </td>
-      <td><span class="badge ${statusColor[c.status] || 'badge-neutral'}">${escHtml(c.review_status || c.status)}</span></td>
-      <td><span style="font-size:0.78rem;color:var(--text-muted);">${escHtml(c.evidence || '—')}</span></td>
-      <td><span style="font-size:0.82rem;">${escHtml(c.owner || '—')}</span></td>
+      <td data-label="Implementation"><div class="report-cell-value">${escHtml(c.implementation_guidance || c.description || '—')}</div></td>
+      <td data-label="Verification">
+        <ul class="report-checklist">${(c.checklist_items || []).slice(0, 3).map(item => `<li>${escHtml(item)}</li>`).join('') || '<li>Confirm implementation evidence.</li>'}</ul>
+        <details class="report-row-details"><summary>Evidence &amp; verification method</summary><div>
+          <p><strong>Evidence:</strong> ${escHtml(c.evidence || 'Not provided')}</p>
+          <p><strong>Verify with:</strong> ${escHtml(c.verification_method || 'Manual implementation review')}</p>
+        </div></details>
+      </td>
+      <td data-label="Owner"><div class="report-cell-value">${escHtml(c.owner || 'Unassigned')}</div></td>
     </tr>
   `).join('');
 }
@@ -172,23 +345,22 @@ function renderControlsTable(controls) {
 function renderTestsTable(tests) {
   const tbody = document.getElementById('tests-tbody');
   if (!tests.length) {
-    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:var(--space-6);color:var(--text-muted);">No test scenarios</td></tr>`;
+    const hidden = !reportSearchQuery && analysisVisibility(currentReport).hidden.tests > 0;
+    tbody.innerHTML = `<tr><td colspan="4"><div class="report-empty">${hidden ? 'Test cases are hidden by the rejected boundary.' : 'No test cases match the current search.'}</div></td></tr>`;
     return;
   }
 
-  tbody.innerHTML = tests.map(t => `
-    <tr>
-      <td><span class="mono text-xs" style="color:var(--text-faint);">${escHtml(t.test_id || '')}</span></td>
-      <td><div style="font-weight:500;font-size:0.845rem;">${escHtml(t.scenario_name || '')}</div></td>
-      <td style="max-width:220px;">
-        <ol style="padding-left:16px;margin:0;font-size:0.78rem;color:var(--text-muted);">
-          ${(t.steps || []).slice(0, 3).map(s => `<li>${escHtml(s)}</li>`).join('')}
-          ${(t.steps || []).length > 3 ? `<li><em>+${t.steps.length - 3} more…</em></li>` : ''}
-        </ol>
+  tbody.innerHTML = tests.map((t, index) => `
+    <tr id="${reportRowId('test', t.test_id, index)}">
+      <td data-label="Test case">
+        <div class="report-cell-stack"><span class="mono text-xs report-case-id" title="${escHtml(t.test_id || '')}">${escHtml(shortReportCaseId(t.test_id, 'TM', index))}</span><div class="report-finding-title">${escHtml(t.scenario_name || 'Unnamed test scenario')}</div></div>
       </td>
-      <td><span style="font-size:0.8rem;">${escHtml(t.expected_result || '—')}</span></td>
-      <td>${badgeHtml(t.priority, 'risk')}</td>
-      <td><span style="font-size:0.82rem;">${escHtml(t.owner || '—')}</span></td>
+      <td data-label="Steps">
+        <ol class="report-checklist">${(t.steps || []).slice(0, 2).map(step => `<li>${escHtml(step)}</li>`).join('') || '<li>Define executable validation steps.</li>'}</ol>
+        ${(t.steps || []).length > 2 ? `<details class="report-row-details"><summary>Show ${t.steps.length - 2} more steps</summary><div><ol class="report-checklist">${t.steps.slice(2).map(step => `<li>${escHtml(step)}</li>`).join('')}</ol></div></details>` : ''}
+      </td>
+      <td data-label="Expected result"><div class="report-cell-value">${escHtml(t.expected_result || '—')}</div></td>
+      <td data-label="Priority & owner"><div class="report-cell-stack">${badgeHtml(t.priority || 'Unprioritized', 'risk')}<div class="report-cell-value">${escHtml(t.owner || 'Unassigned')}</div></div></td>
     </tr>
   `).join('');
 }
@@ -196,11 +368,12 @@ function renderTestsTable(tests) {
 function renderMissingInfo(items) {
   const el = document.getElementById('missing-info-list');
   if (!items.length) {
-    el.innerHTML = `<div style="padding:var(--space-4);text-align:center;color:var(--text-muted);font-size:0.82rem;">No missing information identified</div>`;
+    const hidden = !reportSearchQuery && analysisVisibility(currentReport).hidden.missingInfo > 0;
+    el.innerHTML = `<div class="report-empty">${hidden ? 'Information gaps are hidden by the rejected boundary.' : 'No information gaps match the current search.'}</div>`;
     return;
   }
-  el.innerHTML = items.map(m => `
-      <div style="border-bottom:1px solid var(--border);padding:var(--space-3) 0;">
+  el.innerHTML = items.map((m, index) => `
+      <div class="report-list-item" id="${reportRowId('gap', m.area, index)}">
       <div style="display:flex;gap:var(--space-2);align-items:center;">
         ${badgeHtml(m.priority || 'Medium', 'risk')}
         <div style="font-weight:600;font-size:0.8rem;color:var(--orange);">${escHtml(m.area)}</div>
@@ -215,11 +388,12 @@ function renderMissingInfo(items) {
 function renderAssumptions(items) {
   const el = document.getElementById('assumptions-list');
   if (!items.length) {
-    el.innerHTML = `<div style="padding:var(--space-4);text-align:center;color:var(--text-muted);font-size:0.82rem;">No assumptions recorded</div>`;
+    const hidden = !reportSearchQuery && analysisVisibility(currentReport).hidden.assumptions > 0;
+    el.innerHTML = `<div class="report-empty">${hidden ? 'Assumptions are hidden by the rejected boundary.' : 'No assumptions match the current search.'}</div>`;
     return;
   }
-  el.innerHTML = items.map(a => `
-    <div style="border-bottom:1px solid var(--border);padding:var(--space-4) 0;">
+  el.innerHTML = items.map((a, index) => `
+    <div class="report-list-item" id="${reportRowId('assumption', a.area, index)}">
       <div style="display:flex;gap:var(--space-3);align-items:flex-start;">
         <div style="flex:1;">
           <div style="display:flex;gap:var(--space-2);align-items:center;margin-bottom:4px;">

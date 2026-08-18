@@ -5,7 +5,7 @@ from typing import List
 from backend.services.ai_service import chat_complete_json, get_active_provider_config
 
 SYSTEM_PROMPT = """You are a security test engineer creating security test scenarios for QA and Security teams.
-Each scenario must be actionable, specific, and executable. Return strict JSON."""
+Each scenario must be actionable, specific, and executable. Return one strict JSON object."""
 
 
 async def generate_test_scenarios(threats: List[dict], project: dict, force_fallback: bool = False) -> List[dict]:
@@ -28,9 +28,10 @@ PROJECT ENVIRONMENT:
 THREATS:
 {threats_summary}
 
-Return a JSON array of test scenarios:
-[
-  {{
+Return one JSON object with a "scenarios" array:
+{{
+  "scenarios": [
+    {{
     "scenario_name": "descriptive test name",
     "preconditions": "test setup requirements",
     "steps": ["step 1", "step 2", "step 3"],
@@ -40,8 +41,9 @@ Return a JSON array of test scenarios:
     "priority": "Critical|High|Medium|Low",
     "owner": "QA|Security|QA/Security",
     "threat_id": "the threat_id this test covers"
-  }}
-]"""
+    }}
+  ]
+}}"""
 
     result = await chat_complete_json(
         system_prompt=SYSTEM_PROMPT,
@@ -49,11 +51,11 @@ Return a JSON array of test scenarios:
         base_url=cfg.get("base_url"),
         api_key=cfg.get("api_key"),
         model=cfg.get("model"),
-        max_tokens=5000,
+        max_tokens=3500,
     )
     scenarios = result if isinstance(result, list) else result.get("scenarios", [])
     if not scenarios:
-        raise ValueError("AI returned empty or invalid test scenarios list")
+        raise ValueError("Analysis engine returned an empty or invalid test-scenario list")
 
     for s in scenarios:
         s["test_id"] = s.get("test_id") or f"TM-{str(uuid.uuid4())[:6].upper()}"
@@ -220,17 +222,19 @@ PROJECT CONTEXT:
 OPEN QUESTIONS FROM THREAT ANALYSIS:
 {open_questions}
 
-Return a JSON array:
-[
-  {{
+Return one JSON object with an "items" array:
+{{
+  "items": [
+    {{
     "area": "area of concern (e.g., Webhook, Authorization, PII, Logging)",
     "question": "specific question to ask the dev/product team",
     "why_it_matters": "security/privacy impact if not clarified",
     "priority": "Critical|High|Medium|Low",
     "target_team": "Dev/Tech Lead|QA|Security|Product/Legal|DevOps",
     "question_to_ask": "ready-to-send concise question"
-  }}
-]
+    }}
+  ]
+}}
 
 Generate 5-8 questions covering the most critical gaps. Phrase questions so they can be pasted directly into Jira, Slack, or a review comment."""
 
@@ -240,10 +244,11 @@ Generate 5-8 questions covering the most critical gaps. Phrase questions so they
         base_url=cfg.get("base_url"),
         api_key=cfg.get("api_key"),
         model=cfg.get("model"),
+        max_tokens=2500,
     )
     items = result if isinstance(result, list) else result.get("items", [])
     if not items:
-        raise ValueError("AI returned empty or invalid missing info list")
+        raise ValueError("Analysis engine returned an empty or invalid evidence-gap list")
 
     for item in items:
         item["missing_id"] = str(uuid.uuid4())

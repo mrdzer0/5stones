@@ -1,11 +1,17 @@
 """Artifact upload and parsing router."""
 from __future__ import annotations
+import hashlib
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from datetime import datetime
 from backend.models.schemas import ArtifactUpload
 from backend.utils.storage import get_project, save_project
 from backend.services.artifact_file_service import allowed_file_policy, read_validated_artifact_file
 from backend.services.parser_service import parse_artifact
+from backend.services.artifact_reconciliation_service import (
+    capture_manual_context,
+    project_client_view,
+    rebuild_project_from_artifacts,
+)
 from backend.services.posture_service import compute_completeness
 from backend.utils.audit import log_event
 
@@ -59,6 +65,84 @@ def clean_and_merge_similar_strings(items: list[str]) -> list[str]:
     return result
 
 
+def _verified_evidence_items(items: list, content: str, filename: str, artifact_type: str) -> list[dict]:
+    """Keep only short snippets that can be found verbatim in the uploaded artifact."""
+    normalized_content = " ".join(str(content or "").split()).lower()
+    verified = []
+    seen = set()
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        snippet = " ".join(str(item.get("snippet") or "").split())[:320]
+        if len(snippet) < 20 or snippet.lower() not in normalized_content:
+            continue
+        key = snippet.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        verified.append({
+            "artifact_type": artifact_type,
+            "filename": filename,
+            "snippet": snippet,
+            "locator": " ".join(str(item.get("locator") or "Artifact content").split())[:160],
+            "topics": [str(topic)[:80] for topic in (item.get("topics") or [])[:8] if topic],
+        })
+    return verified[:12]
+
+
+def _verified_use_cases(items: list, content: str, filename: str, artifact_type: str) -> list[dict]:
+    """Retain only PRD use cases backed by an exact excerpt from the artifact."""
+    normalized_content = " ".join(str(content or "").split()).casefold()
+    allowed_step_types = {"action", "decision", "data_store", "external_system"}
+    verified = []
+    seen = set()
+    def values(value):
+        return value if isinstance(value, list) else ([value] if value else [])
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        name = " ".join(str(item.get("name") or "").split())[:160]
+        actor = " ".join(str(item.get("actor") or "").split())[:120]
+        snippet = " ".join(str(item.get("evidence_snippet") or "").split())[:320]
+        if not name or not actor or len(snippet) < 20 or snippet.casefold() not in normalized_content:
+            continue
+        key = (name.casefold(), actor.casefold())
+        if key in seen:
+            continue
+        steps = []
+        for step in (item.get("steps") or [])[:16]:
+            if not isinstance(step, dict):
+                continue
+            step_type = str(step.get("type") or "action").strip().casefold()
+            label = " ".join(str(step.get("label") or "").split())[:180]
+            if step_type not in allowed_step_types or not label:
+                continue
+            steps.append({
+                "type": step_type,
+                "label": label,
+                "target": " ".join(str(step.get("target") or "").split())[:120],
+                "data": clean_and_merge_similar_strings(values(step.get("data")))[:12],
+            })
+        if not steps:
+            continue
+        seen.add(key)
+        verified.append({
+            "name": name,
+            "actor": actor,
+            "trigger": " ".join(str(item.get("trigger") or "").split())[:240],
+            "preconditions": clean_and_merge_similar_strings(values(item.get("preconditions")))[:12],
+            "steps": steps,
+            "data": clean_and_merge_similar_strings(values(item.get("data")))[:24],
+            "evidence_snippet": snippet,
+            "evidence_locator": " ".join(str(item.get("evidence_locator") or "Artifact content").split())[:160],
+            "filename": filename,
+            "artifact_type": artifact_type,
+            "confidence": "Medium",
+            "status": "Candidate",
+        })
+    return verified[:24]
+
+
 @router.post("/{project_id}/artifact")
 async def upload_artifact(project_id: str, data: ArtifactUpload, upload_meta: dict = None):
     """Upload and parse an artifact for a project."""
@@ -72,55 +156,105 @@ async def upload_artifact(project_id: str, data: ArtifactUpload, upload_meta: di
         "filename": data.filename
     })
 
-    # Parse the artifact
-    parsed = await parse_artifact(data.artifact_type, data.content)
+    content_hash = hashlib.sha256(data.content.encode("utf-8")).hexdigest()
+    filename = data.filename or f"{data.artifact_type}_artifact"
+    existing_sources = [source for source in (project.get("artifact_sources") or []) if isinstance(source, dict)]
+    duplicate = next((
+        source for source in existing_sources
+        if source.get("active", True)
+        and source.get("artifact_type") == data.artifact_type
+        and source.get("content_hash") == content_hash
+    ), None)
+    if duplicate:
+        rebuild_project_from_artifacts(project)
+        completeness = compute_completeness(project)
+        project["completeness_score"] = completeness["score"]
+        project["completeness_level"] = completeness["level"]
+        save_project(project)
+        return {
+            "success": True,
+            "duplicate": True,
+            "message": f"{filename} is already included; no duplicate context was added.",
+            "parsed": duplicate.get("contribution", {}),
+            "project": project_client_view(project),
+            "completeness": completeness,
+            "reconciliation": project.get("artifact_inventory", {}),
+        }
+
+    # Preserve user-entered context before adding the first structured source.
+    capture_manual_context(project, legacy=bool(existing_sources))
+    try:
+        parsed = await parse_artifact(data.artifact_type, data.content)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     parsed["artifact_type"] = data.artifact_type
-    parsed["filename"] = data.filename or f"{data.artifact_type}_artifact"
-    parsed["raw_content"] = data.content[:500]  # truncate for storage
+    parsed["filename"] = filename
+    verified_evidence = _verified_evidence_items(
+        parsed.get("evidence_items", []), data.content, filename, data.artifact_type
+    )
+    parsed["evidence_items"] = verified_evidence
+    parsed["use_cases"] = _verified_use_cases(
+        parsed.get("use_cases", []), data.content, filename, data.artifact_type
+    )
 
-    # Merge extracted entities into project
-    for field in ["actors", "components", "entry_points", "data_involved",
-                  "external_systems", "critical_actions", "existing_controls"]:
-        src_key = {
-            "entry_points": "endpoints",
-            "data_involved": "data_fields",
-            "components": "components",
-        }.get(field, field.replace("_involved", "_fields").replace("entry_points", "endpoints"))
-        extracted = parsed.get(src_key, parsed.get(field.replace("_", "_"), []))
-        existing = project.get(field, [])
-        merged = clean_and_merge_similar_strings(existing + extracted)
-        project[field] = merged
+    artifact_id = f"artifact-{content_hash[:16]}"
+    revision = 1 + max((
+        int(source.get("revision", 1)) for source in existing_sources
+        if source.get("filename") == filename and source.get("artifact_type") == data.artifact_type
+    ), default=0)
+    replaced_count = 0
+    for source in existing_sources:
+        if (
+            source.get("active", True)
+            and source.get("filename") == filename
+            and source.get("artifact_type") == data.artifact_type
+        ):
+            source["active"] = False
+            source["superseded_by"] = artifact_id
+            replaced_count += 1
 
-    # Merge auth_methods if project.auth_method is empty or '-'
-    if parsed.get("auth_methods"):
-        clean_methods = clean_and_merge_similar_strings(parsed["auth_methods"])
-        if clean_methods and (not project.get("auth_method") or project.get("auth_method").strip() in ("", "-", "Unknown")):
-            project["auth_method"] = ", ".join(clean_methods)
-
-    project["has_pii"] = parsed.get("has_pii", project.get("has_pii", False))
-    project["artifact_summary"] = parsed.get("summary", "")
-    project["extracted_data_flows"] = parsed.get("data_flows", [])
-
-    # Track artifacts
-    artifacts = project.get("artifacts", [])
-    artifacts.append(parsed.get("filename", data.artifact_type))
-    project["artifacts"] = artifacts
-    artifact_sources = project.get("artifact_sources", [])
-    artifact_sources.append({
+    contribution_keys = {
+        "actors", "components", "data_flows", "endpoints", "data_fields", "external_systems",
+        "auth_methods", "critical_actions", "existing_controls", "has_pii", "summary",
+        "operations", "use_cases", "warnings", "stats", "parser",
+    }
+    contribution = {key: parsed.get(key) for key in contribution_keys if key in parsed}
+    existing_sources.append({
+        "artifact_id": artifact_id,
         "artifact_type": data.artifact_type,
-        "filename": parsed.get("filename", data.artifact_type),
+        "filename": filename,
+        "content_hash": content_hash,
+        "revision": revision,
+        "active": True,
         "source_kind": "file_upload" if upload_meta else "api_payload",
         "size_bytes": (upload_meta or {}).get("size_bytes"),
         "truncated": (upload_meta or {}).get("truncated", False),
+        "structured": (upload_meta or {}).get("structured", data.artifact_type in {"openapi", "postman"}),
+        "parser": parsed.get("parser", {}),
+        "stats": parsed.get("stats", {}),
+        "warnings": parsed.get("warnings", []),
+        "evidence_items": verified_evidence,
+        "contribution": contribution,
         "parsed_at": datetime.utcnow().isoformat(),
     })
-    project["artifact_sources"] = artifact_sources
+    project["artifact_sources"] = existing_sources
+    rebuild_project_from_artifacts(project)
     completeness = compute_completeness(project)
     project["completeness_score"] = completeness["score"]
     project["completeness_level"] = completeness["level"]
 
     save_project(project)
-    return {"success": True, "parsed": parsed, "project": project, "completeness": completeness}
+    return {
+        "success": True,
+        "duplicate": False,
+        "message": f"{filename} parsed and reconciled successfully.",
+        "parsed": parsed,
+        "project": project_client_view(project),
+        "completeness": completeness,
+        "reconciliation": project.get("artifact_inventory", {}),
+        "conflicts": project.get("artifact_conflicts", []),
+        "replaced_revisions": replaced_count,
+    }
 
 
 @router.post("/{project_id}/artifact/file")
@@ -145,6 +279,7 @@ async def upload_artifact_file(
         "filename": extracted["filename"],
         "size_bytes": extracted["size_bytes"],
         "truncated": extracted["truncated"],
+        "structured": extracted.get("structured", False),
     }
     result = await upload_artifact(project_id, payload, upload_meta=upload_meta)
     result["upload"] = upload_meta

@@ -42,7 +42,7 @@
         </a></li>
       </ul>
     </div>
-    <div class="sidebar-footer">5STONES v1.0 · AI Threat Modeling</div>
+    <div class="sidebar-footer">5STONES v1.0 · Structured Threat Modeling</div>
   </aside>
 
   <!-- Main -->
@@ -136,11 +136,11 @@
               </div>
 
               <div class="form-group">
-                <label class="form-label">Entry Points <span class="required">*</span></label>
+                <label class="form-label">Entry Points</label>
                 <div class="tags-input-wrap" id="entry-points-wrap">
                   <input type="text" class="tags-input" id="entry-points-input" placeholder="e.g. Web App, Mobile API, Webhook, Admin Panel…" />
                 </div>
-                <div class="form-hint">How do actors access the system?</div>
+                <div class="form-hint">How do actors access the system? Optional when an API artifact will provide the operations.</div>
               </div>
 
               <div class="form-group">
@@ -163,11 +163,11 @@
               <p class="text-muted text-sm" style="margin-bottom:var(--space-6);">What data is processed and which external systems are involved.</p>
 
               <div class="form-group">
-                <label class="form-label">Data Involved <span class="required">*</span></label>
+                <label class="form-label">Data Involved</label>
                 <div class="tags-input-wrap" id="data-involved-wrap">
                   <input type="text" class="tags-input" id="data-involved-input" placeholder="e.g. customer_id, phone, amount, transaction_id, PII…" />
                 </div>
-                <div class="form-hint">List all data fields that flow through this feature, especially PII or financial data.</div>
+                <div class="form-hint">List known sensitive fields. OpenAPI/Postman uploads can add structured request and response fields later.</div>
               </div>
 
               <div class="form-group">
@@ -189,7 +189,7 @@
             <!-- Step 4: Artifact Upload -->
             <div class="wizard-body" id="step-4" style="display:none;">
               <h2 style="margin-bottom:var(--space-2);">Artifact (Optional)</h2>
-              <p class="text-muted text-sm" style="margin-bottom:var(--space-6);">Paste or upload an artifact to give the AI more context. This greatly improves analysis quality.</p>
+              <p class="text-muted text-sm" style="margin-bottom:var(--space-6);">Start with one artifact. You can add more on the Analysis page; OpenAPI and Postman sources will be reconciled automatically.</p>
 
               <div class="form-group">
                 <label class="form-label" for="artifact-type">Artifact Type</label>
@@ -208,13 +208,16 @@
 
               <div class="form-group" id="artifact-file-group" style="display:none;">
                 <label class="form-label" for="artifact-file">Upload Artifact File</label>
-                <input id="artifact-file" type="file" class="form-input" />
+                <input id="artifact-file" type="file" class="form-input" aria-describedby="artifact-file-hint artifact-file-status" />
                 <div class="form-hint" id="artifact-file-hint">Max 5 MB. Allowed formats depend on artifact type.</div>
+                <div class="artifact-file-selection" id="artifact-file-status" role="status" aria-live="polite">Choose a file to inspect before creating the project.</div>
               </div>
+
+              <div class="artifact-import-result" id="project-artifact-result" role="status" aria-live="polite"></div>
 
               <div class="alert alert-info" style="margin-top:var(--space-4);">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-                <div>Even without an artifact, the AI will generate threats based on your manual inputs. Artifacts significantly improve confidence and reduce missing information.</div>
+                <div>Without an artifact, the system can still evaluate your manual inputs against the selected threat frameworks. Supporting evidence improves confidence and reduces unresolved assumptions.</div>
               </div>
             </div>
 
@@ -239,6 +242,7 @@
   </main>
 </div>
 
+<script src="/static/js/sidebar.js"></script>
 <script src="/static/js/api.js"></script>
 <script src="/static/js/project.js"></script>
 </body>

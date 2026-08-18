@@ -1,3 +1,15 @@
 .venv
 .env
 PRD.md
+.playwright-mcp
+tests
+backend/data/projects/
+backend/data/reports
+backend/data/audit.log
+backend/data/settings.json
+__pycache__/
+*.py[cod]
+*.log
+.DS_Store
+.env.*
+!.env.example

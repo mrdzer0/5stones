@@ -3,10 +3,16 @@ from __future__ import annotations
 import uuid
 from typing import List
 from backend.services.ai_service import chat_complete_json, get_active_provider_config
+from backend.services.posture_service import build_evidence_context
 
 LINDDUN_SYSTEM_PROMPT = """You are a privacy engineer performing LINDDUN privacy threat modeling.
-Focus on PII, personal data, user tracking, data sharing, and compliance risks.
-Return strict JSON. Be specific and actionable."""
+Evaluate direct PII and indirect privacy signals such as identifiers, geolocation, images,
+behavioral data, inferred attributes, public-data aggregation, external processors, user
+awareness, retention, and re-identification. A project can have privacy threats even when
+its has_pii flag is false.
+Only cite evidence IDs provided in the evidence catalog. Never invent evidence, quotes,
+source names, or IDs. Leave evidence_refs empty when a finding is framework inference.
+Return one strict JSON object. Be specific and actionable."""
 
 LINDDUN_CATEGORIES = [
     "Linkability",
@@ -27,6 +33,7 @@ async def generate_linddun_threats(project: dict, trust_boundaries: List[dict], 
     cfg = get_active_provider_config()
 
     context = _build_privacy_context(project)
+    evidence_context = build_evidence_context(project)
     boundaries_text = "\n".join([
         f"- {b.get('source')} → {b.get('destination')}: {b.get('boundary_label')}"
         for b in trust_boundaries[:8]
@@ -40,10 +47,17 @@ PROJECT CONTEXT:
 TRUST BOUNDARIES:
 {boundaries_text}
 
-Generate 5-10 specific LINDDUN privacy threats. Focus on PII handling, data sharing, user tracking, and compliance.
-Return a JSON array:
-[
-  {{
+EVIDENCE CATALOG:
+{evidence_context}
+
+Generate 5-8 specific LINDDUN privacy threats. Do not treat has_pii=false as proof that no
+privacy risk exists. Evaluate location and image metadata, linkability across records,
+third-party model processing, inferred content, public API aggregation, retention, user
+awareness, and compliance where relevant.
+Return one JSON object with a "threats" array:
+{{
+  "threats": [
+    {{
     "framework": "LINDDUN",
     "threat_category": "Linkability|Identifiability|Non-repudiation|Detectability|Disclosure of Information|Unawareness|Non-compliance",
     "component": "affected component",
@@ -55,13 +69,15 @@ Return a JSON array:
     "threat_description": "specific privacy threat description",
     "abuse_case": "how this privacy risk materializes",
     "recommended_control": "privacy control recommendation",
+    "evidence_refs": ["one or more exact EV-... IDs from the catalog, or an empty array"],
     "assumption": "assumption made",
     "missing_info": "clarification needed",
     "confidence": "High|Medium|Low",
     "risk_level": "Critical|High|Medium|Low",
     "owner": "Backend|Product|Legal|DevOps"
-  }}
-]"""
+    }}
+  ]
+}}"""
 
     result = await chat_complete_json(
         system_prompt=LINDDUN_SYSTEM_PROMPT,
@@ -69,11 +85,11 @@ Return a JSON array:
         base_url=cfg.get("base_url"),
         api_key=cfg.get("api_key"),
         model=cfg.get("model"),
-        max_tokens=4096,
+        max_tokens=3000,
     )
     threats = result if isinstance(result, list) else result.get("threats", [])
     if not threats:
-        raise ValueError("AI returned empty or invalid threats list")
+        raise ValueError("Analysis engine returned an empty or invalid LINDDUN threat list")
 
     for t in threats:
         t["threat_id"] = t.get("threat_id") or str(uuid.uuid4())
@@ -92,6 +108,9 @@ Data Involved: {', '.join(project.get('data_involved', []))}
 External Systems: {', '.join(project.get('external_systems', []))}
 Critical Actions: {', '.join(project.get('critical_actions', []))}
 Existing Controls: {', '.join(project.get('existing_controls', []))}
+Components: {', '.join(project.get('components', []))}
+Entry Points: {', '.join(project.get('entry_points', []))}
+Artifact Summary: {project.get('artifact_summary', 'N/A')}
 Has PII: {project.get('has_pii', True)}"""
 
 

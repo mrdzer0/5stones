@@ -53,6 +53,7 @@ const API = {
     stride:  (id)        => apiFetch(`/api/projects/${id}/analyze/stride`, { method: 'POST' }),
     linddun: (id)        => apiFetch(`/api/projects/${id}/analyze/linddun`, { method: 'POST' }),
     report:  (id)        => apiFetch(`/api/projects/${id}/report`),
+    updateTrustBoundary: (projectId, boundaryId, data) => apiFetch(`/api/projects/${projectId}/trust-boundaries/${boundaryId}`, { method: 'PATCH', body: JSON.stringify(data) }),
     updateThreat: (projectId, threatId, data) => apiFetch(`/api/projects/${projectId}/threats/${threatId}`, { method: 'PATCH', body: JSON.stringify(data) }),
     updateControl: (projectId, controlId, data) => apiFetch(`/api/projects/${projectId}/controls/${controlId}`, { method: 'PATCH', body: JSON.stringify(data) }),
   },
@@ -95,6 +96,65 @@ function goToReport(projectId) {
   window.location.href = `/report.html?id=${projectId}`;
 }
 
+// ── Reversible boundary-driven visibility ───────────────────────────────────
+function analysisVisibility(report = {}) {
+  const boundaries = (report.trust_boundaries || []).filter(item => item?.boundary_id);
+  const activeBoundaryIds = new Set(
+    boundaries.filter(item => item.status !== 'Rejected').map(item => String(item.boundary_id))
+  );
+  const allRejected = boundaries.length > 0 && activeBoundaryIds.size === 0;
+
+  const inferredBoundaryIds = threat => {
+    const explicit = (threat?.trust_boundary_ids || []).map(String).filter(Boolean);
+    if (explicit.length) return explicit;
+    if (boundaries.length === 1) return [String(boundaries[0].boundary_id)];
+    const text = [threat?.trust_boundary, threat?.source, threat?.destination]
+      .filter(Boolean).join(' ').toLowerCase();
+    return boundaries.filter(boundary => {
+      const source = String(boundary.source || '').toLowerCase();
+      const destination = String(boundary.destination || '').toLowerCase();
+      const label = String(boundary.boundary_label || '').toLowerCase();
+      return (source && destination && text.includes(source) && text.includes(destination))
+        || (label && text.includes(label));
+    }).map(boundary => String(boundary.boundary_id));
+  };
+
+  const threats = (report.threats || []).filter(threat => {
+    if (!boundaries.length) return true;
+    if (allRejected) return false;
+    const linked = inferredBoundaryIds(threat);
+    return !linked.length || linked.some(id => activeBoundaryIds.has(id));
+  });
+  const visibleThreatIds = new Set(threats.map(item => String(item.threat_id || '')).filter(Boolean));
+  const linkedItemVisible = ids => {
+    const links = (ids || []).map(String).filter(Boolean);
+    if (allRejected) return false;
+    return !links.length || links.some(id => visibleThreatIds.has(id));
+  };
+  const controls = (report.controls || []).filter(item => linkedItemVisible(item.threat_ids));
+  const tests = (report.test_scenarios || []).filter(item => linkedItemVisible([item.threat_id]));
+  const assumptions = (report.assumptions || []).filter(item => linkedItemVisible([item.related_threat_id]));
+  const missingInfo = allRejected ? [] : (report.missing_info || []);
+
+  return {
+    boundaries,
+    activeBoundaryIds,
+    allRejected,
+    threats,
+    controls,
+    tests,
+    assumptions,
+    missingInfo,
+    hidden: {
+      threats: (report.threats || []).length - threats.length,
+      controls: (report.controls || []).length - controls.length,
+      tests: (report.test_scenarios || []).length - tests.length,
+      assumptions: (report.assumptions || []).length - assumptions.length,
+      missingInfo: (report.missing_info || []).length - missingInfo.length,
+    },
+  };
+}
+
 // ── UI helpers ────────────────────────────────────────────────────────────────
 function badgeHtml(value, type) {
   const classes = {
@@ -120,6 +180,71 @@ function confidenceDots(level) {
   return `<div class="confidence-dots">${[1,2,3].map(i =>
     `<div class="confidence-dot ${i <= n ? cls : ''}"></div>`
   ).join('')}</div>`;
+}
+
+function evidencePresentation(threat) {
+  const type = ['direct', 'context', 'inference'].includes(threat?.evidence_type)
+    ? threat.evidence_type
+    : 'inference';
+  const meta = {
+    direct: {
+      label: 'Direct evidence',
+      note: 'Verified excerpt from an uploaded artifact',
+      className: 'evidence-direct',
+    },
+    context: {
+      label: 'Context signal',
+      note: 'Relevant project context; implementation is not yet verified',
+      className: 'evidence-context',
+    },
+    inference: {
+      label: 'Framework inference',
+      note: 'Analysis hypothesis that requires validation',
+      className: 'evidence-inference',
+    },
+  }[type];
+  return {
+    ...meta,
+    type,
+    source: threat?.evidence_source || (type === 'inference' ? 'Framework analysis' : 'Project context'),
+    locator: threat?.evidence_locator || '',
+    snippet: threat?.evidence_snippet || 'No supporting signal was captured for this finding.',
+    supporting: Array.isArray(threat?.evidence) ? threat.evidence.filter(Boolean).slice(0, 3) : [],
+  };
+}
+
+function evidenceBadgeHtml(threat) {
+  const evidence = evidencePresentation(threat);
+  return `<span class="evidence-kind ${evidence.className}" title="${escHtml(evidence.note)}">${escHtml(evidence.label)}</span>`;
+}
+
+function evidenceCardHtml(threat) {
+  const evidence = evidencePresentation(threat);
+  const supporting = evidence.supporting.filter(item => !String(item).includes(evidence.snippet));
+  return `
+    <div class="evidence-panel ${evidence.className}">
+      <div class="evidence-panel-head">
+        ${evidenceBadgeHtml(threat)}
+        <span class="evidence-panel-source">${escHtml(evidence.source)}${evidence.locator ? ` · ${escHtml(evidence.locator)}` : ''}</span>
+      </div>
+      <div class="evidence-panel-snippet">${escHtml(evidence.snippet)}</div>
+      <div class="evidence-panel-note">${escHtml(evidence.note)}</div>
+      ${supporting.length ? `
+        <details class="evidence-supporting">
+          <summary>${supporting.length} additional signal${supporting.length > 1 ? 's' : ''}</summary>
+          <ul>${supporting.map(item => `<li>${escHtml(item)}</li>`).join('')}</ul>
+        </details>` : ''}
+    </div>`;
+}
+
+function evidenceCompactHtml(threat) {
+  const evidence = evidencePresentation(threat);
+  return `
+    <div class="evidence-compact">
+      <div class="evidence-compact-head">${evidenceBadgeHtml(threat)}<span>${escHtml(evidence.source)}</span></div>
+      <div class="evidence-compact-text">${escHtml(evidence.snippet)}</div>
+      ${evidence.locator ? `<div class="evidence-compact-locator">${escHtml(evidence.locator)}</div>` : ''}
+    </div>`;
 }
 
 function escHtml(str) {

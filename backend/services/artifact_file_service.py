@@ -54,16 +54,22 @@ async def read_validated_artifact_file(artifact_type: str, file: UploadFile) -> 
     content = await _read_limited(file)
     _reject_empty(content)
 
-    text = _extract_text(suffix, content)
-    text = _clean_text(text)
+    # OpenAPI and Postman must retain their complete structure. Pretty-printing,
+    # whitespace collapsing, or character truncation can corrupt YAML and JSON.
+    structured_api_artifact = artifact_type in {"openapi", "postman"}
+    if structured_api_artifact:
+        text = _decode_text(content)
+    else:
+        text = _clean_text(_extract_text(suffix, content))
     if not text:
         raise HTTPException(status_code=422, detail="Could not extract readable text from the uploaded artifact")
 
     return {
         "filename": filename,
-        "content": text[:MAX_EXTRACTED_CHARS],
+        "content": text if structured_api_artifact else text[:MAX_EXTRACTED_CHARS],
         "size_bytes": len(content),
-        "truncated": len(text) > MAX_EXTRACTED_CHARS,
+        "truncated": False if structured_api_artifact else len(text) > MAX_EXTRACTED_CHARS,
+        "structured": structured_api_artifact,
     }
 
 

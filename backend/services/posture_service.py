@@ -1,9 +1,27 @@
 """Posture helpers for evidence, dedupe, review workflow, and readiness scoring."""
 from __future__ import annotations
 import hashlib
+import re
 import uuid
 from datetime import datetime
 from typing import Iterable
+
+
+EVIDENCE_TYPES = {"direct", "context", "inference"}
+_EVIDENCE_STOPWORDS = {
+    "about", "after", "against", "also", "from", "into", "through", "using", "with",
+    "data", "system", "service", "application", "component", "project", "threat", "user",
+    "yang", "dari", "dengan", "untuk", "pada", "dalam", "atau", "dan", "the", "this",
+}
+_PROJECT_SIGNAL_FIELDS = (
+    ("components", "Components", "Documented component"),
+    ("entry_points", "Entry points", "Documented entry point"),
+    ("data_involved", "Data involved", "Documented data"),
+    ("external_systems", "External systems", "Documented external system"),
+    ("actors", "Actors", "Documented actor"),
+    ("critical_actions", "Critical actions", "Documented critical action"),
+    ("existing_controls", "Existing controls", "Documented control"),
+)
 
 
 REQUIRED_CONTEXT = [
@@ -154,7 +172,7 @@ def _artifact_readiness_score(project: dict, weight: int) -> tuple[int, dict]:
 def _artifact_count(project: dict) -> int:
     sources = project.get("artifact_sources")
     if isinstance(sources, list) and sources:
-        return len(sources)
+        return sum(1 for source in sources if not isinstance(source, dict) or source.get("active", True))
     artifacts = project.get("artifacts")
     if isinstance(artifacts, list):
         return len(artifacts)
@@ -164,7 +182,7 @@ def _artifact_count(project: dict) -> int:
 def _artifact_types(project: dict) -> set[str]:
     types = set()
     for source in project.get("artifact_sources", []) or []:
-        if isinstance(source, dict) and source.get("artifact_type"):
+        if isinstance(source, dict) and source.get("active", True) and source.get("artifact_type"):
             types.add(source["artifact_type"])
     return types
 
@@ -185,22 +203,129 @@ def threat_fingerprint(threat: dict) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
+def build_project_evidence_catalog(project: dict) -> list[dict]:
+    """Build a bounded catalog of evidence and context signals that findings may cite."""
+    candidates = []
+    seen = set()
+
+    def add(evidence_type: str, source: str, locator: str, snippet: str, topics=None, metadata=None):
+        clean_snippet = " ".join(str(snippet or "").split())[:360]
+        if not clean_snippet:
+            return
+        key = (evidence_type, source, locator, clean_snippet.lower())
+        if key in seen:
+            return
+        seen.add(key)
+        digest = hashlib.sha256("|".join(map(str, key)).encode("utf-8")).hexdigest()[:8].upper()
+        candidate = {
+            "evidence_id": f"EV-{digest}",
+            "evidence_type": evidence_type,
+            "source": source,
+            "locator": locator,
+            "snippet": clean_snippet,
+            "topics": [str(topic)[:80] for topic in (topics or []) if topic],
+        }
+        candidate.update(metadata or {})
+        candidates.append(candidate)
+
+    # Only snippets verified during upload are treated as direct artifact evidence.
+    for item in project.get("artifact_evidence", []) or []:
+        if not isinstance(item, dict):
+            continue
+        filename = item.get("filename") or item.get("artifact_type") or "Uploaded artifact"
+        add("direct", filename, item.get("locator") or "Artifact content", item.get("snippet"), item.get("topics"))
+
+    for source in project.get("artifact_sources", []) or []:
+        if not isinstance(source, dict) or not source.get("active", True):
+            continue
+        filename = source.get("filename") or source.get("artifact_type") or "Uploaded artifact"
+        for item in source.get("evidence_items", []) or []:
+            if isinstance(item, dict):
+                add("direct", filename, item.get("locator") or "Artifact content", item.get("snippet"), item.get("topics"))
+
+    for field, label, prefix in _PROJECT_SIGNAL_FIELDS:
+        for value in project.get(field, []) or []:
+            add("context", "Project context", label, f"{prefix}: {value}", [value, label])
+
+    auth_method = project.get("auth_method")
+    if auth_method and str(auth_method).strip() not in {"-", "Unknown"}:
+        add("context", "Project context", "Authentication", f"Documented authentication: {auth_method}", [auth_method])
+
+    for flow in project.get("extracted_data_flows", []) or []:
+        if not isinstance(flow, dict):
+            continue
+        source = flow.get("source") or "Unknown source"
+        destination = flow.get("destination") or "Unknown destination"
+        flow_data = ", ".join(map(str, flow.get("data", []) or []))
+        protocol = flow.get("protocol") or "unspecified protocol"
+        evidence_type = str(flow.get("evidence_type") or "derived").lower()
+        flow_label = "Documented flow" if evidence_type == "direct" else "Derived flow candidate"
+        snippet = f"{flow_label}: {source} → {destination} via {protocol}"
+        if flow_data:
+            snippet += f" carrying {flow_data}"
+        add(
+            "context", "Project context", "Extracted data flow", snippet,
+            [source, destination, flow_data],
+            {"flow_source": source, "flow_destination": destination},
+        )
+
+    artifact_summary = project.get("artifact_summary")
+    if artifact_summary:
+        source_name = _primary_artifact_name(project)
+        add("context", source_name, "Artifact summary", artifact_summary, [project.get("name")])
+
+    description = project.get("description")
+    if description:
+        add("context", "Project intake", "Description", f"Project description: {description}", [description])
+
+    return candidates
+
+
+def build_evidence_context(project: dict, limit: int = 28) -> str:
+    """Format the evidence catalog for an analysis prompt without exposing raw artifacts."""
+    catalog = build_project_evidence_catalog(project)[:limit]
+    if not catalog:
+        return "No direct evidence or structured context is available. Use assumptions and cite no evidence IDs."
+    return "\n".join(
+        f"[{item['evidence_id']}] {item['evidence_type'].upper()} · {item['source']} · "
+        f"{item['locator']}: {item['snippet']}"
+        for item in catalog
+    )
+
+
 def enrich_threats(threats: Iterable[dict], project: dict, source: str) -> list:
     enriched = []
-    evidence_source, snippet = _evidence_from_project(project)
+    catalog = build_project_evidence_catalog(project)
 
     for threat in threats:
         t = dict(threat)
         t["fingerprint"] = t.get("fingerprint") or threat_fingerprint(t)
-        t["evidence_source"] = t.get("evidence_source") or evidence_source
-        t["evidence_snippet"] = t.get("evidence_snippet") or snippet
-        t["evidence"] = t.get("evidence") or _evidence_list(project, t, source)
-        t["confidence_reason"] = t.get("confidence_reason") or _confidence_reason(t, project)
+        selected, supporting = _select_threat_evidence(t, catalog, source)
+        t["evidence_type"] = selected["evidence_type"]
+        t["evidence_source"] = selected["source"]
+        t["evidence_locator"] = selected["locator"]
+        t["evidence_snippet"] = selected["snippet"]
+        t["evidence_refs"] = [item["evidence_id"] for item in supporting if item.get("evidence_id")]
+        t["evidence"] = [_format_evidence_signal(item) for item in supporting]
+        t["confidence_reason"] = _confidence_reason(t, selected)
         t["needs_human_review"] = t.get("needs_human_review", _needs_review(t))
         t["status"] = t.get("status") or ("Needs Info" if t["needs_human_review"] else "Open")
         enriched.append(t)
 
     return enriched
+
+
+def normalize_report_evidence(report: dict, project: dict) -> dict:
+    """Upgrade legacy generic evidence at read time while preserving reviewed findings."""
+    threats = []
+    for threat in report.get("threats", []) or []:
+        if _needs_evidence_upgrade(threat, project):
+            upgraded = enrich_threats([threat], project, threat.get("framework") or "framework")
+            threats.append(upgraded[0])
+        else:
+            threats.append(threat)
+    report["threats"] = threats
+    return report
 
 
 def merge_deduped_threats(existing: list, incoming: list) -> tuple[list, int]:
@@ -343,32 +468,138 @@ def _unique(values: Iterable[str | None]) -> list:
     return seen
 
 
-def _evidence_from_project(project: dict) -> tuple[str, str]:
-    if project.get("artifact_summary"):
-        return "artifact", str(project.get("artifact_summary", ""))[:420]
-    if project.get("artifacts"):
-        return "artifact", "Project includes uploaded artifacts, but no detailed summary was stored."
-    return "manual_intake", str(project.get("description", "Manual project intake"))[:420]
+def _primary_artifact_name(project: dict) -> str:
+    sources = [
+        source for source in (project.get("artifact_sources", []) or [])
+        if isinstance(source, dict) and source.get("active", True)
+    ]
+    if sources and isinstance(sources[-1], dict):
+        return sources[-1].get("filename") or sources[-1].get("artifact_type") or "Uploaded artifact"
+    artifacts = project.get("artifacts", []) or []
+    return str(artifacts[-1]) if artifacts else "Uploaded artifact"
 
 
-def _evidence_list(project: dict, threat: dict, source: str) -> list:
-    evidence = [f"Generated from {source} analysis"]
-    if project.get("entry_points"):
-        evidence.append("Entry points: " + ", ".join(project.get("entry_points", [])[:4]))
-    if project.get("data_involved"):
-        evidence.append("Data involved: " + ", ".join(project.get("data_involved", [])[:4]))
-    if threat.get("trust_boundary"):
-        evidence.append("Trust boundary: " + threat["trust_boundary"])
-    return evidence
+def _tokenize_evidence(value: str) -> set[str]:
+    return {
+        token for token in re.findall(r"[a-z0-9_./-]+", str(value or "").lower())
+        if len(token) >= 3 and token not in _EVIDENCE_STOPWORDS
+    }
 
 
-def _confidence_reason(threat: dict, project: dict) -> str:
+def _threat_evidence_text(threat: dict) -> str:
+    fields = (
+        "threat_category", "component", "source", "destination", "asset",
+        "trust_boundary", "threat_description", "abuse_case", "recommended_control",
+    )
+    return " ".join(str(threat.get(field) or "") for field in fields)
+
+
+def _candidate_score(candidate: dict, threat: dict, requested_refs: set[str]) -> int:
+    threat_text = _threat_evidence_text(threat).lower()
+    candidate_text = " ".join([
+        candidate.get("snippet", ""), candidate.get("locator", ""),
+        " ".join(candidate.get("topics", [])),
+    ]).lower()
+    overlap = _tokenize_evidence(threat_text) & _tokenize_evidence(candidate_text)
+    score = len(overlap) * 3
+    if candidate.get("evidence_type") == "direct":
+        score += 1
+    if candidate.get("locator") == "Extracted data flow":
+        score += 2
+    if candidate.get("locator") == "Artifact summary":
+        score -= 4
+    if candidate.get("evidence_id") in requested_refs:
+        score += 7
+    field_weights = {"component": 6, "asset": 5}
+    for field, weight in field_weights.items():
+        value = str(threat.get(field) or "").lower().strip()
+        if len(value) >= 3 and (value in candidate_text or candidate_text in value):
+            score += weight
+    flow_source = str(candidate.get("flow_source") or "").lower().strip()
+    flow_destination = str(candidate.get("flow_destination") or "").lower().strip()
+    threat_source = str(threat.get("source") or "").lower().strip()
+    threat_destination = str(threat.get("destination") or "").lower().strip()
+    if flow_source or flow_destination:
+        source_matches = _text_matches(threat_source, flow_source)
+        destination_matches = _text_matches(threat_destination, flow_destination)
+        reverse_source = _text_matches(threat_source, flow_destination)
+        reverse_destination = _text_matches(threat_destination, flow_source)
+        if source_matches:
+            score += 10
+        if destination_matches:
+            score += 14
+        if reverse_source and reverse_destination:
+            score -= 14
+    else:
+        if threat_source and threat_source in candidate_text:
+            score += 5
+        if threat_destination and threat_destination in candidate_text:
+            score += 7
+    return score
+
+
+def _text_matches(left: str, right: str) -> bool:
+    if len(left) < 3 or len(right) < 3:
+        return False
+    return left in right or right in left
+
+
+def _select_threat_evidence(threat: dict, catalog: list[dict], framework: str) -> tuple[dict, list[dict]]:
+    requested_refs = {
+        str(ref) for ref in (threat.get("evidence_refs") or [])
+        if isinstance(ref, (str, int))
+    }
+    ranked = sorted(
+        ((max(0, _candidate_score(item, threat, requested_refs)), item) for item in catalog),
+        key=lambda pair: (pair[0], pair[1].get("evidence_type") == "direct"),
+        reverse=True,
+    )
+    relevant = [item for score, item in ranked if score >= 3][:3]
+    if relevant:
+        return relevant[0], relevant
+
+    component = threat.get("component") or threat.get("destination") or "the affected component"
+    category = threat.get("threat_category") or "threat pattern"
+    boundary = threat.get("trust_boundary")
+    detail = f"Framework inference: {category} pattern applied to {component}"
+    if boundary:
+        detail += f" across {boundary}"
+    inferred = {
+        "evidence_id": None,
+        "evidence_type": "inference",
+        "source": f"{framework} framework analysis",
+        "locator": category,
+        "snippet": detail + ".",
+        "topics": [],
+    }
+    return inferred, [inferred]
+
+
+def _format_evidence_signal(item: dict) -> str:
+    return f"{item.get('source')} · {item.get('locator')}: {item.get('snippet')}"
+
+
+def _needs_evidence_upgrade(threat: dict, project: dict) -> bool:
+    evidence_type = threat.get("evidence_type")
+    if evidence_type not in EVIDENCE_TYPES:
+        return True
+    source = str(threat.get("evidence_source") or "").lower()
+    if source in {"artifact", "manual_intake"}:
+        return True
+    summary = " ".join(str(project.get("artifact_summary") or "").split())
+    snippet = " ".join(str(threat.get("evidence_snippet") or "").split())
+    return bool(summary and snippet and (snippet == summary or snippet == summary[:420]))
+
+
+def _confidence_reason(threat: dict, evidence: dict) -> str:
     confidence = threat.get("confidence", "Medium")
-    if confidence == "High":
-        return "High confidence because the threat maps to explicit project context or artifact evidence."
-    if project.get("artifact_summary"):
-        return "Medium confidence because artifact evidence exists, but implementation details still need review."
-    return "Lower confidence because this is inferred from incomplete manual intake and common threat patterns."
+    evidence_type = evidence.get("evidence_type")
+    locator = evidence.get("locator") or "available context"
+    if evidence_type == "direct":
+        return f"{confidence} confidence: supported by a direct artifact excerpt at {locator}; implementation still requires review."
+    if evidence_type == "context":
+        return f"{confidence} confidence: supported by the project context at {locator}, not yet by implementation evidence."
+    return f"{confidence} confidence: inferred from the {threat.get('threat_category', 'framework')} pattern; validate with implementation evidence."
 
 
 def _needs_review(threat: dict) -> bool:

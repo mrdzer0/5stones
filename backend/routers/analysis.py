@@ -3,7 +3,14 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from backend.utils.storage import get_project, save_project, save_report, get_report
 from backend.utils.audit import log_event
-from backend.services.trust_boundary_service import detect_trust_boundaries
+from backend.services.trust_boundary_service import (
+    TRUST_BOUNDARY_REVIEW_STATUSES,
+    active_trust_boundaries,
+    apply_boundary_reviews,
+    attach_target_refs,
+    build_trust_model,
+    propagate_target_refs,
+)
 from backend.services.stride_service import generate_stride_threats
 from backend.services.linddun_service import generate_linddun_threats
 from backend.services.control_service import map_controls
@@ -19,12 +26,53 @@ from backend.services.posture_service import (
     enrich_assumptions,
     enrich_threats,
     merge_deduped_threats,
+    normalize_report_evidence,
     update_item_by_id,
 )
 import uuid
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 
 router = APIRouter(prefix="/api/projects", tags=["analysis"])
+
+BOUNDARY_DOWNSTREAM_STAGES = ["stride", "linddun", "controls", "tests", "missing_info", "assumptions"]
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _active_topology_signature(boundaries: list[dict] | None) -> tuple[str, ...]:
+    return tuple(sorted(
+        f"{boundary.get('model_fingerprint', '')}:{boundary.get('status', 'Candidate')}"
+        for boundary in active_trust_boundaries(boundaries)
+    ))
+
+
+def _mark_analysis_stale(report: dict, stages: list[str], reason: str):
+    current = report.get("analysis_stale") if isinstance(report.get("analysis_stale"), dict) else {}
+    report["analysis_stale"] = {
+        "stages": sorted(set([*(current.get("stages") or []), *stages])),
+        "reason": reason,
+        "changed_at": _utc_now(),
+    }
+
+
+def _clear_completed_stale_stages(report: dict, completed: list[str]):
+    stale = report.get("analysis_stale")
+    if not isinstance(stale, dict):
+        return
+    remaining = [stage for stage in (stale.get("stages") or []) if stage not in completed]
+    if remaining:
+        stale["stages"] = remaining
+    else:
+        report.pop("analysis_stale", None)
+
+
+def _clear_review_visibility_stale(report: dict):
+    stale = report.get("analysis_stale")
+    if isinstance(stale, dict) and str(stale.get("reason") or "").startswith("A trust-boundary review decision changed"):
+        report.pop("analysis_stale", None)
 
 
 @router.post("/{project_id}/analyze")
@@ -34,44 +82,85 @@ async def run_full_analysis(project_id: str, body: dict = None):
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    log_event("analysis.started", details={"project_id": project_id})
-
     types = (body or {}).get("analysis_types", [
         "trust_boundary", "stride", "linddun", "controls", "tests", "missing_info", "assumptions"
     ])
+    stage_started_at = time.perf_counter()
+    log_event("analysis.started", details={"project_id": project_id, "analysis_types": types})
 
-    report = get_report(project_id) or {
-        "report_id": str(uuid.uuid4()),
-        "project_id": project_id,
-        "project_name": project.get("name", ""),
-        "generated_at": datetime.utcnow().isoformat(),
-        "data_flows": [],
-        "trust_boundaries": [],
-        "threats": [],
-        "controls": [],
-        "test_scenarios": [],
-        "assumptions": [],
-        "missing_info": [],
-        "completeness": {},
-        "risk_summary": {},
-    }
+    report = get_report(project_id)
+    if report:
+        report = normalize_report_evidence(report, project)
+    else:
+        report = {
+            "report_id": str(uuid.uuid4()),
+            "project_id": project_id,
+            "project_name": project.get("name", ""),
+            "generated_at": datetime.utcnow().isoformat(),
+            "data_flows": [],
+            "trust_boundaries": [],
+            "threats": [],
+            "controls": [],
+            "test_scenarios": [],
+            "assumptions": [],
+            "missing_info": [],
+            "completeness": {},
+            "risk_summary": {},
+        }
 
     report["completeness"] = compute_completeness(project)
     report.setdefault("ai_status", {})
+    _clear_review_visibility_stale(report)
 
     # 1. Trust Boundaries
     if "trust_boundary" in types:
+        previous_signature = _active_topology_signature(report.get("trust_boundaries"))
         try:
-            trust_boundaries = await detect_trust_boundaries(project)
-            report["ai_status"]["trust_boundary"] = {"ok": True, "engine": "AI"}
+            trust_model = build_trust_model(project)
+            reviewed_boundaries, review_warnings = apply_boundary_reviews(
+                trust_model["boundaries"], report.get("trust_boundary_reviews")
+            )
+            boundary_status = {item["boundary_id"]: item.get("status", "Candidate") for item in reviewed_boundaries}
+            for item in trust_model["views"].get("context", {}).get("boundaries", []):
+                item["status"] = boundary_status.get(item.get("element_id"), item.get("status", "Candidate"))
+            trust_boundaries = active_trust_boundaries(reviewed_boundaries)
+            report["data_flows"] = trust_model["data_flows"]
+            report["trust_model"] = {
+                "version": trust_model["version"],
+                "generation_method": trust_model["generation_method"],
+                "entities": trust_model["entities"],
+                "warnings": [*trust_model["warnings"], *review_warnings],
+                "review_summary": {
+                    "candidate": sum(item.get("status") == "Candidate" for item in reviewed_boundaries),
+                    "confirmed": sum(item.get("status") == "Confirmed" for item in reviewed_boundaries),
+                    "rejected": sum(item.get("status") == "Rejected" for item in reviewed_boundaries),
+                },
+                "views": trust_model["views"],
+            }
+            report["ai_status"]["trust_boundary"] = {
+                "ok": True,
+                "engine": "deterministic",
+                "warnings": [*trust_model["warnings"], *review_warnings],
+            }
+            report["trust_boundaries"] = reviewed_boundaries
+            attach_target_refs(report.get("threats"), reviewed_boundaries, trust_model["views"])
+            current_signature = _active_topology_signature(reviewed_boundaries)
+            if previous_signature and current_signature != previous_signature:
+                _mark_analysis_stale(
+                    report,
+                    BOUNDARY_DOWNSTREAM_STAGES,
+                    "Trust-boundary topology or review state changed. Refresh dependent analysis stages.",
+                )
         except Exception as exc:
-            # detect_trust_boundaries internally falls back to _fallback_boundaries if AI fails,
-            # but let's record that AI failed.
-            trust_boundaries = await detect_trust_boundaries(project)
-            report["ai_status"]["trust_boundary"] = {"ok": False, "error": str(exc), "engine": "fallback"}
-        report["trust_boundaries"] = trust_boundaries
+            # Fail closed: an unavailable grounded model must never fall back to
+            # guessed topology or re-run the same failing builder.
+            trust_boundaries = []
+            report["data_flows"] = []
+            report["trust_model"] = {"version": "unavailable", "entities": [], "warnings": [str(exc)]}
+            report["ai_status"]["trust_boundary"] = {"ok": False, "error": str(exc), "engine": "deterministic"}
+            report["trust_boundaries"] = []
     else:
-        trust_boundaries = report.get("trust_boundaries", [])
+        trust_boundaries = active_trust_boundaries(report.get("trust_boundaries", []))
 
     # 2. STRIDE
     stride_threats = []
@@ -85,12 +174,15 @@ async def run_full_analysis(project_id: str, body: dict = None):
             stride_threats = await generate_stride_threats(project, trust_boundaries, force_fallback=True)
             report["ai_status"]["stride"] = {"ok": False, "error": str(exc), "engine": "fallback"}
         stride_threats = enrich_threats(stride_threats, project, "STRIDE")
+        attach_target_refs(stride_threats, report.get("trust_boundaries", trust_boundaries), report.get("trust_model", {}).get("views"))
 
     # 3. LINDDUN
     linddun_threats = []
-    if "linddun" in types and project.get("has_pii", True):
-        # Clear existing fallback LINDDUN threats to avoid duplicates
-        report["threats"] = [t for t in report.get("threats", []) if not (t.get("framework") == "LINDDUN" and t.get("is_fallback"))]
+    if "linddun" in types:
+        # A privacy review is relevant beyond direct PII (for example location,
+        # identifiers, images, inference, and third-party data processing).
+        # Replace the framework results so a rerun cannot leave stale findings.
+        report["threats"] = [t for t in report.get("threats", []) if t.get("framework") != "LINDDUN"]
         try:
             linddun_threats = await generate_linddun_threats(project, trust_boundaries, force_fallback=False)
             report["ai_status"]["linddun"] = {"ok": True, "engine": "AI"}
@@ -98,6 +190,7 @@ async def run_full_analysis(project_id: str, body: dict = None):
             linddun_threats = await generate_linddun_threats(project, trust_boundaries, force_fallback=True)
             report["ai_status"]["linddun"] = {"ok": False, "error": str(exc), "engine": "fallback"}
         linddun_threats = enrich_threats(linddun_threats, project, "LINDDUN")
+        attach_target_refs(linddun_threats, report.get("trust_boundaries", trust_boundaries), report.get("trust_model", {}).get("views"))
 
     all_threats = stride_threats + linddun_threats
     if all_threats:
@@ -154,8 +247,22 @@ async def run_full_analysis(project_id: str, body: dict = None):
         "needs_info": sum(1 for t in threats if t.get("status") == "Needs Info"),
         "deduped_on_last_run": deduped_count,
         "completeness_score": report["completeness"].get("score", 0),
+        "boundary_candidates": sum(item.get("status") == "Candidate" for item in report.get("trust_boundaries", [])),
+        "boundary_confirmed": sum(item.get("status") == "Confirmed" for item in report.get("trust_boundaries", [])),
     }
     report["generated_at"] = datetime.utcnow().isoformat()
+    propagate_target_refs(report)
+
+    _clear_completed_stale_stages(report, types)
+
+    stage_duration = round(time.perf_counter() - stage_started_at, 2)
+    stage_metrics = report.setdefault("stage_metrics", {})
+    completed_at = datetime.utcnow().isoformat()
+    for analysis_type in types:
+        stage_metrics[analysis_type] = {
+            "duration_seconds": stage_duration,
+            "completed_at": completed_at,
+        }
 
     save_report(project_id, report)
 
@@ -172,6 +279,8 @@ async def run_full_analysis(project_id: str, body: dict = None):
         "controls": len(report.get("controls", [])),
         "tests": len(report.get("test_scenarios", [])),
         "deduped": deduped_count,
+        "analysis_types": types,
+        "duration_seconds": stage_duration,
     })
 
     return report
@@ -188,7 +297,7 @@ async def get_project_report(project_id: str):
     if not report:
         raise HTTPException(status_code=404, detail="No report yet — run analysis first")
 
-    return report
+    return normalize_report_evidence(report, project)
 
 
 @router.patch("/{project_id}/threats/{threat_id}")
@@ -204,6 +313,60 @@ async def update_threat_review(project_id: str, threat_id: str, data: dict):
     save_report(project_id, report)
     log_event("threat.review_updated", details={"project_id": project_id, "threat_id": threat_id})
     return {"success": True}
+
+
+@router.patch("/{project_id}/trust-boundaries/{boundary_id}")
+async def update_trust_boundary_review(project_id: str, boundary_id: str, data: dict):
+    """Confirm, reject, or reset a grounded trust-boundary candidate."""
+    report = get_report(project_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="No report yet — run analysis first")
+
+    boundary = next(
+        (item for item in report.get("trust_boundaries", []) if item.get("boundary_id") == boundary_id),
+        None,
+    )
+    if not boundary:
+        raise HTTPException(status_code=404, detail="Trust boundary not found")
+
+    status = str(data.get("status") or "").strip()
+    if status not in TRUST_BOUNDARY_REVIEW_STATUSES:
+        raise HTTPException(status_code=422, detail="Status must be Candidate, Confirmed, or Rejected")
+    review_note = str(data.get("review_note") or "").strip()[:1000]
+    reviewed_at = _utc_now()
+    review = {
+        "status": status,
+        "review_note": review_note,
+        "reviewed_at": reviewed_at,
+        "model_fingerprint": boundary.get("model_fingerprint"),
+    }
+    report.setdefault("trust_boundary_reviews", {})[boundary_id] = review
+    boundary.update({**review, "review_stale": False})
+
+    summary = report.setdefault("trust_model", {}).setdefault("review_summary", {})
+    summary.update({
+        "candidate": sum(item.get("status") == "Candidate" for item in report.get("trust_boundaries", [])),
+        "confirmed": sum(item.get("status") == "Confirmed" for item in report.get("trust_boundaries", [])),
+        "rejected": sum(item.get("status") == "Rejected" for item in report.get("trust_boundaries", [])),
+    })
+    report.setdefault("risk_summary", {}).update({
+        "boundary_candidates": summary["candidate"],
+        "boundary_confirmed": summary["confirmed"],
+    })
+    # Review status only gates visibility. The stored findings remain intact so
+    # Candidate/Confirmed can restore them without an expensive regeneration.
+    _clear_review_visibility_stale(report)
+    save_report(project_id, report)
+    log_event("trust_boundary.review_updated", details={
+        "project_id": project_id,
+        "boundary_id": boundary_id,
+        "status": status,
+    })
+    return {
+        "success": True,
+        "boundary": boundary,
+        "analysis_stale": report.get("analysis_stale"),
+    }
 
 
 @router.patch("/{project_id}/controls/{control_id}")

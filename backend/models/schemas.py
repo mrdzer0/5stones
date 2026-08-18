@@ -76,6 +76,11 @@ class DataFlow(BaseModel):
     data: List[str] = Field(default_factory=list)
     trust_boundary: Optional[str] = None
     evidence: List[str] = Field(default_factory=list)
+    evidence_refs: List[str] = Field(default_factory=list)
+    evidence_type: Optional[Literal["direct", "derived", "inference"]] = None
+    basis: Optional[str] = None
+    confidence: ConfidenceLevel = "Low"
+    status: Literal["Confirmed", "Candidate"] = "Candidate"
 
 
 # ── Trust Boundary ────────────────────────────────────────────────────────────
@@ -88,6 +93,19 @@ class TrustBoundary(BaseModel):
     destination_trust_level: str
     boundary_label: str
     data_flows: List[str] = Field(default_factory=list)
+    source_zone_id: Optional[str] = None
+    destination_zone_id: Optional[str] = None
+    risk_note: Optional[str] = None
+    basis: Optional[str] = None
+    confidence: ConfidenceLevel = "Low"
+    status: Literal["Confirmed", "Candidate", "Rejected"] = "Candidate"
+    evidence_refs: List[str] = Field(default_factory=list)
+    crossing_flow_ids: List[str] = Field(default_factory=list)
+    generation_method: Literal["deterministic", "manual"] = "deterministic"
+    model_fingerprint: Optional[str] = None
+    review_note: Optional[str] = None
+    reviewed_at: Optional[str] = None
+    review_stale: bool = False
 
 
 # ── Threat ───────────────────────────────────────────────────────────────────
@@ -99,6 +117,9 @@ class Threat(BaseModel):
     source: Optional[str] = None
     destination: Optional[str] = None
     trust_boundary: Optional[str] = None
+    trust_boundary_ids: List[str] = Field(default_factory=list)
+    target_refs: List[dict] = Field(default_factory=list)
+    mapping_status: Literal["mapped", "unmapped"] = "unmapped"
     asset: Optional[str] = None
     data_classification: Optional[DataClassification] = None
     framework: Framework
@@ -109,7 +130,10 @@ class Threat(BaseModel):
     test_scenario: Optional[str] = None
     expected_result: Optional[str] = None
     evidence: List[str] = Field(default_factory=list)
+    evidence_refs: List[str] = Field(default_factory=list)
+    evidence_type: Optional[Literal["direct", "context", "inference"]] = None
     evidence_source: Optional[str] = None
+    evidence_locator: Optional[str] = None
     evidence_snippet: Optional[str] = None
     assumption: Optional[str] = None
     missing_info: Optional[str] = None
@@ -141,6 +165,7 @@ class Control(BaseModel):
     review_status: Literal["Open", "In Progress", "Implemented", "Verified", "Accepted Risk"] = "Open"
     owner: Optional[str] = None
     threat_ids: List[str] = Field(default_factory=list)
+    target_refs: List[dict] = Field(default_factory=list)
 
 
 # ── Test Scenario ─────────────────────────────────────────────────────────────
@@ -156,6 +181,7 @@ class TestScenario(BaseModel):
     priority: TestPriority = "Medium"
     owner: Optional[str] = None
     threat_id: Optional[str] = None
+    target_refs: List[dict] = Field(default_factory=list)
 
 
 # ── Assumption ────────────────────────────────────────────────────────────────
@@ -165,6 +191,7 @@ class Assumption(BaseModel):
     area: str
     assumption: str
     confidence: ConfidenceLevel = "Medium"
+    target_refs: List[dict] = Field(default_factory=list)
 
 
 # ── Missing Info ──────────────────────────────────────────────────────────────

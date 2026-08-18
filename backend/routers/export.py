@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from backend.utils.storage import get_project, get_report
 from backend.utils.audit import log_event
+from backend.services.posture_service import normalize_report_evidence
 
 router = APIRouter(prefix="/api/projects", tags=["export"])
 
@@ -17,6 +18,7 @@ async def export_report(project_id: str, format: str = "json"):
     report = get_report(project_id)
     if not project or not report:
         raise HTTPException(status_code=404, detail="Project or report not found")
+    report = normalize_report_evidence(report, project)
 
     log_event("report.exported", details={"project_id": project_id, "format": format})
 
@@ -69,7 +71,14 @@ def _to_markdown(project: dict, report: dict) -> str:
     ]
 
     for b in report.get("trust_boundaries", []):
-        lines.append(f"- **{b.get('source')}** → **{b.get('destination')}**: {b.get('boundary_label')} ({b.get('source_trust_level')} → {b.get('destination_trust_level')})")
+        lines.append(
+            f"- **[{b.get('status', 'Candidate')}] {b.get('source')}** → **{b.get('destination')}**: "
+            f"{b.get('boundary_label')} ({b.get('source_trust_level')} → {b.get('destination_trust_level')})"
+        )
+        if b.get("review_note"):
+            lines.append(f"  - Review note: {b.get('review_note')}")
+        if b.get("basis"):
+            lines.append(f"  - Basis: {b.get('basis')}")
 
     lines += [f"", f"## STRIDE Threats", f""]
     stride = [t for t in report.get("threats", []) if t.get("framework") == "STRIDE"]
@@ -80,7 +89,8 @@ def _to_markdown(project: dict, report: dict) -> str:
             f"- **Abuse Case**: {t.get('abuse_case', 'N/A')}",
             f"- **Control**: {t.get('recommended_control', 'N/A')}",
             f"- **Confidence**: {t.get('confidence')} | **Status**: {t.get('status')}",
-            f"- **Evidence**: {t.get('evidence_source', 'N/A')} — {t.get('evidence_snippet', 'N/A')}",
+            f"- **Evidence Type**: {t.get('evidence_type', 'inference').title()}",
+            f"- **Evidence**: {t.get('evidence_source', 'N/A')} · {t.get('evidence_locator', 'N/A')} — {t.get('evidence_snippet', 'N/A')}",
             f"- **Confidence Reason**: {t.get('confidence_reason', 'N/A')}",
             f"- **Assumption**: {t.get('assumption', 'N/A')}",
             f"",
@@ -94,7 +104,8 @@ def _to_markdown(project: dict, report: dict) -> str:
             f"- **Asset**: {t.get('asset', 'N/A')}",
             f"- **Control**: {t.get('recommended_control', 'N/A')}",
             f"- **Confidence**: {t.get('confidence')}",
-            f"- **Evidence**: {t.get('evidence_source', 'N/A')} — {t.get('evidence_snippet', 'N/A')}",
+            f"- **Evidence Type**: {t.get('evidence_type', 'inference').title()}",
+            f"- **Evidence**: {t.get('evidence_source', 'N/A')} · {t.get('evidence_locator', 'N/A')} — {t.get('evidence_snippet', 'N/A')}",
             f"",
         ]
 
@@ -128,8 +139,8 @@ def _to_csv(report: dict) -> str:
         "Framework", "Threat Category", "Component", "Source", "Destination",
         "Trust Boundary", "Asset", "Data Classification", "Threat Description",
         "Abuse Case", "Recommended Control", "Confidence", "Risk Level",
-        "Status", "Assumption", "Missing Info", "Owner", "Evidence Source",
-        "Evidence Snippet", "Confidence Reason", "Needs Human Review", "Fingerprint"
+        "Status", "Assumption", "Missing Info", "Owner", "Evidence Type", "Evidence Source",
+        "Evidence Locator", "Evidence Snippet", "Confidence Reason", "Needs Human Review", "Fingerprint"
     ])
 
     for t in report.get("threats", []):
@@ -151,7 +162,9 @@ def _to_csv(report: dict) -> str:
             t.get("assumption", ""),
             t.get("missing_info", ""),
             t.get("owner", ""),
+            t.get("evidence_type", ""),
             t.get("evidence_source", ""),
+            t.get("evidence_locator", ""),
             t.get("evidence_snippet", ""),
             t.get("confidence_reason", ""),
             t.get("needs_human_review", ""),

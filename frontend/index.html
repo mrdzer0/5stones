@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>5STONES — Threat Modeling Platform</title>
   <meta name="description"
-    content="Start with what you have. AI-assisted threat modeling powered by STRIDE and LINDDUN — output every role can act on." />
+    content="Structured threat modeling with STRIDE and LINDDUN — from system context to findings every role can act on." />
   <link rel="stylesheet" href="/static/css/style.css" />
   <link rel="stylesheet" href="/static/css/components.css" />
   <link rel="stylesheet" href="/static/css/pages.css" />
@@ -20,7 +20,7 @@
       <div class="sidebar-logo">
         <a href="/index.html"
           style="display:flex;align-items:center;gap:var(--space-3);text-decoration:none;width:100%;">
-          <img src="logo.png" alt="5STONES" class="sidebar-logo-img" />
+          <img src="/static/logo.png" alt="5STONES" class="sidebar-logo-img" />
           <span class="sidebar-logo-badge" style="margin-left:auto;">MVP</span>
         </a>
       </div>
@@ -62,7 +62,7 @@
       </div>
 
       <div class="sidebar-footer">
-        5STONES v1.0 · AI Threat Modeling
+        5STONES v1.0 · Structured Threat Modeling
       </div>
     </aside>
 
@@ -87,6 +87,22 @@
       </div>
 
       <div class="page-body">
+
+        <!-- Dashboard intro -->
+        <section class="dashboard-intro" aria-labelledby="dashboard-heading">
+          <div class="dashboard-intro-copy">
+            <div class="eyebrow">THREAT MODELING / WORKSPACE</div>
+            <h1 id="dashboard-heading"><span>See the risk</span><em>before it ships.</em></h1>
+            <p>Turn rough system context into an actionable security brief for every team.</p>
+          </div>
+          <div class="risk-orbit" aria-hidden="true">
+            <div class="risk-orbit-ring ring-one"></div>
+            <div class="risk-orbit-ring ring-two"></div>
+            <div class="risk-orbit-core"></div>
+            <div class="risk-orbit-dot"></div>
+            <span>RISK SURFACE / LIVE</span>
+          </div>
+        </section>
 
         <!-- Stats -->
         <div class="stats-row" id="stats-row">
@@ -134,6 +150,7 @@
     </main>
   </div>
 
+  <script src="/static/js/sidebar.js"></script>
   <script src="/static/js/api.js"></script>
   <script src="/static/js/dashboard.js"></script>
 </body>

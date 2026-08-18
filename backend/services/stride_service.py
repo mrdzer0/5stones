@@ -3,10 +3,13 @@ from __future__ import annotations
 import uuid
 from typing import List
 from backend.services.ai_service import chat_complete_json, get_active_provider_config
+from backend.services.posture_service import build_evidence_context
 
 STRIDE_SYSTEM_PROMPT = """You are a senior AppSec engineer performing STRIDE threat modeling.
 Generate realistic, specific threats based on the context. Each threat must be actionable and evidence-based.
-Return strict JSON array. Never fabricate controls that are confirmed without evidence."""
+Only cite evidence IDs provided in the evidence catalog. Never invent evidence, quotes, source names, or IDs.
+If the catalog does not support a finding, leave evidence_refs empty and explain the assumption.
+Return one strict JSON object. Never fabricate controls that are confirmed without evidence."""
 
 STRIDE_CATEGORIES = [
     "Spoofing",
@@ -26,6 +29,7 @@ async def generate_stride_threats(project: dict, trust_boundaries: List[dict], f
     cfg = get_active_provider_config()
 
     context = _build_context(project)
+    evidence_context = build_evidence_context(project)
     boundaries_text = "\n".join([
         f"- {b.get('source')} → {b.get('destination')}: {b.get('boundary_label')}"
         for b in trust_boundaries[:10]
@@ -39,9 +43,13 @@ PROJECT CONTEXT:
 TRUST BOUNDARIES:
 {boundaries_text}
 
-Generate 8-15 specific STRIDE threats. Return a JSON array:
-[
-  {{
+EVIDENCE CATALOG:
+{evidence_context}
+
+Generate 6-10 high-value STRIDE threats. Return one JSON object with a "threats" array:
+{{
+  "threats": [
+    {{
     "framework": "STRIDE",
     "threat_category": "Spoofing|Tampering|Repudiation|Information Disclosure|Denial of Service|Elevation of Privilege",
     "component": "affected component",
@@ -53,13 +61,15 @@ Generate 8-15 specific STRIDE threats. Return a JSON array:
     "threat_description": "specific threat description",
     "abuse_case": "how an attacker would execute this",
     "recommended_control": "primary recommended control",
+    "evidence_refs": ["one or more exact EV-... IDs from the catalog, or an empty array"],
     "assumption": "what assumption was made if evidence is missing",
     "missing_info": "what information would change this analysis",
     "confidence": "High|Medium|Low",
     "risk_level": "Critical|High|Medium|Low",
     "owner": "Dev|QA|Security|DevOps"
-  }}
-]"""
+    }}
+  ]
+}}"""
 
     result = await chat_complete_json(
         system_prompt=STRIDE_SYSTEM_PROMPT,
@@ -67,11 +77,11 @@ Generate 8-15 specific STRIDE threats. Return a JSON array:
         base_url=cfg.get("base_url"),
         api_key=cfg.get("api_key"),
         model=cfg.get("model"),
-        max_tokens=6000,
+        max_tokens=4000,
     )
     threats = result if isinstance(result, list) else result.get("threats", [])
     if not threats:
-        raise ValueError("AI returned empty or invalid threats list")
+        raise ValueError("Analysis engine returned an empty or invalid STRIDE threat list")
 
     for t in threats:
         t["threat_id"] = t.get("threat_id") or str(uuid.uuid4())
@@ -91,6 +101,8 @@ Auth Method: {project.get('auth_method', 'Unknown')}
 External Systems: {', '.join(project.get('external_systems', []))}
 Critical Actions: {', '.join(project.get('critical_actions', []))}
 Existing Controls: {', '.join(project.get('existing_controls', []))}
+Components: {', '.join(project.get('components', []))}
+Artifact Summary: {project.get('artifact_summary', 'N/A')}
 Environment: {project.get('environment', 'Unknown')}"""
 
 

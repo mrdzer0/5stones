@@ -208,7 +208,7 @@ async def delete_provider(provider_id: str):
 
 
 @router.get("/list-models")
-async def list_models(base_url: str, api_key: str = "ollama", provider_id: Optional[str] = None):
+async def list_models(base_url: str, api_key: str = "ollama", provider_id: str | None = None):
     """Fetch available models from a local or remote LLM endpoint. Supports stored provider key fallback."""
     try:
         if provider_id and (not api_key or api_key == "ollama" or api_key.startswith("***") or api_key == ""):

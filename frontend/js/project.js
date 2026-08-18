@@ -29,6 +29,9 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('artifact-type').addEventListener('change', (e) => {
     updateArtifactInputs(e.target.value);
   });
+  document.getElementById('artifact-file')?.addEventListener('change', (e) => {
+    updateProjectArtifactSelection(e.target.files?.[0]);
+  });
 
   // Navigation
   document.getElementById('btn-next').addEventListener('click', handleNext);
@@ -74,6 +77,33 @@ function updateArtifactInputs(type) {
       ? `Max 5 MB. Allowed: ${ARTIFACT_ACCEPT[type] || 'selected artifact formats'}. Upload only data needed for threat modeling.`
       : 'Max 5 MB. Allowed formats depend on artifact type.';
   }
+  updateProjectArtifactSelection(null);
+}
+
+function formatProjectArtifactBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function updateProjectArtifactSelection(file) {
+  const status = document.getElementById('artifact-file-status');
+  if (!status) return;
+  status.classList.toggle('is-ready', Boolean(file));
+  if (!file) {
+    status.textContent = 'Choose a file to inspect before creating the project.';
+    return;
+  }
+  status.textContent = file.size > MAX_ARTIFACT_BYTES
+    ? `${file.name} · ${formatProjectArtifactBytes(file.size)} · exceeds the 5 MB limit`
+    : `${file.name} · ${formatProjectArtifactBytes(file.size)} · ready to parse`;
+}
+
+function setProjectArtifactResult(kind, html) {
+  const result = document.getElementById('project-artifact-result');
+  if (!result) return;
+  result.className = `artifact-import-result is-visible is-${kind}`;
+  result.innerHTML = html;
 }
 
 function validateStep(step) {
@@ -87,13 +117,13 @@ function validateStep(step) {
     if (!tagInputs.actors?.getTags().length) {
       showToast('Add at least one actor', 'warn'); return false;
     }
-    if (!tagInputs.entryPoints?.getTags().length) {
-      showToast('Add at least one entry point', 'warn'); return false;
-    }
   }
-  if (step === 3) {
-    if (!tagInputs.dataInvolved?.getTags().length) {
-      showToast('Add at least one data field', 'warn'); return false;
+  if (step === 4) {
+    const type = document.getElementById('artifact-type').value;
+    const file = document.getElementById('artifact-file')?.files?.[0];
+    if (type && !file) {
+      showToast('Choose an artifact file or select manual input only', 'warn');
+      return false;
     }
   }
   return true;
@@ -123,6 +153,7 @@ async function createProject() {
   const btn = document.getElementById('btn-next');
   btn.disabled = true;
   btn.innerHTML = `<div class="loading-spinner"></div> Creating…`;
+  btn.setAttribute('aria-busy', 'true');
 
   const payload = {
     name: document.getElementById('project-name').value.trim(),
@@ -147,10 +178,34 @@ async function createProject() {
     if (artifactType && artifactFile) {
       try {
         if (artifactFile.size > MAX_ARTIFACT_BYTES) throw new Error('File exceeds 5 MB limit');
-        await API.artifacts.uploadFile(project.project_id, artifactType, artifactFile);
-        showToast('Project created with artifact', 'success');
+        btn.innerHTML = `<div class="loading-spinner"></div> Parsing artifact…`;
+        setProjectArtifactResult('working', `
+          <div class="artifact-result-title">Project created · parsing ${escHtml(artifactFile.name)}…</div>
+          <div>The complete file is being normalized and added to the project context.</div>
+        `);
+        const response = await API.artifacts.uploadFile(project.project_id, artifactType, artifactFile);
+        const inventory = response.reconciliation || {};
+        const parsedStats = response.parsed?.stats || {};
+        setProjectArtifactResult('success', `
+          <div class="artifact-result-title">Project and artifact are ready</div>
+          <div>${escHtml(response.message || 'Structured context added successfully.')}</div>
+          <div class="artifact-result-metrics">
+            <div class="artifact-result-metric"><strong>${parsedStats.operation_count || 0}</strong><span>operations parsed</span></div>
+            <div class="artifact-result-metric"><strong>${inventory.operation_count || parsedStats.operation_count || 0}</strong><span>canonical operations</span></div>
+          </div>
+        `);
+        showToast('Project created and artifact reconciled', 'success');
       } catch (err) {
-        showToast('Project created (artifact parse failed: ' + err.message + ')', 'warn');
+        setProjectArtifactResult('error', `
+          <div class="artifact-result-title">Project created, but the artifact needs attention</div>
+          <div>${escHtml(err.message)}</div>
+          <div style="margin-top:6px;">You can retry from the Add Artifact panel on the project page.</div>
+        `);
+        showToast('Project created; retry the artifact from the project page', 'warn');
+        setTimeout(() => {
+          window.location.href = `/analysis.html?id=${project.project_id}&artifact_error=${encodeURIComponent(err.message)}`;
+        }, 1400);
+        return;
       }
     } else {
       showToast('Project created!', 'success');
@@ -158,11 +213,12 @@ async function createProject() {
 
     setTimeout(() => {
       window.location.href = `/analysis.html?id=${project.project_id}`;
-    }, 600);
+    }, 900);
 
   } catch (err) {
     showToast('Error: ' + err.message, 'error');
     btn.disabled = false;
+    btn.removeAttribute('aria-busy');
     updateStepUI();
   }
 }
