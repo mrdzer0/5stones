@@ -1,14 +1,53 @@
-<img src="logo.png" alt="5STONES" width="220" />
+<div align="center">
+  <img src="logo.png" alt="5STONES" width="240" />
 
-# 5STONES — AI-Assisted Threat Modeling Platform
+  # 5STONES
 
-> *Start with what you have, be transparent about what you don't know, and produce output that every role can act on.*
+  ### See the risk before it ships.
 
-5STONES is an open-source threat modeling platform built for teams that need to ship fast without skipping security. It uses STRIDE and LINDDUN frameworks, augmented by AI, to generate structured threat analysis, control mappings, and test scenarios from whatever artifacts you already have: a PRD, an API spec, a database schema, or just a rough description.
+  A structured security review workspace for teams that need clarity before they ship.
 
----
+  <p>
+    <a href="#quick-start">Quick start</a> ·
+    <a href="#product-tour">Product tour</a> ·
+    <a href="#analysis-providers">Analysis providers</a> ·
+    <a href="#security-notes">Security notes</a>
+  </p>
+</div>
 
-## Quick Start
+5STONES turns the system context you already have a PRD, API specification, database schema, or rough description into a clear, review-ready security dossier. It brings architecture context, trust-boundary decisions, STRIDE and LINDDUN findings, control mappings, test scenarios, evidence, and open questions into one supporting document for engineering, security, and QA teams.
+
+## Product tour
+
+<table>
+  <tr>
+    <td width="33%" align="center"><strong>Dashboard</strong><br /><sub>Track projects and risk posture</sub></td>
+    <td width="33%" align="center"><strong>Analysis diagram</strong><br /><sub>Explore components and trust zones</sub></td>
+    <td width="33%" align="center"><strong>Security report</strong><br /><sub>Turn findings into action</sub></td>
+  </tr>
+  <tr>
+    <td><img src="demo/page_dashboard.gif" alt="5STONES dashboard demo" width="100%" /></td>
+    <td><img src="demo/page_diagram.gif" alt="5STONES analysis diagram demo" width="100%" /></td>
+    <td><img src="demo/page_report.gif" alt="5STONES security report demo" width="100%" /></td>
+  </tr>
+</table>
+
+## Why 5STONES?
+
+- **Start with incomplete information.** Import what exists and make gaps explicit instead of waiting for perfect documentation.
+- **Ground findings in context.** Review trust boundaries, evidence, confidence, and assumptions before acting on a result.
+- **Give every role a next step.** Developers get controls and test scenarios; security teams get threat classification; QA gets an actionable backlog.
+- **Keep the workflow flexible.** Use the built-in analysis engine, a connected provider, or a local model while keeping the review structure consistent.
+
+## How it works
+
+```text
+Context → Parse & reconcile → Review trust boundaries → Analyze → Act
+  PRD       OpenAPI/Postman     STRIDE + LINDDUN       Controls   Tests
+  Schema    Markdown/CSV        Evidence & assumptions  Gaps      Reports
+```
+
+## Quick start
 
 ### 1. Install dependencies
 
@@ -18,79 +57,75 @@ source .venv/bin/activate    # macOS/Linux
 pip install -r requirements.txt
 ```
 
-### 2. Configure environment
+### 2. Configure the environment
 
 ```bash
 cp .env.example .env
-# Edit .env — set OPENAI_API_KEY and OPENAI_BASE_URL
+# Edit .env and set your provider values.
 ```
+
+For a connected provider, configure `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL`. For local inference, use the local endpoint settings shown in `.env.example`.
 
 ### 3. Run the server
 
 ```bash
 python -m backend.main
-# Server starts at http://127.0.0.1:8000
 ```
 
-### 4. Open the app
+Open **http://127.0.0.1:8000** in your browser.
 
-Navigate to **http://127.0.0.1:8000** in your browser.
-
----
-
-## What It Does
+## What it does
 
 | Capability | Status |
 |---|---|
 | Project management | ✅ |
-| Artifact upload & AI parsing | ✅ |
-| Trust boundary detection | ✅ |
+| Artifact upload and structured parsing | ✅ |
+| Evidence-backed trust-boundary review | ✅ |
 | STRIDE threat generation | ✅ |
-| LINDDUN privacy threat generation | ✅ |
-| Control mapping (built-in catalog) | ✅ |
+| LINDDUN privacy analysis | ✅ |
+| Control mapping from built-in catalog | ✅ |
 | Test scenario generation | ✅ |
-| BYOK AI provider (OpenAI-compatible) | ✅ |
-| Local LLM support | ✅ |
-| Export: Markdown, CSV, JSON | ✅ |
+| Connected analysis provider configuration | ✅ |
+| Local analysis runtime | ✅ |
+| Markdown, CSV, and JSON export | ✅ |
 | Audit logging | ✅ |
 
----
+## Analysis providers
 
-## Supported AI Providers
-
-Any OpenAI-compatible endpoint works out of the box:
+The review workflow can use any OpenAI-compatible endpoint or a local inference server:
 
 | Provider | Base URL |
 |---|---|
 | OpenAI | `https://api.openai.com/v1` |
 | Azure OpenAI | `https://<resource>.openai.azure.com/openai/deployments/<model>` |
 | OpenRouter | `https://openrouter.ai/api/v1` |
-| Ollama (local) | `http://localhost:11434/v1` with `OPENAI_API_KEY=ollama` |
+| Ollama | `http://localhost:11434/v1` with `OPENAI_API_KEY=ollama` |
 | LM Studio | `http://localhost:1234/v1` |
 
----
+## Supported input formats
 
-## Supported Input Formats
-
-| Type | Format |
+| Input | Formats |
 |---|---|
-| PRD | Plain text |
-| OpenAPI / Swagger | YAML or JSON |
-| Postman Collection | JSON |
-| Markdown | `.md` |
-| Database Schema | SQL or text |
-| API list | CSV |
+| Product requirements | Plain text, Markdown, PDF, DOCX |
+| API contracts | OpenAPI / Swagger YAML or JSON |
+| API collections | Postman JSON, HAR |
+| Data models | SQL or text database schema |
+| API inventory | CSV |
 
----
+## Design principles
 
-## Design Principles
+**Work with incomplete information.** Real threat modeling rarely starts with a complete picture. 5STONES surfaces confidence scores and missing information alongside every finding.
 
-**Work with incomplete information.** Real threat modeling rarely starts with a complete picture. 5STONES accepts partial inputs and surfaces confidence scores alongside every finding, so teams know exactly which risks are well-understood and which need more investigation.
+**Make assumptions visible.** If the analysis infers something it was not told, that assumption is recorded, reviewable, and editable.
 
-**Role-aware output.** A security finding is only useful if the right person can act on it. The output is structured for three distinct audiences: developers need test scenarios and control guidance; security teams need threat classification and risk ratings; QA teams need concrete test cases.
+**Produce role-aware output.** A finding is only useful when the right person can act on it. Every report connects threats to controls, owners, evidence, and executable tests.
 
-**No hidden assumptions.** Every AI-generated output includes a register of what was assumed. If the model inferred something it wasn't told, that assumption is visible and editable.
+## Security notes
 
----
+- Keep secrets in `.env` or a managed secret store. Never commit real API keys, local settings, audit logs, generated reports, or runtime caches.
+- Use a strong, unique `APP_SECRET_KEY` for every environment.
+- The included server is intended for local development/MVP use. Add authentication, authorization, restricted CORS, rate limiting, and provider URL allowlisting before exposing it publicly.
 
-*5STONES is named after the principle that a small, well-aimed effort, built on what you already have, is more effective than a perfect tool you never use.*
+## The name
+
+5STONES is named after the principle that a small, well-aimed effort built on what you already have is more effective than a perfect tool you never use.
