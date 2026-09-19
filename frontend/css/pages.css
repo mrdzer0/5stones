@@ -137,7 +137,7 @@
 }
 
 .diagram-canvas-shell {
-  height: 560px;
+  height: 680px;
   position: relative;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -154,35 +154,46 @@
 }
 
 .diagram-zone-layer {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  display: block;
   position: absolute;
   inset: 0;
   z-index: 1;
   pointer-events: none;
+  overflow: hidden;
 }
 
 .diagram-zone {
-  position: relative;
-  border-right: 1px dashed rgba(69, 123, 157, .18);
+  position: absolute;
+  box-sizing: border-box;
+  min-width: 150px;
+  min-height: 110px;
+  padding: 34px 12px 12px;
+  border: 2px dashed var(--zone-accent, rgba(69, 123, 157, .35));
+  border-radius: 18px;
+  background: var(--zone-fill, rgba(69, 123, 157, .035));
 }
-.diagram-zone:last-child { border-right: 0; }
 .diagram-zone span {
+  position: absolute;
+  top: 8px;
+  left: 12px;
   display: inline-flex;
-  margin: 12px;
   padding: 3px 7px;
-  color: var(--text-faint);
-  background: rgba(255,255,255,.82);
-  border: 1px solid rgba(69,123,157,.16);
+  max-width: calc(100% - 24px);
+  overflow: hidden;
+  color: var(--zone-accent, var(--text-faint));
+  background: rgba(255,255,255,.9);
+  border: 1px solid color-mix(in srgb, var(--zone-accent, #457b9d) 32%, transparent);
   border-radius: 4px;
   font: 600 .62rem/1.2 var(--font-mono);
   letter-spacing: .04em;
   text-transform: uppercase;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.zone-untrusted { background: linear-gradient(180deg, rgba(220,38,38,.035), transparent 55%); }
-.zone-external { background: linear-gradient(180deg, rgba(217,119,6,.035), transparent 55%); }
-.zone-internal { background: linear-gradient(180deg, rgba(69,123,157,.045), transparent 55%); }
-.zone-privileged { background: linear-gradient(180deg, rgba(21,128,61,.035), transparent 55%); }
+.diagram-zone[data-zone-depth="0"] { --zone-accent: #457B9D; --zone-fill: rgba(69,123,157,.045); }
+.diagram-zone[data-zone-depth="1"] { --zone-accent: #6D28D9; --zone-fill: rgba(109,40,217,.04); }
+.diagram-zone[data-zone-depth="2"] { --zone-accent: #D97706; --zone-fill: rgba(217,119,6,.035); }
+.diagram-zone[data-zone-depth="3"] { --zone-accent: #DC2626; --zone-fill: rgba(220,38,38,.03); }
 
 .diagram-explainer {
   display: flex;
@@ -233,8 +244,8 @@
   border-radius: 0 0 var(--r-lg) var(--r-lg);
 }
 
-.diagram-canvas-shell.is-service .diagram-zone-layer,
-.diagram-canvas-shell.is-scenario .diagram-zone-layer,
+.diagram-canvas-shell.is-service:not(.is-canonical) .diagram-zone-layer,
+.diagram-canvas-shell.is-scenario:not(.is-canonical) .diagram-zone-layer,
 .diagram-canvas-shell.is-service ~ .diagram-explainer,
 .diagram-canvas-shell.is-scenario ~ .diagram-explainer { display: none; }
 .diagram-canvas-shell.is-service,
@@ -471,7 +482,7 @@
   .diagram-mapping-help { width: 100%; margin-left: 0; }
   .dfd-ipo-grid { grid-template-columns: 1fr; }
   .diagram-legend { width: 100%; overflow-x: auto; }
-  .diagram-canvas-shell { height: 500px; overflow-x: auto; overflow-y: hidden; }
+  .diagram-canvas-shell { height: 620px; overflow-x: auto; overflow-y: hidden; }
   #threat-diagram-canvas,
   .diagram-zone-layer { width: 760px; min-width: 760px; }
   .diagram-canvas-shell.is-scenario #threat-diagram-canvas { width: 100%; min-width: 0; }

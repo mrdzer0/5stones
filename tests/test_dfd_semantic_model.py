@@ -543,7 +543,25 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertEqual(response.media_type, "image/svg+xml")
         self.assertIn("F1", content)
         self.assertIn("P1 Memproses registrasi", content)
+        self.assertIn("Z2 · Organization", content)
+        self.assertIn("Z5 · Vendor", content)
+        self.assertIn("stroke-dasharray=\"8 6\"", content)
         self.assertNotIn("<script", content.lower())
+
+    def test_svg_export_hydrates_legacy_evidence_refs(self):
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        model.evidence = []
+        report = {"dfd_model": model.model_dump()}
+
+        with (
+            patch("backend.routers.dfd.get_project", return_value={"project_id": "fixture-customer-registration"}),
+            patch("backend.routers.dfd.get_report", return_value=report),
+        ):
+            response = __import__("asyncio").run(export_dfd("fixture-customer-registration", "svg"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Z2 · Organization", response.body.decode("utf-8"))
 
     def test_json_export_and_import_round_trip_preserve_canonical_contract(self):
         fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from html import escape
+from math import ceil, sqrt
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
@@ -16,6 +17,7 @@ from backend.services.dfd_model_service import (
     preview_dfd_delete_impact,
     recalculate_boundary_crossings,
     refresh_attribute_assertions,
+    _model_evidence,
     validate_dfd_model,
 )
 from backend.utils.audit import log_event
@@ -31,6 +33,65 @@ router = APIRouter(
 DOWNSTREAM_STAGES = ["stride", "linddun", "controls", "tests", "missing_info", "assumptions"]
 
 
+def _auto_layout_dfd(model: DfdModel) -> tuple[dict[str, dict[str, float]], int, int]:
+    """Provide a readable zone-lane fallback for SVG exports without mutating the model."""
+    context_view = next((view for view in model.views if view.kind == "context"), None)
+    saved = context_view.positions if context_view else {}
+    if model.nodes and all(node.id in saved for node in model.nodes):
+        positions = {
+            node.id: {"x": float(saved[node.id].get("x", 0)), "y": float(saved[node.id].get("y", 0))}
+            for node in model.nodes
+        }
+        max_x = max((point["x"] for point in positions.values()), default=0)
+        max_y = max((point["y"] for point in positions.values()), default=0)
+        min_x = min((point["x"] for point in positions.values()), default=0)
+        min_y = min((point["y"] for point in positions.values()), default=0)
+        return positions, max(1200, ceil(max_x - min_x + 300)), max(760, ceil(max_y - min_y + 220))
+
+    zones_by_id = {str(zone.id): zone for zone in model.zones}
+    degree = {node.id: 0 for node in model.nodes}
+    for flow in model.flows:
+        degree[flow.source_id] = degree.get(flow.source_id, 0) + 1
+        degree[flow.target_id] = degree.get(flow.target_id, 0) + 1
+
+    def top_zone(zone_id: str) -> str:
+        current = zones_by_id.get(str(zone_id))
+        visited: set[str] = set()
+        while current and current.parent_zone_id and str(current.parent_zone_id) in zones_by_id and str(current.id) not in visited:
+            visited.add(str(current.id))
+            current = zones_by_id[str(current.parent_zone_id)]
+        return str(current.id) if current else "__unknown__"
+
+    groups: dict[str, dict[str, list]] = {}
+    for node in model.nodes:
+        direct_zone = str(node.zone_ids[0]) if node.zone_ids else "__unknown__"
+        groups.setdefault(top_zone(direct_zone), {}).setdefault(direct_zone, []).append(node)
+
+    positions: dict[str, dict[str, float]] = {}
+    lane_top = 95
+    max_width = 1200
+    ordered_top_zones = [str(zone.id) for zone in model.zones if str(zone.id) in groups]
+    ordered_top_zones.extend(zone_id for zone_id in groups if zone_id not in ordered_top_zones)
+    for top_zone_id in ordered_top_zones:
+        lane_height = 0
+        lane_width = 0
+        for group_index, nodes in enumerate(groups[top_zone_id].values()):
+            nodes.sort(key=lambda node: (-degree.get(node.id, 0), node.display_id, node.name))
+            columns = min(5, max(1, ceil(sqrt(len(nodes)))) )
+            rows = max(1, ceil(len(nodes) / columns))
+            group_left = 155 + group_index * 270
+            for index, node in enumerate(nodes):
+                positions[node.id] = {
+                    "x": group_left + (index % columns) * 220,
+                    "y": lane_top + 100 + (index // columns) * 112,
+                }
+            lane_width = max(lane_width, group_left + max(0, columns - 1) * 220 + 220)
+            lane_height = max(lane_height, rows * 112 + 155)
+        max_width = max(max_width, lane_width)
+        lane_top += lane_height + 70
+    return positions, max_width, max(760, lane_top + 80)
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -44,6 +105,28 @@ def _stale(report: dict, reason: str):
     }
 
 
+def _hydrate_model_evidence(model: DfdModel, project: dict | None) -> DfdModel:
+    """Backfill evidence envelopes for legacy reports without changing semantics."""
+    refs: list[str] = []
+
+    def collect(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "evidence_refs" and isinstance(item, list):
+                    refs.extend(str(ref) for ref in item if ref)
+                else:
+                    collect(item)
+        elif isinstance(value, list):
+            for item in value:
+                collect(item)
+
+    collect(model.model_dump(exclude={"evidence"}))
+    known = {evidence.id for evidence in model.evidence}
+    generated = _model_evidence(project or {}, [ref for ref in refs if ref not in known])
+    model.evidence = [*model.evidence, *(item for item in generated if item.id not in known)]
+    return model
+
+
 def _load_model(project_id: str) -> tuple[dict, DfdModel]:
     report = get_report(project_id)
     if not report or not report.get("dfd_model"):
@@ -52,7 +135,7 @@ def _load_model(project_id: str) -> tuple[dict, DfdModel]:
         model = DfdModel.model_validate(report["dfd_model"])
     except ValidationError as exc:
         raise HTTPException(status_code=500, detail="Stored canonical DFD model is invalid") from exc
-    return report, model
+    return report, _hydrate_model_evidence(model, get_project(project_id))
 
 
 def _project_for_request(project_id: str, request: Request = None) -> dict | None:
@@ -95,6 +178,7 @@ async def save_dfd(project_id: str, body: dict, request: Request = None):
         model = DfdModel.model_validate(body["model"])
     except (ValidationError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail="Canonical DFD schema validation failed") from exc
+    _hydrate_model_evidence(model, get_project(project_id))
 
     if model.project_id != project_id or model.id != current.id:
         raise HTTPException(status_code=422, detail="DFD project_id or model id cannot be changed")
@@ -157,6 +241,7 @@ async def apply_dfd_regeneration_proposal(project_id: str, body: dict, request: 
         candidate = DfdModel.model_validate(proposal["candidate_model"])
     except (ValidationError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail="Stored DFD proposal candidate is invalid") from exc
+    _hydrate_model_evidence(candidate, get_project(project_id))
     if candidate.project_id != project_id or candidate.id != current.id:
         raise HTTPException(status_code=422, detail="DFD proposal identity does not match the project model")
 
@@ -245,16 +330,8 @@ async def export_dfd(project_id: str, format: str = "svg", request: Request = No
             headers={"Content-Disposition": f"attachment; filename=dfd-{project_id}.json"},
         )
 
-    context_view = next((view for view in model.views if view.kind == "context"), None)
-    positions = context_view.positions if context_view else {}
     node_by_id = {node.id: node for node in model.nodes}
-    positions = {
-        node.id: positions.get(node.id) or {
-            "x": 160 + (index % 4) * 240,
-            "y": 120 + (index // 4) * 180,
-        }
-        for index, node in enumerate(model.nodes)
-    }
+    positions, canvas_width, canvas_height = _auto_layout_dfd(model)
 
     def text(value) -> str:
         return escape(str(value or ""), quote=True)
@@ -267,13 +344,86 @@ async def export_dfd(project_id: str, format: str = "svg", request: Request = No
             return f'<ellipse cx="{x}" cy="{y}" rx="76" ry="32" fill="#EFF6FF" stroke="#2563EB" stroke-width="2"/>'
         return f'<rect x="{x-82}" y="{y-32}" width="164" height="64" rx="14" fill="#F8FAFC" stroke="#64748B" stroke-width="2"/>'
 
-    lines = [
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="dfd-title dfd-desc">',
-        f'<title id="dfd-title">{text(model.title)} — canonical DFD revision {model.revision}</title>',
-        '<desc id="dfd-desc">Escaped semantic DFD export. Dashed arrows indicate boundary crossings or unresolved membership.</desc>',
-        '<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#526777"/></marker></defs>',
-        '<rect width="1200" height="760" fill="#FFFFFF"/>',
+    def wrap_label(value: str, max_chars: int = 27) -> list[str]:
+        words = str(value).split()
+        lines: list[str] = []
+        current = ""
+        for word in words:
+            candidate = f"{current} {word}".strip()
+            if current and len(candidate) > max_chars:
+                lines.append(current)
+                current = word
+            else:
+                current = candidate
+        if current:
+            lines.append(current)
+        return lines or [""]
+
+    def node_text(node, x: float, y: float) -> str:
+        lines = wrap_label(f"{node.display_id} {node.name}")[:3]
+        start_y = y - (len(lines) - 1) * 7
+        return "".join(
+            f'<text x="{x}" y="{start_y + index * 14}" text-anchor="middle" font-size="12" fill="#1F2937">{text(line)}</text>'
+            for index, line in enumerate(lines)
+        )
+
+    def zone_depth(zone_id: str) -> int:
+        depth = 0
+        current = next((zone for zone in model.zones if zone.id == zone_id), None)
+        visited: set[str] = set()
+        while current and current.parent_zone_id and current.parent_zone_id not in visited:
+            visited.add(current.id)
+            depth += 1
+            current = next((zone for zone in model.zones if zone.id == current.parent_zone_id), None)
+        return depth
+
+    def descendants(zone_id: str) -> set[str]:
+        result = {zone_id}
+        changed = True
+        while changed:
+            changed = False
+            for zone in model.zones:
+                if zone.parent_zone_id in result and zone.id not in result:
+                    result.add(zone.id)
+                    changed = True
+        return result
+
+    zone_palette = [
+        ("#457B9D", "#EFF6FF"),
+        ("#6D28D9", "#F5F3FF"),
+        ("#D97706", "#FFF7ED"),
+        ("#DC2626", "#FEF2F4"),
     ]
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {canvas_width} {canvas_height}" role="img" aria-labelledby="dfd-title dfd-desc">',
+        f'<title id="dfd-title">{text(model.title)} — canonical DFD revision {model.revision}</title>',
+        '<desc id="dfd-desc">Canonical semantic DFD export with zone containers, directed data flows, and evidence-reviewable boundary crossings. Dashed arrows indicate boundary crossings or unresolved membership.</desc>',
+        '<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#526777"/></marker></defs>',
+        f'<rect width="{canvas_width}" height="{canvas_height}" fill="#FFFFFF"/>',
+    ]
+
+    for zone in sorted(model.zones, key=zone_depth):
+        zone_ids = descendants(zone.id)
+        zone_nodes = [
+            node for node in model.nodes
+            if any(zone_id in zone_ids for zone_id in node.zone_ids)
+        ]
+        points = [positions[node.id] for node in zone_nodes if node.id in positions]
+        if not points:
+            continue
+        accent, fill = zone_palette[min(zone_depth(zone.id), len(zone_palette) - 1)]
+        left = min(point["x"] for point in points) - 105
+        top = min(point["y"] for point in points) - 58
+        right = max(point["x"] for point in points) + 105
+        bottom = max(point["y"] for point in points) + 55
+        lines.append(
+            f'<rect x="{max(4, left)}" y="{max(4, top)}" width="{max(150, right - left)}" height="{max(110, bottom - top)}" '
+            f'rx="18" fill="{fill}" fill-opacity="0.55" stroke="{accent}" stroke-width="2" stroke-dasharray="8 6"/>'
+        )
+        lines.append(
+            f'<text x="{max(16, left + 14)}" y="{max(24, top + 25)}" font-size="12" font-family="monospace" font-weight="600" fill="{accent}">{text(f"{zone.display_id} · {zone.name}")}</text>'
+        )
+
     for index, flow in enumerate(model.flows):
         source = node_by_id.get(flow.source_id)
         target = node_by_id.get(flow.target_id)
@@ -285,7 +435,7 @@ async def export_dfd(project_id: str, format: str = "svg", request: Request = No
         dash = ' stroke-dasharray="10 7"' if crossing else ""
         lines.append(
             f'<line id="flow-{index}" x1="{float(start.get("x", 0))}" y1="{float(start.get("y", 0))}" '
-            f'x2="{float(end.get("x", 0))}" y2="{float(end.get("y", 0))}" stroke="#D06B55" stroke-width="2"{dash} marker-end="url(#arrow)"/>'
+            f'x2="{float(end.get("x", 0))}" y2="{float(end.get("y", 0))}" stroke="#6C91AA" stroke-width="2"{dash} marker-end="url(#arrow)"/>'
         )
         data_label = ", ".join(
             next((item.name for item in model.data_objects if item.id == data_id), data_id)
@@ -293,13 +443,13 @@ async def export_dfd(project_id: str, format: str = "svg", request: Request = No
         ) or flow.name
         mid_x = (float(start.get("x", 0)) + float(end.get("x", 0))) / 2
         mid_y = (float(start.get("y", 0)) + float(end.get("y", 0))) / 2 - 8
-        lines.append(f'<text x="{mid_x}" y="{mid_y}" font-size="12" fill="#526777">{text(flow.display_id)} · {text(data_label)}</text>')
+        lines.append(f'<text x="{mid_x}" y="{mid_y}" text-anchor="middle" font-size="12" font-family="monospace" fill="#344E5C">{text(flow.display_id)} · {text(data_label)}</text>')
     for node in model.nodes:
         position = positions[node.id]
         x = float(position.get("x", 0))
         y = float(position.get("y", 0))
         lines.append(node_shape(node, x, y))
-        lines.append(f'<text x="{x}" y="{y+4}" text-anchor="middle" font-size="13" fill="#1F2937">{text(f"{node.display_id} {node.name}")}</text>')
+        lines.append(node_text(node, x, y))
     lines.append('</svg>')
     return Response(
         content="".join(lines),

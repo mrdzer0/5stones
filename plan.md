@@ -5,7 +5,7 @@
 - Acuan: `DFD_Feature_AI_Agent_Prompt.md`
 - Status project saat ini: **grounded threat-modeling MVP dengan DFD visualization**.
 - Target akhir: **semantic DFD modeling feature** yang menjadi source of truth untuk canvas, inventory, export, STRIDE, dan LINDDUN.
-- Verifikasi branch saat ini: 75 test Python lulus, 1 regression test JavaScript lulus, syntax/diff checks lulus, dan Playwright smoke-test UI/API lulus.
+- Verifikasi branch saat ini: 76 test Python lulus, 1 regression test JavaScript lulus, syntax/diff checks lulus, dan Playwright smoke-test UI/API lulus.
 - Branch enhanced/revamp: `codex/dfd-threat-model-alignment`.
 - Checkpoint fondasi: `77db35f Add canonical DFD semantic model foundation`.
 
@@ -233,6 +233,8 @@ Progress:
 - Level UI canonical memisahkan Context, System DFD, dan Feature DFD dengan pemilihan parent process.
 - Regeneration proposal memiliki candidate model yang dapat diterapkan eksplisit tanpa menghapus layout manual.
 - Regeneration proposal memiliki section-level review dan aksi dismiss yang menyimpan resolution history tanpa mengubah canonical model.
+- Canonical renderer sekarang memakai topology-aware layout, directed flow labels, dynamic nested zone containers, dan lane terpisah untuk node tanpa flow agar graph tetap terbaca tanpa mengarang koneksi.
+- SVG export memakai fallback layout dan zone containers yang sama secara semantik, termasuk label flow dan dashed boundary semantics; legacy evidence refs di-hydrate saat read/export agar report lama tetap dapat divisualisasikan.
 - Canonical DFD JSON export/import telah ditambahkan melalui schema validation dan optimistic revision check.
 - Inventory sekarang mencakup zone; boundary inspector dapat mengubah status, tipe,
   transition scope, dan rationale; zone inspector dapat mengubah parent dan trust assumptions.
@@ -391,7 +393,7 @@ Status: **Sebagian selesai — prioritas P1/P2**
 Progress:
 
 - Test suite bertambah dari 24 menjadi 65 Python tests.
-- Test suite branch saat ini berjumlah 75 Python tests, termasuk privacy assessment,
+- Test suite branch saat ini berjumlah 76 Python tests, termasuk privacy assessment,
   pipeline acceptance, assertion provenance refresh, proposal dismiss, dan logical
   reviewer-boundary coverage.
 - Test baru mencakup canonical model typed refs, graph invalidity, zone cycle, multi-boundary threat mapping, request/response, fixture crossing, DFD persistence, SVG escaping, threat schema validation, dan redaction.
@@ -434,13 +436,13 @@ Acceptance test groups:
 | Threat traceability | Partial: explicit DFD refs, unmapped state, cross-boundary fan-out fixed, threat-to-DFD focus action, typed control locations/evidence refs |
 | STRIDE coverage model | Partial: prompt, validated output, deterministic element/category coverage, revision tracking; engine-backed coverage masih reviewable |
 | LINDDUN PRO-aligned model | Partial: canonical labels/aliases, sender-flow-receiver prompt, privacy/lifecycle assessment, `needs_context` annotation, non-compliance guard; evidence-backed lifecycle resolution belum lengkap |
-| Editable DFD dan layout persistence | Partial: add/edit/remove node/flow/data/zone/boundary, inventory, I-P-O/store inspector, privacy fields, evidence-reference editor, layout persistence, undo/redo, impact preview; automated UI mutation test belum ada |
+| Editable DFD dan layout persistence | Partial: add/edit/remove node/flow/data/zone/boundary, inventory, I-P-O/store inspector, privacy fields, evidence-reference editor, topology-aware zone layout, layout persistence, undo/redo, impact preview; automated UI mutation test belum ada |
 | Regenerate diff/revision conflict | Partial: revision conflict, candidate proposal, explicit apply, per-section review, dan dismiss history sudah ada; durable job/recovery belum ada |
-| JSON round-trip/SVG export | Partial: schema-validated JSON import/export dan SVG export; visual QA boundary/label belum lengkap |
+| JSON round-trip/SVG export | Partial: schema-validated JSON import/export dan zone-aware SVG export; visual QA boundary/label lintas ukuran layar belum lengkap |
 | Authentication/project isolation | Partial: configurable token-per-workspace guard + cross-workspace resource check; IdP/JWT production integration belum ada |
 | Failure/retry/provider safety | Partial: persisted analysis run state, retry endpoint/UI, URL allowlist, local-only policy, and bounded token/timeout/retries; server-side cancellation/quota belum ada |
 | Synthetic DFD fixture | Partial: customer-registration source/model tersedia; Postman-only fixture inline test |
-| Automated verification sesuai AC01–AC20 | Partial: 75 Python tests + JS regression + Playwright DFD/report/privacy/proposal smoke-test + access-control/provider/failure helper tests; full end-to-end/UI mutation criteria belum lengkap |
+| Automated verification sesuai AC01–AC20 | Partial: 76 Python tests + JS regression + Playwright DFD/report/privacy/proposal smoke-test + access-control/provider/failure helper tests; full end-to-end/UI mutation criteria belum lengkap |
 
 ## Prioritas implementasi
 
@@ -468,7 +470,9 @@ Acceptance test groups:
 - 2026-09-19: Added persisted analysis run state/retry boundary, provider URL/data-policy/resource validation, and typed control locations/verification references.
 - 2026-09-19: Added privacy readiness/lifecycle assessment, data-object LINDDUN context annotation, privacy fields in canonical model/prompt/inspector, and per-attribute assertion refresh after human edits.
 - 2026-09-19: Added proposal dismiss resolution history, logical/mixed crossing reviewer rationale validation, and evidence-reference editing across canonical DFD element inspectors/create forms.
-- 2026-09-19: Verification: 75 Python unit tests, JavaScript analysis visibility regression, JS syntax checks, Python compilation, diff whitespace checks, and Playwright DFD/report/privacy/proposal smoke-test passed; favicon route returns 200.
+- 2026-09-19: Aligned canonical DFD rendering with the Mermaid reference pattern: topology-aware node placement, visible directed flow labels, dynamic nested zone containers, isolated-node evidence lane, cache-busted assets, and zone-aware SVG export.
+- 2026-09-19: Verification: 76 Python unit tests, JavaScript analysis visibility regression, JS syntax checks, Python compilation, diff whitespace checks, and Playwright DFD/report/privacy/proposal smoke-test passed; favicon route returns 200.
+- 2026-09-19: DFD visual verification: Playwright confirmed 23 canonical nodes, 8 labeled edges, 4 visible zone containers, SVG export 200 with zones/flows, and zero console errors.
 
 ## Progress rule
 
