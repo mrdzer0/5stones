@@ -155,7 +155,11 @@ def _unknown_assertions(
                 inference_reason="The source does not distinguish request, response, event, read, write, or replication.",
             ))
     for data_object in data_objects:
-        for field in ("purpose", "recipients", "data_subjects", "identifiers", "sensitivity"):
+        for field in (
+            "purpose", "recipients", "data_subjects", "identifiers", "sensitivity",
+            "direct_identifiers", "indirect_identifiers", "linkability", "notice",
+            "individual_control", "legal_basis",
+        ):
             value = getattr(data_object, field)
             if value in (None, "", []):
                 assertions.append(DfdAssertion(
@@ -319,6 +323,83 @@ def recalculate_boundary_crossings(model: DfdModel) -> DfdModel:
         boundary.crossing_flow_ids = sorted(preserved | flow_matches.get(boundary.id, set()))
 
     model.semantic_hash = _semantic_hash(model)
+    return model
+
+
+def refresh_attribute_assertions(model: DfdModel) -> DfdModel:
+    """Synchronize per-attribute knowledge assertions after a human edit.
+
+    A value entered without evidence is ``inferred`` rather than ``documented``;
+    clearing a value restores an explicit ``unknown`` assertion. Existing
+    ``conflicting`` assertions are retained until a reviewer resolves them.
+    """
+    def is_missing(value: object) -> bool:
+        return value is None or value == "" or value == [] or value == "unknown"
+
+    value_by_object: dict[str, object] = {
+        **{item.id: item for item in [*model.nodes, *model.data_objects]},
+        **{store_id: store for store_id, store in model.stores.items()},
+    }
+
+    def update_assertions(
+        object_id: str,
+        current: list[DfdAssertion],
+        fields: tuple[str, ...],
+        evidence_refs: list[str],
+    ) -> list[DfdAssertion]:
+        existing = {assertion.field_path: assertion for assertion in current}
+        owner = value_by_object[object_id]
+        updated: list[DfdAssertion] = []
+        for field in fields:
+            value = getattr(owner, field, None)
+            prior = existing.get(field)
+            if prior and prior.status == "conflicting":
+                updated.append(prior)
+                continue
+            if is_missing(value):
+                updated.append(DfdAssertion(
+                    object_id=object_id,
+                    field_path=field,
+                    value=None,
+                    status="unknown",
+                    evidence_refs=list(evidence_refs),
+                    inference_reason="The value is not established by the current model or evidence.",
+                    review_status=prior.review_status if prior else "open",
+                ))
+            else:
+                status = "documented" if evidence_refs else "inferred"
+                updated.append(DfdAssertion(
+                    object_id=object_id,
+                    field_path=field,
+                    value=value,
+                    status=status,
+                    evidence_refs=list(evidence_refs),
+                    inference_reason=None if status == "documented" else "Value entered or normalized without direct source evidence.",
+                    review_status=prior.review_status if prior else "reviewed",
+                ))
+        return updated
+
+    node_fields = ("scope", "ownership", "exposure")
+    for node in model.nodes:
+        node.assertions = update_assertions(node.id, node.assertions, node_fields, node.evidence_refs)
+    data_fields = (
+        "purpose", "recipients", "data_subjects", "identifiers", "sensitivity",
+        "direct_identifiers", "indirect_identifiers", "linkability", "notice",
+        "individual_control", "legal_basis",
+    )
+    for item in model.data_objects:
+        item.assertions = update_assertions(item.id, item.assertions, data_fields, item.evidence_refs)
+    for store_id, store in model.stores.items():
+        store.assertions = update_assertions(store_id, store.assertions, ("retention", "deletion", "backup"), store.evidence_refs)
+
+    managed_ids = {node.id for node in model.nodes} | {item.id for item in model.data_objects} | set(model.stores)
+    preserved = [assertion for assertion in model.assertions if assertion.object_id not in managed_ids]
+    model.assertions = [
+        *preserved,
+        *(assertion for node in model.nodes for assertion in node.assertions),
+        *(assertion for item in model.data_objects for assertion in item.assertions),
+        *(assertion for store in model.stores.values() for assertion in store.assertions),
+    ]
     return model
 
 
@@ -768,13 +849,17 @@ def build_dfd_model(project: dict, trust_model: dict, previous: dict | None = No
     privacy_metadata_unknown = any(
         getattr(data_object, field) in (None, "", [])
         for data_object in data_objects
-        for field in ("purpose", "recipients", "data_subjects", "identifiers", "sensitivity")
+        for field in (
+            "purpose", "recipients", "data_subjects", "identifiers", "sensitivity",
+            "direct_identifiers", "indirect_identifiers", "linkability", "notice",
+            "individual_control", "legal_basis",
+        )
     )
     if data_objects and privacy_metadata_unknown:
         questions.append(DfdQuestion(
             id="question-data-privacy-context",
             affected_refs=[data_object.id for data_object in data_objects],
-            question="What are the purpose, data subjects, identifiers, recipients, sensitivity, and individual-control expectations for these data objects?",
+            question="What are the purpose, data subjects, direct/indirect identifiers, recipients, sensitivity, linkability, notice, individual-control expectations, and documented legal basis for these data objects?",
             reason="LINDDUN analysis needs documented privacy context and must not treat missing metadata as safe or compliant.",
             source_refs=_source_refs(project),
         ))
@@ -786,10 +871,17 @@ def build_dfd_model(project: dict, trust_model: dict, previous: dict | None = No
     for assertion in model_assertions:
         assertions_by_object[assertion.object_id].append(assertion)
     nodes = [node.model_copy(update={"assertions": assertions_by_object.get(node.id, [])}) for node in nodes]
+    data_objects = [item.model_copy(update={"assertions": assertions_by_object.get(item.id, [])}) for item in data_objects]
+    stores = {
+        store_id: store.model_copy(update={"assertions": assertions_by_object.get(store_id, [])})
+        for store_id, store in stores.items()
+    }
     model_evidence = _model_evidence(project, [
         *(ref for node in nodes for ref in node.evidence_refs),
+        *(ref for data_object in data_objects for ref in data_object.evidence_refs),
         *(ref for flow in dfd_flows for ref in flow.evidence_refs),
         *(ref for boundary in dfd_boundaries for ref in boundary.evidence_refs),
+        *(ref for store in stores.values() for ref in store.evidence_refs),
     ])
     if any(assertion.status == "conflicting" for assertion in model_assertions):
         questions.append(DfdQuestion(
@@ -885,11 +977,17 @@ def validate_dfd_model(model: DfdModel) -> dict:
             validate_evidence_refs(f"Assertion {assertion.object_id}.{assertion.field_path}", assertion.evidence_refs)
     for data_object in model.data_objects:
         validate_evidence_refs(f"Data object {data_object.id}", data_object.evidence_refs)
+        for assertion in data_object.assertions:
+            validate_evidence_refs(f"Assertion {assertion.object_id}.{assertion.field_path}", assertion.evidence_refs)
     for flow in model.flows:
         validate_evidence_refs(f"Flow {flow.id}", flow.evidence_refs)
     for boundary in model.boundaries:
         validate_evidence_refs(f"Boundary {boundary.id}", boundary.evidence_refs)
         for assertion in boundary.assertions:
+            validate_evidence_refs(f"Assertion {assertion.object_id}.{assertion.field_path}", assertion.evidence_refs)
+    for store_id, store in model.stores.items():
+        validate_evidence_refs(f"Store {store_id}", store.evidence_refs)
+        for assertion in store.assertions:
             validate_evidence_refs(f"Assertion {assertion.object_id}.{assertion.field_path}", assertion.evidence_refs)
     for assertion in model.assertions:
         validate_evidence_refs(f"Assertion {assertion.object_id}.{assertion.field_path}", assertion.evidence_refs)
@@ -1014,6 +1112,13 @@ def validate_dfd_model(model: DfdModel) -> dict:
         for crossing_id in [*flow.crossing_origins.keys(), *flow.crossing_rationales.keys()]:
             if crossing_id not in boundary_set:
                 errors.append(f"Flow {flow.id} crossing metadata references missing boundary {crossing_id}")
+        for boundary_id in flow.boundary_crossings:
+            boundary = next((item for item in model.boundaries if item.id == boundary_id), None)
+            if boundary and boundary.transition_scope in {"logical", "mixed"}:
+                if flow.crossing_origins.get(boundary_id) != "reviewer":
+                    warnings.append(f"Flow {flow.id} logical boundary {boundary_id} requires reviewer confirmation")
+                if not str(flow.crossing_rationales.get(boundary_id) or "").strip():
+                    warnings.append(f"Flow {flow.id} logical boundary {boundary_id} has no reviewer rationale")
 
     for flow in model.flows:
         if len(flow.boundary_crossings) != len(set(flow.boundary_crossings)):
@@ -1051,7 +1156,31 @@ def format_dfd_analysis_context(dfd_model: dict | None) -> str:
         )
     lines.append("DATA OBJECTS:")
     for item in dfd_model.get("data_objects", []) or []:
-        lines.append(f"- {item.get('id')} ({item.get('display_id')}) · {item.get('name')} · status={item.get('knowledge_status')}")
+        lines.append(
+            f"- {item.get('id')} ({item.get('display_id')}) · {item.get('name')} · "
+            f"classification={item.get('classification') or 'unknown'} · sensitivity={item.get('sensitivity') or 'unknown'} · "
+            f"purpose={item.get('purpose') or 'unknown'} · subjects={item.get('data_subjects') or 'unknown'} · "
+            f"identifiers={item.get('identifiers') or 'unknown'} · direct_identifiers={item.get('direct_identifiers') or 'unknown'} · "
+            f"indirect_identifiers={item.get('indirect_identifiers') or 'unknown'} · recipients={item.get('recipients') or 'unknown'} · "
+            f"linkability={item.get('linkability') or 'unknown'} · notice={item.get('notice') or 'unknown'} · "
+            f"individual_control={item.get('individual_control') or 'unknown'} · legal_basis={item.get('legal_basis') or 'unknown'} · "
+            f"status={item.get('knowledge_status')} · evidence={item.get('evidence_refs') or []}"
+        )
+    lines.append("STORES AND DATA LIFECYCLE:")
+    node_names = {
+        str(node.get("id")): node.get("name")
+        for node in dfd_model.get("nodes", []) or []
+        if isinstance(node, dict) and node.get("id")
+    }
+    for store_id, store in (dfd_model.get("stores") or {}).items():
+        if not isinstance(store, dict):
+            continue
+        lines.append(
+            f"- {store_id} ({node_names.get(str(store_id), 'data store')}) · data={store.get('data_object_ids') or []} · "
+            f"readers={store.get('readers') or []} · writers={store.get('writers') or []} · "
+            f"retention={store.get('retention') or 'unknown'} · deletion={store.get('deletion') or 'unknown'} · "
+            f"backup={store.get('backup') or 'unknown'} · controls={store.get('protection_controls') or []}"
+        )
     lines.append("FLOWS:")
     for flow in dfd_model.get("flows", []) or []:
         lines.append(
@@ -1067,5 +1196,9 @@ def format_dfd_analysis_context(dfd_model: dict | None) -> str:
     if dfd_model.get("questions"):
         lines.append("OPEN QUESTIONS:")
         for question in dfd_model.get("questions", []) or []:
-            lines.append(f"- {question.get('id')} · {question.get('question')} · affected={question.get('affected_refs') or []}")
+            lines.append(
+                f"- {question.get('id')} · status={question.get('status')} · {question.get('question')} · "
+                f"affected={question.get('affected_refs') or []} · source_refs={question.get('source_refs') or []} · "
+                f"resolution={question.get('resolution') or 'unresolved'}"
+            )
     return "\n".join(lines)

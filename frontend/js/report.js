@@ -263,6 +263,7 @@ function renderThreatsTable(threats) {
           <details class="report-row-details"><summary>Control &amp; scenario details</summary><div>
             <p><strong>Recommended control:</strong> ${escHtml(t.recommended_control || 'Not mapped')}</p>
             ${t.abuse_case ? `<p><strong>Abuse case:</strong> ${escHtml(t.abuse_case)}</p>` : ''}
+            ${t.framework === 'LINDDUN' && t.privacy_context_status ? `<p><strong>Privacy context:</strong> ${escHtml(t.privacy_context_status)}${t.privacy_context_missing?.length ? ` · missing ${escHtml(t.privacy_context_missing.join(', '))}` : ''}</p>` : ''}
             ${t.confidence_reason ? `<p><strong>Confidence:</strong> ${escHtml(t.confidence_reason)}</p>` : ''}
           </div></details>
         </div>

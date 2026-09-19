@@ -1,10 +1,12 @@
 """LINDDUN privacy threat generation service."""
 from __future__ import annotations
+import json
 import uuid
 from typing import List
 from backend.services.ai_service import chat_complete_json, get_active_provider_config
 from backend.services.posture_service import build_evidence_context
 from backend.services.dfd_model_service import format_dfd_analysis_context
+from backend.services.privacy_service import assess_privacy_metadata
 from backend.services.threat_validation_service import ThreatGenerationResult
 
 LINDDUN_SYSTEM_PROMPT = """You are a privacy engineer performing LINDDUN privacy threat modeling.
@@ -46,6 +48,7 @@ async def generate_linddun_threats(
         for b in trust_boundaries[:8]
     ])
     dfd_context = format_dfd_analysis_context(dfd_model)
+    privacy_assessment = assess_privacy_metadata(dfd_model)
 
     user_prompt = f"""Perform LINDDUN privacy threat analysis for this system.
 
@@ -58,6 +61,9 @@ TRUST BOUNDARIES:
 CANONICAL DFD MODEL:
 {dfd_context}
 
+PRIVACY METADATA READINESS:
+{json.dumps(privacy_assessment, ensure_ascii=False, indent=2)}
+
 EVIDENCE CATALOG:
 {evidence_context}
 
@@ -65,7 +71,11 @@ EVIDENCE CATALOG:
     data lifecycle. Do not create a finding for every category. Do not treat has_pii=false as proof that no
 privacy risk exists. Evaluate location and image metadata, linkability across records,
 third-party model processing, inferred content, public API aggregation, retention, user
-awareness, and compliance where relevant.
+awareness, and compliance where relevant. Missing purpose, recipient, lifecycle, notice,
+individual-control, linkability, or legal-basis metadata must be reported as insufficient
+information or a candidate requiring review; it is not proof of safety and is not by itself
+evidence of legal non-compliance. A documented lawful basis does not remove other privacy
+risks such as excessive disclosure, linking, or unawareness.
     Return one JSON object with a "threats" array and a separate "coverage" array:
 {{
   "coverage": [{{"element_ref": "valid DFD id", "category": "LINDDUN category", "status": "reviewed_no_candidate|candidate_identified|insufficient_information", "reason": "..."}}],

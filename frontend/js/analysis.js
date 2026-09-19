@@ -55,6 +55,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   document.getElementById('btn-retry-persisted-analysis')?.addEventListener('click', retryPersistedAnalysis);
   document.getElementById('btn-apply-dfd-proposal')?.addEventListener('click', applyDfdProposal);
+  document.getElementById('btn-dismiss-dfd-proposal')?.addEventListener('click', dismissDfdProposal);
   document.getElementById('btn-upload-artifact')?.addEventListener('click', uploadArtifact);
   document.getElementById('artifact-type-select')?.addEventListener('change', (e) => updateArtifactFileAccept(e.target.value));
   document.getElementById('artifact-file-inline')?.addEventListener('change', (e) => updateArtifactSelection(e.target.files?.[0]));
@@ -1464,6 +1465,36 @@ async function applyDfdProposal() {
   }
 }
 
+async function dismissDfdProposal() {
+  if (!currentReport?.dfd_model?.revision || !currentReport?.dfd_proposal?.candidate_model) return;
+  if (!window.confirm('Dismiss this source regeneration proposal? The reviewed canonical DFD will remain authoritative.')) return;
+  const button = document.getElementById('btn-dismiss-dfd-proposal');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Dismissing…';
+  }
+  try {
+    const response = await API.dfd.dismissProposal(projectId, {
+      expected_revision: currentReport.dfd_model.revision,
+      action: 'dismiss',
+    });
+    currentReport.dfd_proposal = null;
+    currentReport.dfd_proposal_resolution = response.resolution;
+    if (currentReport.analysis_stale?.reason?.startsWith('Source context changed while a human-edited DFD exists')) {
+      delete currentReport.analysis_stale;
+    }
+    renderResults(currentReport);
+    showToast('DFD regeneration proposal dismissed; reviewed model remains active.', 'success');
+  } catch (err) {
+    showToast('Could not dismiss DFD proposal: ' + err.message, 'error');
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = 'Dismiss proposal';
+    }
+  }
+}
+
 function syncAnalysisStaleness(report) {
   const notice = document.getElementById('analysis-stale-notice');
   const message = document.getElementById('analysis-stale-message');
@@ -1812,13 +1843,14 @@ function renderGraphCoverageSummary(report) {
     return;
   }
   el.style.display = '';
+  const privacy = report?.privacy_assessment;
   el.innerHTML = summaries.map(([framework, summary]) => `
     <span class="diagram-mapping-label">${escHtml(framework)} graph coverage</span>
     <span class="diagram-mapping-chip"><strong>${Number(summary.candidate_identified || 0)}</strong> candidate</span>
     <span class="diagram-mapping-chip"><strong>${Number(summary.reviewed_no_candidate || 0)}</strong> reviewed no candidate</span>
     <span class="diagram-mapping-chip ${summary.insufficient_information ? 'is-warning' : 'is-complete'}"><strong>${Number(summary.insufficient_information || 0)}</strong> insufficient information</span>
     <span class="diagram-mapping-help">Missing coverage is reviewable and is not treated as no threat.</span>
-  `).join('');
+  `).join('') + (privacy ? `<span class="diagram-mapping-label">Privacy metadata</span><span class="diagram-mapping-chip ${privacy.status === 'documented' ? 'is-complete' : 'is-warning'}"><strong>${escHtml(privacy.status)}</strong> · ${Number(privacy.unresolved_count || 0)} unresolved</span><span class="diagram-mapping-help">Unknown privacy/lifecycle metadata remains reviewable context.</span>` : '');
 }
 
 function canonicalNodeVisualZone(node) {
@@ -1851,7 +1883,7 @@ function renderDfdInventory(report) {
     })),
     ...(model.data_objects || []).map(item => ({
       type: 'data_object', id: item.id, displayId: item.display_id, name: item.name,
-      detail: `data object · ${item.knowledge_status} · ${item.sensitivity || 'sensitivity unknown'}`,
+      detail: `data object · ${item.knowledge_status} · ${item.sensitivity || 'sensitivity unknown'} · ${privacyReadinessLabel(report, item.id)}`,
     })),
     ...(model.zones || []).map(zone => ({
       type: 'zone', id: zone.id, displayId: zone.display_id, name: zone.name,
@@ -1895,6 +1927,15 @@ function renderDfdInventory(report) {
   container.querySelectorAll('[data-dfd-add-type]').forEach(button => {
     button.addEventListener('click', () => showDfdCreateInspector(button.dataset.dfdAddType));
   });
+}
+
+function privacyReadinessRecord(report, dataObjectId) {
+  return (report?.privacy_assessment?.data_objects || []).find(item => String(item.element_id) === String(dataObjectId));
+}
+
+function privacyReadinessLabel(report, dataObjectId) {
+  const record = privacyReadinessRecord(report, dataObjectId);
+  return record ? `privacy ${record.status}` : 'privacy context unknown';
 }
 
 function focusDfdElement(type, id) {
@@ -2003,11 +2044,12 @@ function showDfdCreateInspector(type) {
     node: `<label class="form-label">Node type<select class="form-select" data-dfd-create-field="type"><option value="process">process</option><option value="entity">entity</option><option value="data_store">data_store</option></select></label>
       <label class="form-label">Name<input class="form-input" data-dfd-create-field="name" maxlength="240" required /></label>
       <div class="dfd-editor-grid"><label class="form-label">Scope<select class="form-select" data-dfd-create-field="scope"><option>in_scope</option><option>external_dependency</option><option selected>unknown</option></select></label><label class="form-label">Ownership<select class="form-select" data-dfd-create-field="ownership"><option>organization</option><option>customer</option><option>vendor</option><option>shared</option><option selected>unknown</option></select></label><label class="form-label">Exposure<select class="form-select" data-dfd-create-field="exposure"><option>internet_facing</option><option>private</option><option>local</option><option selected>unknown</option></select></label></div>
-      <label class="form-label">Trust zones<select class="form-select" data-dfd-create-field="zone_ids" multiple size="${Math.min(4, Math.max(2, (model.zones || []).length))}">${dfdZoneOptions(model)}</select></label>`,
-    flow: `<label class="form-label">Source<select class="form-select" data-dfd-create-field="source_id">${nodeOptions}</select></label><label class="form-label">Destination<select class="form-select" data-dfd-create-field="target_id">${nodeOptions}</select></label><label class="form-label">Data flow name<input class="form-input" data-dfd-create-field="name" maxlength="240" required /></label><div class="dfd-editor-grid"><label class="form-label">Interaction<select class="form-select" data-dfd-create-field="interaction_kind">${['request', 'response', 'event', 'read', 'write', 'replication', 'unknown'].map(value => `<option value="${value}">${value}</option>`).join('')}</select></label><label class="form-label">Protocol<input class="form-input" data-dfd-create-field="protocol" maxlength="120" /></label></div><label class="form-label">Data objects<select class="form-select" data-dfd-create-field="data_object_ids" multiple size="${Math.min(5, Math.max(2, (model.data_objects || []).length))}">${dataOptions}</select></label>`,
-    data_object: `<label class="form-label">Data object name<input class="form-input" data-dfd-create-field="name" maxlength="240" required /></label><label class="form-label">Fields<textarea class="form-input" data-dfd-create-field="fields" rows="2" placeholder="One field per line"></textarea></label><div class="dfd-editor-grid"><label class="form-label">Classification<input class="form-input" data-dfd-create-field="classification" /></label><label class="form-label">Sensitivity<input class="form-input" data-dfd-create-field="sensitivity" /></label></div><label class="form-label">Purpose<textarea class="form-input" data-dfd-create-field="purpose" rows="2"></textarea></label>`,
-    zone: `<label class="form-label">Zone name<input class="form-input" data-dfd-create-field="name" maxlength="180" required /></label><label class="form-label">Parent zone<select class="form-select" data-dfd-create-field="parent_zone_id">${dfdZoneOptions(model, null, true)}</select></label><label class="form-label">Trust assumptions<textarea class="form-input" data-dfd-create-field="trust_assumptions" rows="2" placeholder="One assumption per line"></textarea></label>`,
-    boundary: `<label class="form-label">Boundary name<input class="form-input" data-dfd-create-field="name" maxlength="180" required /></label><label class="form-label">Boundary types<select class="form-select" data-dfd-create-field="types" multiple size="5">${['network', 'identity', 'privilege', 'tenant', 'organization'].map(value => `<option value="${value}">${value}</option>`).join('')}</select></label><label class="form-label">Source zones<select class="form-select" data-dfd-create-field="source_zone_ids" multiple size="4">${dfdZoneOptions(model)}</select></label><label class="form-label">Target zones<select class="form-select" data-dfd-create-field="target_zone_ids" multiple size="4">${dfdZoneOptions(model)}</select></label><label class="form-label">Rationale<textarea class="form-input" data-dfd-create-field="rationale" rows="2"></textarea></label>`,
+      <label class="form-label">Trust zones<select class="form-select" data-dfd-create-field="zone_ids" multiple size="${Math.min(4, Math.max(2, (model.zones || []).length))}">${dfdZoneOptions(model)}</select></label>
+      <label class="form-label">Evidence references<textarea class="form-input" data-dfd-create-field="evidence_refs" rows="2" placeholder="One evidence reference per line"></textarea></label>`,
+    flow: `<label class="form-label">Source<select class="form-select" data-dfd-create-field="source_id">${nodeOptions}</select></label><label class="form-label">Destination<select class="form-select" data-dfd-create-field="target_id">${nodeOptions}</select></label><label class="form-label">Data flow name<input class="form-input" data-dfd-create-field="name" maxlength="240" required /></label><div class="dfd-editor-grid"><label class="form-label">Interaction<select class="form-select" data-dfd-create-field="interaction_kind">${['request', 'response', 'event', 'read', 'write', 'replication', 'unknown'].map(value => `<option value="${value}">${value}</option>`).join('')}</select></label><label class="form-label">Protocol<input class="form-input" data-dfd-create-field="protocol" maxlength="120" /></label></div><label class="form-label">Data objects<select class="form-select" data-dfd-create-field="data_object_ids" multiple size="${Math.min(5, Math.max(2, (model.data_objects || []).length))}">${dataOptions}</select></label><label class="form-label">Evidence references<textarea class="form-input" data-dfd-create-field="evidence_refs" rows="2" placeholder="One evidence reference per line"></textarea></label>`,
+    data_object: `<label class="form-label">Data object name<input class="form-input" data-dfd-create-field="name" maxlength="240" required /></label><label class="form-label">Fields<textarea class="form-input" data-dfd-create-field="fields" rows="2" placeholder="One field per line"></textarea></label><div class="dfd-editor-grid"><label class="form-label">Classification<input class="form-input" data-dfd-create-field="classification" /></label><label class="form-label">Sensitivity<input class="form-input" data-dfd-create-field="sensitivity" /></label></div><label class="form-label">Data subjects<textarea class="form-input" data-dfd-create-field="data_subjects" rows="2" placeholder="One subject per line"></textarea></label><label class="form-label">Direct identifiers<textarea class="form-input" data-dfd-create-field="direct_identifiers" rows="2" placeholder="One identifier per line"></textarea></label><label class="form-label">Indirect identifiers / linkability<textarea class="form-input" data-dfd-create-field="indirect_identifiers" rows="2" placeholder="One identifier per line"></textarea></label><label class="form-label">Purpose<textarea class="form-input" data-dfd-create-field="purpose" rows="2"></textarea></label><label class="form-label">Recipients<textarea class="form-input" data-dfd-create-field="recipients" rows="2" placeholder="One recipient per line"></textarea></label><label class="form-label">Linkability<input class="form-input" data-dfd-create-field="linkability" placeholder="unknown / bounded / cross-context" /></label><label class="form-label">Notice<textarea class="form-input" data-dfd-create-field="notice" rows="2"></textarea></label><label class="form-label">Individual control<textarea class="form-input" data-dfd-create-field="individual_control" rows="2"></textarea></label><label class="form-label">Documented legal basis<textarea class="form-input" data-dfd-create-field="legal_basis" rows="2"></textarea></label><label class="form-label">Evidence references<textarea class="form-input" data-dfd-create-field="evidence_refs" rows="2" placeholder="One evidence reference per line"></textarea></label>`,
+    zone: `<label class="form-label">Zone name<input class="form-input" data-dfd-create-field="name" maxlength="180" required /></label><label class="form-label">Parent zone<select class="form-select" data-dfd-create-field="parent_zone_id">${dfdZoneOptions(model, null, true)}</select></label><label class="form-label">Trust assumptions<textarea class="form-input" data-dfd-create-field="trust_assumptions" rows="2" placeholder="One assumption per line"></textarea></label><label class="form-label">Evidence references<textarea class="form-input" data-dfd-create-field="evidence_refs" rows="2" placeholder="One evidence reference per line"></textarea></label>`,
+    boundary: `<label class="form-label">Boundary name<input class="form-input" data-dfd-create-field="name" maxlength="180" required /></label><label class="form-label">Boundary types<select class="form-select" data-dfd-create-field="types" multiple size="5">${['network', 'identity', 'privilege', 'tenant', 'organization'].map(value => `<option value="${value}">${value}</option>`).join('')}</select></label><label class="form-label">Source zones<select class="form-select" data-dfd-create-field="source_zone_ids" multiple size="4">${dfdZoneOptions(model)}</select></label><label class="form-label">Target zones<select class="form-select" data-dfd-create-field="target_zone_ids" multiple size="4">${dfdZoneOptions(model)}</select></label><label class="form-label">Rationale<textarea class="form-input" data-dfd-create-field="rationale" rows="2"></textarea></label><label class="form-label">Evidence references<textarea class="form-input" data-dfd-create-field="evidence_refs" rows="2" placeholder="One evidence reference per line"></textarea></label>`,
   };
   if (!typeForms[type]) return;
   title.textContent = `Add DFD ${type.replace('_', ' ')}`;
@@ -2029,23 +2071,23 @@ async function saveDfdCreate(type, body) {
     const node = {
       id: dfdRandomId('node'), display_id: nextDfdDisplayId(model.nodes, nodeType === 'entity' ? 'E' : nodeType === 'data_store' ? 'D' : 'P'), type: nodeType, name,
       description: null, scope: read('scope')?.value || 'unknown', ownership: read('ownership')?.value || 'unknown', operator_control_party: null,
-      exposure: read('exposure')?.value || 'unknown', zone_ids: selected('zone_ids'), parent_process_id: null, knowledge_status: 'unknown', implementation_status: 'unknown', evidence_refs: [], assertions: [],
+      exposure: read('exposure')?.value || 'unknown', zone_ids: selected('zone_ids'), parent_process_id: null, knowledge_status: 'unknown', implementation_status: 'unknown', evidence_refs: lineValues(read('evidence_refs')?.value), assertions: [],
       process_metadata: nodeType === 'process' ? { purpose: null, execution_identity: null, privileges: [], input_flow_ids: [], output_flow_ids: [], transformations: [], control_refs: [] } : null,
     };
     model.nodes.push(node);
-    if (nodeType === 'data_store') model.stores[node.id] = { data_object_ids: [], readers: [], writers: [], retention: null, deletion: null, backup: null, protection_controls: [] };
+    if (nodeType === 'data_store') model.stores[node.id] = { data_object_ids: [], readers: [], writers: [], retention: null, deletion: null, backup: null, protection_controls: [], evidence_refs: [] };
     if (nodeType === 'process') model.views.push({ id: `view-feature-${node.id}`, kind: 'feature', parent_process_id: node.id, element_refs: [node.id], projection_mappings: { [node.id]: [node.id] }, input_flow_ids: [], output_flow_ids: [], port_mappings: { input: [], output: [] }, positions: {}, collapsed_groups: [], viewport: {} });
   } else if (type === 'flow') {
     const sourceId = read('source_id')?.value;
     const targetId = read('target_id')?.value;
     if (!sourceId || !targetId || sourceId === targetId) { showToast('Select distinct source and destination nodes', 'error'); return; }
-    model.flows.push({ id: dfdRandomId('flow'), display_id: nextDfdDisplayId(model.flows, 'F'), source_id: sourceId, target_id: targetId, name, data_object_ids: selected('data_object_ids'), protocol: read('protocol')?.value.trim() || null, interaction_kind: read('interaction_kind')?.value || 'unknown', authn: null, authz: null, boundary_crossings: [], crossing_rationales: {}, crossing_origins: {}, crossing_status: 'resolved', evidence_refs: [], knowledge_status: 'unknown', implementation_status: 'unknown' });
+    model.flows.push({ id: dfdRandomId('flow'), display_id: nextDfdDisplayId(model.flows, 'F'), source_id: sourceId, target_id: targetId, name, data_object_ids: selected('data_object_ids'), protocol: read('protocol')?.value.trim() || null, interaction_kind: read('interaction_kind')?.value || 'unknown', authn: null, authz: null, boundary_crossings: [], crossing_rationales: {}, crossing_origins: {}, crossing_status: 'resolved', evidence_refs: lineValues(read('evidence_refs')?.value), knowledge_status: 'unknown', implementation_status: 'unknown' });
   } else if (type === 'data_object') {
-    model.data_objects.push({ id: dfdRandomId('data-object'), display_id: nextDfdDisplayId(model.data_objects, 'DO'), name, fields: lineValues(read('fields')?.value), classification: read('classification')?.value.trim() || null, data_subjects: [], identifiers: [], sensitivity: read('sensitivity')?.value.trim() || null, purpose: read('purpose')?.value.trim() || null, recipients: [], transformation_refs: [], lineage_refs: [], knowledge_status: 'unknown', evidence_refs: [] });
+    model.data_objects.push({ id: dfdRandomId('data-object'), display_id: nextDfdDisplayId(model.data_objects, 'DO'), name, fields: lineValues(read('fields')?.value), classification: read('classification')?.value.trim() || null, data_subjects: lineValues(read('data_subjects')?.value), identifiers: [], direct_identifiers: lineValues(read('direct_identifiers')?.value), indirect_identifiers: lineValues(read('indirect_identifiers')?.value), sensitivity: read('sensitivity')?.value.trim() || null, purpose: read('purpose')?.value.trim() || null, recipients: lineValues(read('recipients')?.value), linkability: read('linkability')?.value.trim() || null, notice: read('notice')?.value.trim() || null, individual_control: read('individual_control')?.value.trim() || null, legal_basis: read('legal_basis')?.value.trim() || null, transformation_refs: [], lineage_refs: [], knowledge_status: 'unknown', evidence_refs: lineValues(read('evidence_refs')?.value), assertions: [] });
   } else if (type === 'zone') {
-    model.zones.push({ id: dfdRandomId('zone'), display_id: nextDfdDisplayId(model.zones, 'Z'), name, description: null, parent_zone_id: read('parent_zone_id')?.value || null, ownership_group_id: null, trust_assumptions: lineValues(read('trust_assumptions')?.value), knowledge_status: 'unknown', evidence_refs: [] });
+    model.zones.push({ id: dfdRandomId('zone'), display_id: nextDfdDisplayId(model.zones, 'Z'), name, description: null, parent_zone_id: read('parent_zone_id')?.value || null, ownership_group_id: null, trust_assumptions: lineValues(read('trust_assumptions')?.value), knowledge_status: 'unknown', evidence_refs: lineValues(read('evidence_refs')?.value) });
   } else if (type === 'boundary') {
-    model.boundaries.push({ id: dfdRandomId('boundary'), display_id: nextDfdDisplayId(model.boundaries, 'TB'), name, types: selected('types'), rationale: read('rationale')?.value.trim() || null, source_zone_ids: selected('source_zone_ids'), target_zone_ids: selected('target_zone_ids'), crossing_flow_ids: [], transition_scope: 'zone', controls: [], assertions: [], status: 'unresolved', derived: false, evidence_refs: [] });
+    model.boundaries.push({ id: dfdRandomId('boundary'), display_id: nextDfdDisplayId(model.boundaries, 'TB'), name, types: selected('types'), rationale: read('rationale')?.value.trim() || null, source_zone_ids: selected('source_zone_ids'), target_zone_ids: selected('target_zone_ids'), crossing_flow_ids: [], transition_scope: 'zone', controls: [], assertions: [], status: 'unresolved', derived: false, evidence_refs: lineValues(read('evidence_refs')?.value) });
   }
   syncDfdViews(model);
   await persistCanonicalDfdModel(model, { message: `DFD ${type.replace('_', ' ')} added` });
@@ -2107,16 +2149,24 @@ function showDataObjectInspector(dataObject) {
   const title = document.getElementById('inspector-title');
   const body = document.getElementById('inspector-body');
   if (!inspector || !title || !body) return;
+  const privacy = privacyReadinessRecord(currentReport, dataObject.id);
+  const privacySummary = privacy ? `<div class="analysis-stale-notice ${privacy.status === 'documented' ? '' : 'is-error'}" style="display:flex;margin-bottom:var(--space-3);"><div><strong>Privacy context: ${escHtml(privacy.status)}</strong><span>${privacy.missing_fields?.length ? `Missing: ${escHtml(privacy.missing_fields.join(', '))}` : 'Required privacy metadata is documented.'}</span></div></div>` : '';
   title.textContent = `${dataObject.display_id || dataObject.id} ${dataObject.name}`;
-  body.innerHTML = `<form class="dfd-node-editor" data-dfd-data-editor>
+  body.innerHTML = `${privacySummary}<form class="dfd-node-editor" data-dfd-data-editor>
     <div class="node-model-meta">${escHtml(dataObject.id)} · data object · ${escHtml(dataObject.knowledge_status)}</div>
     <label class="form-label">Name<input class="form-input" data-dfd-data-field="name" value="${escHtml(dataObject.name)}" maxlength="240" required /></label>
     <label class="form-label">Fields<textarea class="form-input" data-dfd-data-field="fields" rows="3">${escHtml((dataObject.fields || []).join('\n'))}</textarea></label>
     <div class="dfd-editor-grid"><label class="form-label">Classification<input class="form-input" data-dfd-data-field="classification" value="${escHtml(dataObject.classification || '')}" /></label><label class="form-label">Sensitivity<input class="form-input" data-dfd-data-field="sensitivity" value="${escHtml(dataObject.sensitivity || '')}" /></label></div>
     <label class="form-label">Data subjects<textarea class="form-input" data-dfd-data-field="data_subjects" rows="2">${escHtml((dataObject.data_subjects || []).join('\n'))}</textarea></label>
     <label class="form-label">Identifiers<textarea class="form-input" data-dfd-data-field="identifiers" rows="2">${escHtml((dataObject.identifiers || []).join('\n'))}</textarea></label>
+    <div class="dfd-editor-grid"><label class="form-label">Direct identifiers<textarea class="form-input" data-dfd-data-field="direct_identifiers" rows="2">${escHtml((dataObject.direct_identifiers || []).join('\n'))}</textarea></label><label class="form-label">Indirect identifiers<textarea class="form-input" data-dfd-data-field="indirect_identifiers" rows="2">${escHtml((dataObject.indirect_identifiers || []).join('\n'))}</textarea></label></div>
     <label class="form-label">Purpose<textarea class="form-input" data-dfd-data-field="purpose" rows="2">${escHtml(dataObject.purpose || '')}</textarea></label>
     <label class="form-label">Recipients<textarea class="form-input" data-dfd-data-field="recipients" rows="2">${escHtml((dataObject.recipients || []).join('\n'))}</textarea></label>
+    <label class="form-label">Linkability<input class="form-input" data-dfd-data-field="linkability" value="${escHtml(dataObject.linkability || '')}" placeholder="unknown / bounded / cross-context" /></label>
+    <label class="form-label">Notice<textarea class="form-input" data-dfd-data-field="notice" rows="2">${escHtml(dataObject.notice || '')}</textarea></label>
+    <label class="form-label">Individual control<textarea class="form-input" data-dfd-data-field="individual_control" rows="2">${escHtml(dataObject.individual_control || '')}</textarea></label>
+    <label class="form-label">Documented legal basis<textarea class="form-input" data-dfd-data-field="legal_basis" rows="2">${escHtml(dataObject.legal_basis || '')}</textarea></label>
+    <label class="form-label">Evidence references<textarea class="form-input" data-dfd-data-field="evidence_refs" rows="2" placeholder="One evidence reference per line">${escHtml((dataObject.evidence_refs || []).join('\n'))}</textarea></label>
     <button type="button" class="btn btn-primary btn-sm" data-save-dfd-data>Save data metadata</button>
     ${dfdDeleteButtonHtml('data_object', dataObject.id)}
   </form>`;
@@ -2133,7 +2183,7 @@ async function saveDataObject(dataObjectId, body) {
   const read = field => body.querySelector(`[data-dfd-data-field="${field}"]`);
   item.name = read('name')?.value.trim();
   if (!item.name) { showToast('Data object name is required', 'error'); return; }
-  item.fields = lineValues(read('fields')?.value); item.classification = read('classification')?.value.trim() || null; item.sensitivity = read('sensitivity')?.value.trim() || null; item.data_subjects = lineValues(read('data_subjects')?.value); item.identifiers = lineValues(read('identifiers')?.value); item.purpose = read('purpose')?.value.trim() || null; item.recipients = lineValues(read('recipients')?.value);
+  item.fields = lineValues(read('fields')?.value); item.classification = read('classification')?.value.trim() || null; item.sensitivity = read('sensitivity')?.value.trim() || null; item.data_subjects = lineValues(read('data_subjects')?.value); item.identifiers = lineValues(read('identifiers')?.value); item.direct_identifiers = lineValues(read('direct_identifiers')?.value); item.indirect_identifiers = lineValues(read('indirect_identifiers')?.value); item.purpose = read('purpose')?.value.trim() || null; item.recipients = lineValues(read('recipients')?.value); item.linkability = read('linkability')?.value.trim() || null; item.notice = read('notice')?.value.trim() || null; item.individual_control = read('individual_control')?.value.trim() || null; item.legal_basis = read('legal_basis')?.value.trim() || null; item.evidence_refs = lineValues(read('evidence_refs')?.value);
   const button = body.querySelector('[data-save-dfd-data]'); if (button) button.disabled = true;
   await persistCanonicalDfdModel(model, { message: 'DFD data metadata saved' });
 }
@@ -2158,6 +2208,7 @@ function showBoundaryInspector(boundary) {
       </div>
       <label class="form-label">Boundary types<select class="form-select" data-dfd-boundary-field="types" multiple size="4">${types.map(value => `<option value="${value}" ${(boundary.types || []).includes(value) ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
       <label class="form-label">Rationale<textarea class="form-input" data-dfd-boundary-field="rationale" rows="3" maxlength="1000">${escHtml(boundary.rationale || '')}</textarea></label>
+      <label class="form-label">Evidence references<textarea class="form-input" data-dfd-boundary-field="evidence_refs" rows="2" placeholder="One evidence reference per line">${escHtml((boundary.evidence_refs || []).join('\n'))}</textarea></label>
       <div class="dfd-editor-actions"><button type="button" class="btn btn-primary btn-sm" data-save-dfd-boundary>Save boundary metadata</button>${dfdDeleteButtonHtml('boundary', boundary.id)}</div>
     </form>
     <div class="inspector-findings"><strong>${threats.length} mapped finding${threats.length === 1 ? '' : 's'}</strong></div>`;
@@ -2177,6 +2228,7 @@ async function saveCanonicalBoundary(boundaryId, body) {
   boundary.transition_scope = read('transition_scope')?.value || 'unknown';
   boundary.types = [...(read('types')?.selectedOptions || [])].map(option => option.value);
   boundary.rationale = read('rationale')?.value.trim() || null;
+  boundary.evidence_refs = lineValues(read('evidence_refs')?.value);
   const button = body.querySelector('[data-save-dfd-boundary]');
   if (button) button.disabled = true;
   await persistCanonicalDfdModel(model, { message: 'DFD boundary metadata saved' });
@@ -2199,6 +2251,7 @@ function showZoneInspector(zone) {
       <label class="form-label">Parent zone<select class="form-select" data-dfd-zone-field="parent_zone_id"><option value="">Top-level</option>${parentOptions}</select></label>
       <label class="form-label">Description<textarea class="form-input" data-dfd-zone-field="description" rows="2" maxlength="1000">${escHtml(zone.description || '')}</textarea></label>
       <label class="form-label">Trust assumptions<textarea class="form-input" data-dfd-zone-field="trust_assumptions" rows="2" placeholder="One assumption per line">${escHtml((zone.trust_assumptions || []).join('\n'))}</textarea></label>
+      <label class="form-label">Evidence references<textarea class="form-input" data-dfd-zone-field="evidence_refs" rows="2" placeholder="One evidence reference per line">${escHtml((zone.evidence_refs || []).join('\n'))}</textarea></label>
       <div class="dfd-editor-actions"><button type="button" class="btn btn-primary btn-sm" data-save-dfd-zone>Save zone metadata</button>${dfdDeleteButtonHtml('zone', zone.id)}</div>
     </form>`;
   body.querySelector('[data-save-dfd-zone]')?.addEventListener('click', () => saveCanonicalZone(zone.id, body));
@@ -2216,6 +2269,7 @@ async function saveCanonicalZone(zoneId, body) {
   zone.parent_zone_id = read('parent_zone_id')?.value || null;
   zone.description = read('description')?.value.trim() || null;
   zone.trust_assumptions = (read('trust_assumptions')?.value || '').split('\n').map(value => value.trim()).filter(Boolean);
+  zone.evidence_refs = lineValues(read('evidence_refs')?.value);
   const button = body.querySelector('[data-save-dfd-zone]');
   if (button) button.disabled = true;
   await persistCanonicalDfdModel(model, { message: 'DFD zone metadata saved' });
@@ -3073,6 +3127,15 @@ function canonicalFlowEditorHtml(flow) {
   const dataOptions = (model.data_objects || []).map(item =>
     `<option value="${escHtml(item.id)}" ${selectedData.has(item.id) ? 'selected' : ''}>${escHtml(`${item.display_id} ${item.name}`)}</option>`
   ).join('');
+  const logicalBoundaries = (model.boundaries || []).filter(boundary =>
+    ['logical', 'mixed'].includes(boundary.transition_scope) && boundary.status !== 'rejected'
+  );
+  const selectedLogical = new Set((flow.boundary_crossings || []).filter(id =>
+    logicalBoundaries.some(boundary => boundary.id === id)
+  ));
+  const logicalBoundaryOptions = logicalBoundaries.map(boundary =>
+    `<option value="${escHtml(boundary.id)}" ${selectedLogical.has(boundary.id) ? 'selected' : ''}>${escHtml(`${boundary.display_id} ${boundary.name}`)}</option>`
+  ).join('');
   return `
     <form class="dfd-node-editor" data-dfd-flow-editor>
       <div class="node-model-meta">${escHtml(flow.display_id || flow.id)} · ${escHtml(flow.source_id)} → ${escHtml(flow.target_id)}</div>
@@ -3084,6 +3147,8 @@ function canonicalFlowEditorHtml(flow) {
         <label class="form-label">AuthZ<input class="form-input" data-dfd-flow-field="authz" value="${escHtml(flow.authz || '')}" maxlength="160" /></label>
       </div>
       <label class="form-label">Data objects<select class="form-select" data-dfd-flow-field="data_object_ids" multiple size="${Math.min(5, Math.max(2, (model.data_objects || []).length))}">${dataOptions}</select></label>
+      <label class="form-label">Evidence references<textarea class="form-input" data-dfd-flow-field="evidence_refs" rows="2" placeholder="One evidence reference per line">${escHtml((flow.evidence_refs || []).join('\n'))}</textarea></label>
+      ${logicalBoundaries.length ? `<label class="form-label">Logical identity / privilege / tenant crossings<select class="form-select" data-dfd-flow-field="logical_boundary_crossings" multiple size="${Math.min(4, Math.max(2, logicalBoundaries.length))}">${logicalBoundaryOptions}</select></label><label class="form-label">Reviewer crossing rationale<textarea class="form-input" data-dfd-flow-field="crossing_rationale" rows="2" maxlength="1000" placeholder="Why does this same-zone flow cross a logical boundary?">${escHtml((flow.boundary_crossings || []).map(id => flow.crossing_rationales?.[id]).filter(Boolean).join('\n'))}</textarea></label>` : ''}
       <div class="dfd-editor-actions"><button type="button" class="btn btn-primary btn-sm" data-save-dfd-flow>Save flow metadata</button>${dfdDeleteButtonHtml('flow', flow.id)}</div>
     </form>`;
 }
@@ -3104,6 +3169,17 @@ async function saveCanonicalFlow(flowId, body) {
   flow.authn = read('authn')?.value.trim() || null;
   flow.authz = read('authz')?.value.trim() || null;
   flow.data_object_ids = [...(read('data_object_ids')?.selectedOptions || [])].map(option => option.value);
+  flow.evidence_refs = lineValues(read('evidence_refs')?.value);
+  const logicalBoundaryIds = [...(read('logical_boundary_crossings')?.selectedOptions || [])].map(option => option.value);
+  const logicalBoundarySet = new Set((model.boundaries || []).filter(boundary => ['logical', 'mixed'].includes(boundary.transition_scope)).map(boundary => boundary.id));
+  flow.boundary_crossings = (flow.boundary_crossings || []).filter(id => !logicalBoundarySet.has(id));
+  flow.crossing_origins = { ...(flow.crossing_origins || {}) };
+  flow.crossing_rationales = { ...(flow.crossing_rationales || {}) };
+  logicalBoundaryIds.forEach(id => {
+    flow.boundary_crossings.push(id);
+    flow.crossing_origins[id] = 'reviewer';
+    flow.crossing_rationales[id] = read('crossing_rationale')?.value.trim() || 'Reviewer identified a logical boundary crossing on this flow.';
+  });
   const button = body.querySelector('[data-save-dfd-flow]');
   if (button) button.disabled = true;
   await persistCanonicalDfdModel(model, { message: 'DFD flow metadata saved' });
@@ -3351,6 +3427,7 @@ function canonicalNodeEditorHtml(node) {
       </div>
       <label class="form-label">Description<textarea class="form-input" data-dfd-field="description" rows="2" maxlength="1000">${escHtml(node.description || '')}</textarea></label>
       <label class="form-label">Trust zones<select class="form-select" data-dfd-field="zone_ids" multiple size="${Math.min(4, Math.max(2, (model.zones || []).length))}">${zoneOptions}</select></label>
+      <label class="form-label">Evidence references<textarea class="form-input" data-dfd-field="evidence_refs" rows="2" placeholder="One evidence reference per line">${escHtml((node.evidence_refs || []).join('\n'))}</textarea></label>
       ${node.type === 'process' ? `
         <label class="form-label">Process purpose<input class="form-input" data-dfd-field="purpose" value="${escHtml(purpose)}" maxlength="500" /></label>
         <label class="form-label">Execution identity<input class="form-input" data-dfd-field="execution_identity" value="${escHtml(processMetadata.execution_identity || '')}" maxlength="240" /></label>
@@ -3367,6 +3444,7 @@ function canonicalNodeEditorHtml(node) {
           <label class="form-label">Deletion<input class="form-input" data-dfd-store-field="deletion" value="${escHtml(storeMetadata.deletion || '')}" maxlength="240" /></label>
           <label class="form-label">Backup<input class="form-input" data-dfd-store-field="backup" value="${escHtml(storeMetadata.backup || '')}" maxlength="240" /></label>
           <label class="form-label">Protection controls<textarea class="form-input" data-dfd-store-field="protection_controls" rows="2" placeholder="One control per line">${multiline(storeMetadata.protection_controls)}</textarea></label>
+          <label class="form-label">Evidence references<textarea class="form-input" data-dfd-store-field="evidence_refs" rows="2" placeholder="One evidence reference per line">${multiline(storeMetadata.evidence_refs)}</textarea></label>
         </fieldset>
       ` : ''}
       <div class="dfd-editor-actions"><button type="button" class="btn btn-primary btn-sm" data-save-dfd-node>Save semantic metadata</button>${dfdDeleteButtonHtml('node', node.id)}</div>
@@ -3415,6 +3493,7 @@ async function saveCanonicalNode(nodeId, body) {
   node.operator_control_party = read('operator_control_party')?.value.trim() || null;
   node.description = read('description')?.value.trim() || null;
   node.zone_ids = [...(read('zone_ids')?.selectedOptions || [])].map(option => option.value);
+  node.evidence_refs = lineValues(read('evidence_refs')?.value);
   if (node.type === 'process') {
     node.process_metadata = node.process_metadata || {};
     node.process_metadata.purpose = read('purpose')?.value.trim() || null;
@@ -3437,6 +3516,7 @@ async function saveCanonicalNode(nodeId, body) {
       deletion: readStore('deletion')?.value.trim() || null,
       backup: readStore('backup')?.value.trim() || null,
       protection_controls: (readStore('protection_controls')?.value || '').split('\n').map(value => value.trim()).filter(Boolean),
+      evidence_refs: lineValues(readStore('evidence_refs')?.value),
     };
   }
   const button = body.querySelector('[data-save-dfd-node]');

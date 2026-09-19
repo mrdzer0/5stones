@@ -15,6 +15,7 @@ from backend.services.dfd_model_service import (
     diff_dfd_models,
     preview_dfd_delete_impact,
     recalculate_boundary_crossings,
+    refresh_attribute_assertions,
     validate_dfd_model,
 )
 from backend.utils.audit import log_event
@@ -99,6 +100,10 @@ async def save_dfd(project_id: str, body: dict, request: Request = None):
         raise HTTPException(status_code=422, detail="DFD project_id or model id cannot be changed")
 
     recalculate_boundary_crossings(model)
+    submitted_semantic_changed = model.semantic_hash != current.semantic_hash
+    if submitted_semantic_changed:
+        refresh_attribute_assertions(model)
+        recalculate_boundary_crossings(model)
     validation = validate_dfd_model(model)
     if not validation["valid"]:
         raise HTTPException(status_code=422, detail={"message": "DFD graph validation failed", **validation})
@@ -155,6 +160,14 @@ async def apply_dfd_regeneration_proposal(project_id: str, body: dict, request: 
     if candidate.project_id != project_id or candidate.id != current.id:
         raise HTTPException(status_code=422, detail="DFD proposal identity does not match the project model")
 
+    # Normalize both sides before a partial apply so legacy models without
+    # per-attribute assertions do not appear as unrelated changes in every
+    # proposal section.
+    refresh_attribute_assertions(current)
+    recalculate_boundary_crossings(current)
+    refresh_attribute_assertions(candidate)
+    recalculate_boundary_crossings(candidate)
+
     if body.get("accept_all"):
         selected_sections = list(PROPOSAL_SECTIONS)
     else:
@@ -171,6 +184,7 @@ async def apply_dfd_regeneration_proposal(project_id: str, body: dict, request: 
         model = apply_dfd_proposal(current, candidate, selected_sections)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    refresh_attribute_assertions(model)
     validation = validate_dfd_model(model)
     if not validation["valid"]:
         raise HTTPException(status_code=422, detail={"message": "Applied DFD proposal is invalid", **validation})
@@ -292,6 +306,57 @@ async def export_dfd(project_id: str, format: str = "svg", request: Request = No
         media_type="image/svg+xml",
         headers={"Content-Disposition": f"attachment; filename=dfd-{project_id}.svg"},
     )
+
+
+@router.post("/{project_id}/dfd/proposal/resolve")
+async def resolve_dfd_regeneration_proposal(project_id: str, body: dict, request: Request = None):
+    """Resolve a pending regeneration proposal without silently changing the model."""
+    if not _project_for_request(project_id, request):
+        raise HTTPException(status_code=404, detail="Project not found")
+    report, current = _load_model(project_id)
+    proposal = report.get("dfd_proposal")
+    if not isinstance(proposal, dict) or not isinstance(proposal.get("candidate_model"), dict):
+        raise HTTPException(status_code=404, detail="No reviewable DFD regeneration proposal")
+    if not isinstance(body, dict) or body.get("action") != "dismiss":
+        raise HTTPException(status_code=422, detail="Only explicit dismiss action is supported")
+    try:
+        expected_revision = int(body.get("expected_revision"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="expected_revision must be an integer") from exc
+    if expected_revision != current.revision:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "DFD revision conflict", "current_revision": current.revision},
+        )
+    resolved_at = _utc_now()
+    history_item = {
+        "resolved_at": resolved_at,
+        "resolution": "dismissed",
+        "base_revision": proposal.get("base_revision", current.revision),
+        "candidate_revision": proposal.get("candidate_revision"),
+        "sections": proposal.get("sections") or {},
+    }
+    history = report.setdefault("dfd_proposal_history", [])
+    history.append(history_item)
+    report["dfd_proposal_history"] = history[-20:]
+    report["dfd_proposal_resolution"] = {
+        "resolution": "dismissed",
+        "resolved_at": resolved_at,
+        "base_revision": current.revision,
+        "reason": str(body.get("reason") or "Source proposal was dismissed; the reviewed canonical model remains authoritative.")[:1000],
+    }
+    report.pop("dfd_proposal", None)
+    stale = report.get("analysis_stale")
+    if isinstance(stale, dict) and str(stale.get("reason") or "").startswith("Source context changed while a human-edited DFD exists"):
+        report.pop("analysis_stale", None)
+    save_report(project_id, report)
+    log_event("dfd.proposal_dismissed", details={"project_id": project_id, "revision": current.revision})
+    return {
+        "success": True,
+        "resolution": report["dfd_proposal_resolution"],
+        "model": current.model_dump(),
+        "proposal": None,
+    }
 
 
 @router.post("/{project_id}/dfd/import")

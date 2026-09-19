@@ -16,6 +16,7 @@ from backend.services.trust_boundary_service import (
 from backend.services.dfd_model_service import build_dfd_model, reconcile_generated_dfd, validate_dfd_model
 from backend.services.stride_service import generate_stride_threats
 from backend.services.linddun_service import generate_linddun_threats
+from backend.services.privacy_service import assess_privacy_metadata, annotate_privacy_threats
 from backend.services.threat_validation_service import (
     complete_graph_coverage,
     validate_coverage,
@@ -308,6 +309,11 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
     else:
         trust_boundaries = active_trust_boundaries(report.get("trust_boundaries", []))
 
+    # Keep privacy/lifecycle readiness derived from the same canonical model
+    # revision that feeds LINDDUN. Missing metadata remains review context; it
+    # never becomes a safe default or a legal conclusion.
+    report["privacy_assessment"] = assess_privacy_metadata(report.get("dfd_model"))
+
     # 2. STRIDE
     stride_threats = []
     if "stride" in types:
@@ -391,6 +397,7 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
             report.get("trust_model", {}).get("views"),
             report.get("dfd_model"),
         )
+        linddun_threats = annotate_privacy_threats(linddun_threats, report.get("dfd_model"))
         completed_coverage, coverage_summary = complete_graph_coverage(
             valid_linddun_coverage,
             linddun_threats,

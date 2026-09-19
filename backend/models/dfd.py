@@ -57,13 +57,20 @@ class DfdDataObject(DfdBase):
     classification: str | None = None
     data_subjects: list[str] = Field(default_factory=list)
     identifiers: list[str] = Field(default_factory=list)
+    direct_identifiers: list[str] = Field(default_factory=list)
+    indirect_identifiers: list[str] = Field(default_factory=list)
     sensitivity: str | None = None
     purpose: str | None = None
     recipients: list[str] = Field(default_factory=list)
+    linkability: str | None = None
+    notice: str | None = None
+    individual_control: str | None = None
+    legal_basis: str | None = None
     transformation_refs: list[str] = Field(default_factory=list)
     lineage_refs: list[str] = Field(default_factory=list)
     knowledge_status: KnowledgeStatus = "unknown"
     evidence_refs: list[str] = Field(default_factory=list)
+    assertions: list[DfdAssertion] = Field(default_factory=list)
 
 
 class DfdNode(DfdBase):
@@ -123,6 +130,8 @@ class DfdStoreMetadata(DfdBase):
     deletion: str | None = None
     backup: str | None = None
     protection_controls: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    assertions: list[DfdAssertion] = Field(default_factory=list)
 
 
 class DfdZone(DfdBase):

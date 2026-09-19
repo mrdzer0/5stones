@@ -80,6 +80,10 @@ const API = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+    dismissProposal: (id, data) => apiFetch(`/api/projects/${id}/dfd/proposal/resolve`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
     importJson: (id, data) => apiFetch(`/api/projects/${id}/dfd/import`, {
       method: 'POST',
       body: JSON.stringify(data),

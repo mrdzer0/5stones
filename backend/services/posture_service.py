@@ -5,6 +5,7 @@ import re
 import uuid
 from datetime import datetime
 from typing import Iterable
+from backend.services.privacy_service import assess_privacy_metadata, annotate_privacy_threats
 
 
 EVIDENCE_TYPES = {"direct", "context", "inference"}
@@ -325,6 +326,17 @@ def normalize_report_evidence(report: dict, project: dict) -> dict:
         else:
             threats.append(threat)
     report["threats"] = threats
+    if report.get("dfd_model"):
+        report["privacy_assessment"] = assess_privacy_metadata(report.get("dfd_model"))
+        linddun = [item for item in report["threats"] if item.get("framework") == "LINDDUN"]
+        if linddun:
+            annotated = annotate_privacy_threats(linddun, report.get("dfd_model"))
+            replacements = {str(item.get("threat_id")): item for item in annotated}
+            report["threats"] = [
+                replacements.get(str(item.get("threat_id")), item)
+                if item.get("framework") == "LINDDUN" else item
+                for item in report["threats"]
+            ]
     if report.get("controls"):
         evidence_ids = {
             str(item.get("evidence_id"))
