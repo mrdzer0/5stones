@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from backend.routers import projects, analysis, artifacts, export, settings
+from backend.routers import projects, analysis, artifacts, export, settings, dfd
 
 app = FastAPI(
     title="5STONES API",
@@ -34,6 +34,7 @@ app.include_router(analysis.router)
 app.include_router(artifacts.router)
 app.include_router(export.router)
 app.include_router(settings.router)
+app.include_router(dfd.router)
 
 # Serve frontend static files
 frontend_dir = Path(__file__).parent.parent / "frontend"

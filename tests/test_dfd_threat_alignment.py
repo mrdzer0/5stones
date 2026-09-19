@@ -48,6 +48,29 @@ class DfdThreatAlignmentTests(unittest.TestCase):
         self.assertEqual(threats[0]["affected_refs"], [self.dfd_model["flows"][0]["id"]])
         self.assertTrue(any("unknown DFD IDs" in warning for warning in warnings))
 
+    def test_invalid_ai_list_shape_is_dropped_at_schema_boundary(self):
+        threats, warnings = validate_generated_threats([{
+            "threat_category": "Tampering",
+            "threat_description": "Input can be modified.",
+            "affected_refs": "flow-should-be-a-list",
+        }], "STRIDE", self.dfd_model)
+
+        self.assertEqual(threats, [])
+        self.assertTrue(any("schema validation failed" in warning for warning in warnings))
+
+    def test_threat_contract_pins_revision_and_does_not_assert_non_compliance(self):
+        threats, warnings = validate_generated_threats([{
+            "threat_category": "Non-compliance",
+            "threat_description": "Retention obligation cannot be assessed from the available model.",
+            "evidence_refs": [],
+        }], "LINDDUN", self.dfd_model, set())
+
+        self.assertEqual(threats[0]["taxonomy_version"], "linddun-v1")
+        self.assertEqual(threats[0]["analysis_revision"], self.dfd_model["revision"])
+        self.assertEqual(threats[0]["finding_status"], "needs_context")
+        self.assertEqual(threats[0]["status"], "Needs Info")
+        self.assertTrue(any("non-compliance requires" in warning for warning in warnings))
+
     def test_affected_refs_become_semantic_target_refs(self):
         flow_id = self.dfd_model["flows"][0]["id"]
         source_id = self.dfd_model["flows"][0]["source_id"]

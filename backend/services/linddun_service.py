@@ -72,7 +72,9 @@ awareness, and compliance where relevant.
   "threats": [
     {{
     "framework": "LINDDUN",
-    "taxonomy_version": "adapter-version",
+    "taxonomy_version": "linddun-v1",
+    "title": "short privacy threat title",
+    "scenario": "specific sender-flow-receiver privacy scenario",
     "threat_category": "Linking|Identifying|Non-repudiation|Detecting|Data Disclosure|Unawareness & Unintervenability|Non-compliance",
     "component": "affected component",
     "source": "data origin",
@@ -84,6 +86,9 @@ awareness, and compliance where relevant.
     "threat_description": "specific privacy threat description",
     "abuse_case": "how this privacy risk materializes",
     "recommended_control": "privacy control recommendation",
+    "known_controls": ["controls explicitly evidenced by the project context"],
+    "recommended_mitigations": ["actionable privacy mitigation steps"],
+    "obligation": "documented obligation only when relevant; otherwise leave empty",
     "evidence_refs": ["one or more exact EV-... IDs from the catalog, or an empty array"],
     "assumption": "assumption made",
     "missing_info": "clarification needed",

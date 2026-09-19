@@ -57,6 +57,14 @@ const API = {
     updateThreat: (projectId, threatId, data) => apiFetch(`/api/projects/${projectId}/threats/${threatId}`, { method: 'PATCH', body: JSON.stringify(data) }),
     updateControl: (projectId, controlId, data) => apiFetch(`/api/projects/${projectId}/controls/${controlId}`, { method: 'PATCH', body: JSON.stringify(data) }),
   },
+  dfd: {
+    get:  (id) => apiFetch(`/api/projects/${id}/dfd`),
+    exportSvg: (id) => fetch(`/api/projects/${id}/dfd/export?format=svg`),
+    save: (id, model, expectedRevision) => apiFetch(`/api/projects/${id}/dfd`, {
+      method: 'PUT',
+      body: JSON.stringify({ model, expected_revision: expectedRevision }),
+    }),
+  },
   export: {
     get: (id, format)    => fetch(`/api/projects/${id}/export?format=${format}`),
   },

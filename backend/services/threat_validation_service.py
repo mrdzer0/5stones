@@ -2,6 +2,22 @@
 from __future__ import annotations
 
 from typing import Iterable
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+
+class _ThreatEnvelope(BaseModel):
+    """Small strict boundary for the fields that drive graph traceability."""
+
+    model_config = ConfigDict(extra="allow")
+
+    threat_category: str
+    threat_description: str
+    affected_refs: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    preconditions: list[str] = Field(default_factory=list)
+    validation_steps: list[str] = Field(default_factory=list)
+    known_controls: list[str] = Field(default_factory=list)
+    recommended_mitigations: list[str] = Field(default_factory=list)
 
 
 class ThreatGenerationResult(list):
@@ -16,6 +32,8 @@ STRIDE_CATEGORIES = {
     "Spoofing", "Tampering", "Repudiation", "Information Disclosure",
     "Denial of Service", "Elevation of Privilege",
 }
+STRIDE_TAXONOMY_VERSION = "stride-v1"
+LINDDUN_TAXONOMY_VERSION = "linddun-v1"
 
 LINDDUN_CATEGORY_ALIASES = {
     "Linkability": "Linking",
@@ -44,11 +62,14 @@ def _unique(values: Iterable[str]) -> list[str]:
     return result
 
 
-def _model_ids(dfd_model: dict | None) -> set[str]:
+def _model_ids(dfd_model: dict | None, *, include_review_elements: bool = False) -> set[str]:
     if not isinstance(dfd_model, dict):
         return set()
     ids = set()
-    for collection in ("nodes", "data_objects", "flows", "boundaries", "zones", "views", "questions"):
+    collections = ("nodes", "data_objects", "flows", "boundaries")
+    if include_review_elements:
+        collections = (*collections, "zones", "views", "questions")
+    for collection in collections:
         ids.update(str(item.get("id")) for item in (dfd_model.get(collection) or []) if isinstance(item, dict) and item.get("id"))
     return ids
 
@@ -57,6 +78,7 @@ def validate_generated_threats(
     threats: Iterable[dict],
     framework: str,
     dfd_model: dict | None = None,
+    evidence_ids: set[str] | None = None,
 ) -> tuple[list[dict], list[str]]:
     """Drop structurally invalid candidates and strip invalid model references.
 
@@ -72,9 +94,13 @@ def validate_generated_threats(
         if not isinstance(raw, dict):
             warnings.append(f"Dropped {framework} candidate {index}: result was not an object")
             continue
-        item = dict(raw)
-        category = str(item.get("threat_category") or "").strip()
-        description = str(item.get("threat_description") or "").strip()
+        try:
+            item = _ThreatEnvelope.model_validate(raw).model_dump()
+        except ValidationError:
+            warnings.append(f"Dropped {framework} candidate {index}: schema validation failed")
+            continue
+        category = item["threat_category"].strip()
+        description = item["threat_description"].strip()
         if category not in allowed_categories:
             warnings.append(f"Dropped {framework} candidate {index}: unsupported category {category or '(missing)'}")
             continue
@@ -84,7 +110,18 @@ def validate_generated_threats(
         if framework == "LINDDUN":
             item["threat_category"] = LINDDUN_CATEGORY_ALIASES.get(category, category)
         item["framework"] = framework
-        item["taxonomy_version"] = str(item.get("taxonomy_version") or "unversioned")
+        item["taxonomy_version"] = str(
+            item.get("taxonomy_version")
+            or (STRIDE_TAXONOMY_VERSION if framework == "STRIDE" else LINDDUN_TAXONOMY_VERSION)
+        )
+        item["title"] = str(item.get("title") or description[:140]).strip()
+        item["scenario"] = str(item.get("scenario") or item.get("abuse_case") or description).strip()
+        item["finding_status"] = str(item.get("finding_status") or "candidate")
+        item["known_controls"] = _unique(item.get("known_controls") or [])
+        item["recommended_mitigations"] = _unique(
+            item.get("recommended_mitigations")
+            or ([item.get("recommended_control")] if item.get("recommended_control") else [])
+        )
         item["affected_refs"] = _unique(item.get("affected_refs") or [])
         if valid_ids:
             invalid_refs = [ref for ref in item["affected_refs"] if ref not in valid_ids]
@@ -93,18 +130,41 @@ def validate_generated_threats(
                     f"{framework} candidate {index} referenced unknown DFD IDs: {', '.join(invalid_refs)}"
                 )
                 item["affected_refs"] = [ref for ref in item["affected_refs"] if ref in valid_ids]
+        item["evidence_refs"] = _unique(item.get("evidence_refs") or [])
+        if evidence_ids is not None:
+            invalid_evidence = [ref for ref in item["evidence_refs"] if ref not in evidence_ids]
+            if invalid_evidence:
+                warnings.append(
+                    f"{framework} candidate {index} referenced unknown evidence IDs: {', '.join(invalid_evidence)}"
+                )
+                item["evidence_refs"] = [ref for ref in item["evidence_refs"] if ref in evidence_ids]
+        if framework == "LINDDUN" and item["threat_category"] == "Non-compliance":
+            if not item.get("obligation") and not item["evidence_refs"]:
+                warnings.append(
+                    f"LINDDUN candidate {index}: non-compliance requires an obligation and relevant evidence"
+                )
+                item["finding_status"] = "needs_context"
+                item["status"] = "Needs Info"
         item["preconditions"] = item.get("preconditions") or []
         item["validation_steps"] = item.get("validation_steps") or []
+        if isinstance(dfd_model, dict):
+            item["analyzed_revision"] = dfd_model.get("revision")
+            item["analysis_revision"] = dfd_model.get("revision")
         accepted.append(item)
     return accepted, warnings
 
 
-def validate_coverage(coverage: Iterable[dict], dfd_model: dict | None = None) -> tuple[list[dict], list[str]]:
+def validate_coverage(
+    coverage: Iterable[dict],
+    dfd_model: dict | None = None,
+    framework: str | None = None,
+) -> tuple[list[dict], list[str]]:
     """Keep only coverage entries that refer to the current canonical model."""
-    valid_ids = _model_ids(dfd_model)
+    valid_ids = _model_ids(dfd_model, include_review_elements=True)
     accepted = []
     warnings = []
     statuses = {"reviewed_no_candidate", "candidate_identified", "insufficient_information"}
+    allowed_categories = STRIDE_CATEGORIES if framework == "STRIDE" else set(LINDDUN_CATEGORY_ALIASES)
     for index, raw in enumerate(coverage or []):
         if not isinstance(raw, dict):
             warnings.append(f"Dropped coverage item {index}: result was not an object")
@@ -117,9 +177,15 @@ def validate_coverage(coverage: Iterable[dict], dfd_model: dict | None = None) -
         if status not in statuses:
             warnings.append(f"Dropped coverage item {index}: unsupported status {status or '(missing)'}")
             continue
+        category = str(raw.get("category") or "").strip()
+        if framework and category not in allowed_categories:
+            warnings.append(f"Dropped coverage item {index}: unsupported category {category or '(missing)'}")
+            continue
+        if framework == "LINDDUN":
+            category = LINDDUN_CATEGORY_ALIASES.get(category, category)
         accepted.append({
             "element_ref": element_ref,
-            "category": str(raw.get("category") or ""),
+            "category": category,
             "status": status,
             "reason": str(raw.get("reason") or "").strip(),
         })

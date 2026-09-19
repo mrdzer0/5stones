@@ -65,6 +65,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Diagram toolbar
   document.getElementById('btn-diagram-fit')?.addEventListener('click', () => diagramNetwork?.fit());
   document.getElementById('btn-diagram-export')?.addEventListener('click', exportDiagramPng);
+  document.getElementById('btn-diagram-export-svg')?.addEventListener('click', exportDiagramSvg);
   setupDiagramModeSwitch();
   setupDiagramLevelSwitch();
   window.addEventListener('resize', () => {
@@ -343,7 +344,7 @@ function syncDiagramLevelUi() {
   if (mobileMap) mobileMap.classList.toggle('is-level-hidden', diagramLevel !== 'context');
   const title = document.querySelector('.diagram-toolbar-title');
   if (title) title.textContent = diagramLevel === 'context' ? 'Context Data Flow Diagram' : diagramLevel === 'services' ? 'Service-level Model' : 'Scenario Flows & API Operations';
-  ['btn-diagram-fit', 'btn-diagram-export'].forEach(id => {
+  ['btn-diagram-fit', 'btn-diagram-export', 'btn-diagram-export-svg'].forEach(id => {
     const button = document.getElementById(id);
     if (button) button.hidden = diagramLevel === 'scenarios';
   });
@@ -1354,6 +1355,23 @@ function activeTrustBoundaries(report = currentReport) {
 }
 
 function activeDiagramFlows(report = currentReport) {
+  if (report?.dfd_model?.flows?.length) {
+    const nodes = new Map((report.dfd_model.nodes || []).map(node => [String(node.id), node]));
+    const data = new Map((report.dfd_model.data_objects || []).map(item => [String(item.id), item]));
+    return report.dfd_model.flows.map(flow => ({
+      flow_id: flow.id,
+      source: nodes.get(String(flow.source_id))?.name || flow.source_id,
+      destination: nodes.get(String(flow.target_id))?.name || flow.target_id,
+      source_id: flow.source_id,
+      destination_id: flow.target_id,
+      protocol: flow.protocol,
+      data: (flow.data_object_ids || []).map(id => data.get(String(id))?.name || id),
+      interaction_kind: flow.interaction_kind,
+      boundary_crossings: flow.boundary_crossings || [],
+      crossing_status: flow.crossing_status,
+      evidence_refs: flow.evidence_refs || [],
+    }));
+  }
   const boundaries = report?.trust_boundaries || [];
   const activeFlowIds = new Set(activeTrustBoundaries(report).flatMap(item => item.crossing_flow_ids || []));
   const rejectedFlowIds = new Set(
@@ -1493,6 +1511,13 @@ function renderDiagram(report) {
   syncDiagramModeUi();
   syncDiagramLevelUi();
   renderDiagramMappingSummary(report);
+  // The canonical semantic model is the source of truth for the context DFD.
+  // Legacy trust-model projections remain available for service/scenario views
+  // until their feature decomposition editor is migrated.
+  if (diagramLevel === 'context' && report?.dfd_model?.nodes?.length) {
+    renderCanonicalDiagram(report);
+    return;
+  }
   if (diagramLevel === 'services') {
     renderServiceDiagram(report);
   } else if (diagramLevel === 'scenarios') {
@@ -1505,7 +1530,60 @@ function renderDiagram(report) {
 }
 
 function modelViews(report) {
-  return report?.trust_model?.views || {};
+  const model = report?.dfd_model;
+  if (!model?.nodes?.length) return report?.trust_model?.views || {};
+  const zones = new Map((model.zones || []).map(zone => [String(zone.id), zone]));
+  const nodes = (model.nodes || []).map(node => ({
+    element_id: node.id,
+    label: `${node.display_id || ''} ${node.name || ''}`.trim(),
+    element_type: node.type === 'entity' ? 'external_entity' : node.type,
+    trust_zone_id: node.zone_ids?.[0] || 'unknown',
+    trust_level: node.knowledge_status || 'unknown',
+    scope: node.scope,
+    ownership: node.ownership,
+    exposure: node.exposure,
+    zone_label: (node.zone_ids || []).map(id => zones.get(id)?.name || id).join(' / '),
+    evidence_refs: node.evidence_refs || [],
+    model_level: 'context',
+  }));
+  const nodeById = new Map((model.nodes || []).map(node => [String(node.id), node]));
+  const dataById = new Map((model.data_objects || []).map(item => [String(item.id), item]));
+  const flows = (model.flows || []).map(flow => ({
+    element_id: flow.id,
+    flow_id: flow.id,
+    label: `${flow.display_id || ''} ${flow.name || ''}`.trim(),
+    element_type: 'data_flow',
+    source_id: flow.source_id,
+    destination_id: flow.target_id,
+    source: nodeById.get(String(flow.source_id))?.name || flow.source_id,
+    destination: nodeById.get(String(flow.target_id))?.name || flow.target_id,
+    protocol: flow.protocol,
+    data: (flow.data_object_ids || []).map(id => dataById.get(String(id))?.name || id),
+    interaction_kind: flow.interaction_kind,
+    boundary_crossings: flow.boundary_crossings || [],
+    crossing_status: flow.crossing_status,
+    evidence_refs: flow.evidence_refs || [],
+    model_level: 'context',
+  }));
+  const boundaries = (model.boundaries || []).map(boundary => ({
+    element_id: boundary.id,
+    boundary_id: boundary.id,
+    label: `${boundary.display_id || ''} ${boundary.name || ''}`.trim(),
+    boundary_label: boundary.name,
+    source: (boundary.source_zone_ids || []).map(id => zones.get(id)?.name || id).join(' / '),
+    destination: (boundary.target_zone_ids || []).map(id => zones.get(id)?.name || id).join(' / '),
+    crossing_flow_ids: boundary.crossing_flow_ids || [],
+    status: boundary.status,
+    types: boundary.types || [],
+    model_level: 'context',
+  }));
+  return {
+    context: { label: 'Canonical Context DFD', nodes, flows, boundaries },
+    system: { label: 'Canonical System DFD', nodes, flows, boundaries },
+    services: report?.trust_model?.views?.services || {},
+    scenarios: report?.trust_model?.views?.scenarios || {},
+    assets: { items: (model.data_objects || []).map(item => ({ element_id: item.id, label: item.name, ...item })) },
+  };
 }
 
 function targetRefs(item, type = null, modelLevel = null) {
@@ -1537,7 +1615,7 @@ function renderDiagramMappingSummary(report) {
   const mapped = threats.filter(item => item.mapping_status === 'mapped' || targetRefs(item).length);
   const unmapped = threats.filter(item => item.mapping_status === 'unmapped' || !targetRefs(item).length);
   const typeByLevel = {
-    context: ['external_entity', 'external_system', 'process', 'data_store', 'data_flow', 'trust_boundary'],
+    context: ['entity', 'external_entity', 'external_system', 'process', 'data_store', 'data_flow', 'trust_boundary'],
     services: ['process', 'data_store', 'external_system'],
     scenarios: ['scenario'],
   };
@@ -1551,6 +1629,122 @@ function renderDiagramMappingSummary(report) {
     <span class="diagram-mapping-chip"><strong>${mapped.length}</strong> mapped overall</span>
     <span class="diagram-mapping-chip ${unmapped.length ? 'is-warning' : 'is-complete'}"><strong>${unmapped.length}</strong> unmapped</span>
     <span class="diagram-mapping-help">Counts are unique findings; one finding may target more than one model element.</span>`;
+}
+
+function canonicalNodeVisualZone(node) {
+  if (node.exposure === 'internet_facing') return 'untrusted';
+  if (node.ownership === 'vendor' || node.scope === 'external_dependency') return 'external';
+  if (node.type === 'data_store' || node.sensitivity) return 'privileged';
+  if (node.exposure === 'unknown' || node.ownership === 'unknown' || node.scope === 'unknown') return 'unknown';
+  return 'internal';
+}
+
+function renderCanonicalDiagram(report) {
+  const container = document.getElementById('threat-diagram-canvas');
+  if (!container) return;
+  if (diagramNetwork) { diagramNetwork.destroy(); diagramNetwork = null; }
+  container.innerHTML = '';
+  const model = report.dfd_model;
+  const zones = new Map((model.zones || []).map(zone => [String(zone.id), zone]));
+  const dataObjects = new Map((model.data_objects || []).map(item => [String(item.id), item]));
+  const threats = analysisVisibility(report).threats;
+  const zoneOrder = [...zones.keys()];
+  const zoneCounts = new Map();
+  const nodeRows = (model.nodes || []).map((node, index) => {
+    const zoneId = String(node.zone_ids?.[0] || 'unknown');
+    const ordinal = zoneCounts.get(zoneId) || 0;
+    zoneCounts.set(zoneId, ordinal + 1);
+    const mapped = uniqueThreats(threats.filter(threat => targetMatches(threat, node.id)));
+    const critical = mapped.filter(item => item.risk_level === 'Critical').length;
+    const high = mapped.filter(item => item.risk_level === 'High').length;
+    const visualZone = canonicalNodeVisualZone(node);
+    const color = visualZone === 'unknown' ? getTrustColor('default') : getTrustColor(visualZone);
+    const position = (model.views || []).find(view => view.kind === 'context')?.positions?.[node.id];
+    const zoneIndex = Math.max(0, zoneOrder.indexOf(zoneId));
+    const zone = zones.get(zoneId);
+    const status = `${node.scope || 'unknown'} · ${node.ownership || 'unknown'} · ${node.exposure || 'unknown'}`;
+    return {
+      id: node.id,
+      label: `${node.display_id || node.id} ${node.name}${mapped.length ? `\n${mapped.length} finding${mapped.length === 1 ? '' : 's'}` : ''}`,
+      title: `${node.display_id || node.id} ${node.name}\nType: ${node.type}\nZone: ${zone?.name || 'unknown'}\n${status}`,
+      x: position?.x ?? ((zoneIndex % 4) - 1.5) * 300,
+      y: position?.y ?? (ordinal - ((zoneCounts.get(zoneId) - 1) / 2)) * 145,
+      shape: node.type === 'data_store' ? 'database' : node.type === 'entity' ? 'ellipse' : 'box',
+      color: { background: color.bg, border: critical ? '#DC2626' : high ? '#D97706' : color.border, highlight: { background: color.bg, border: '#1D3557' } },
+      font: { color: color.font, size: 13, face: 'Space Grotesk, sans-serif', bold: true },
+      borderWidth: node.knowledge_status === 'unknown' || visualZone === 'unknown' ? 1 : 2,
+      borderDashes: node.knowledge_status === 'unknown' || visualZone === 'unknown',
+      margin: 14,
+      widthConstraint: { minimum: 150, maximum: 240 },
+      _trustLevel: visualZone,
+      _threats: mapped,
+      _origLabel: `${node.display_id || node.id} ${node.name}`,
+      _elementId: node.id,
+      _modelMeta: `${node.type} · ${zone?.name || 'zone unknown'} · ${status}${node.knowledge_status ? ` · knowledge=${node.knowledge_status}` : ''}`,
+    };
+  });
+  const nodeById = new Map((model.nodes || []).map(node => [String(node.id), node]));
+  const edgeRows = (model.flows || []).map(flow => {
+    const source = nodeById.get(String(flow.source_id));
+    const target = nodeById.get(String(flow.target_id));
+    const mapped = uniqueThreats(threats.filter(threat =>
+      targetMatches(threat, flow.id, 'data_flow')
+      || targetMatches(threat, flow.boundary_crossings || [], 'trust_boundary')
+    ));
+    const data = (flow.data_object_ids || []).map(id => dataObjects.get(String(id))?.name || id);
+    const crossing = (flow.boundary_crossings || []).length > 0 || flow.crossing_status === 'unresolved';
+    const crossingText = flow.crossing_status === 'unresolved'
+      ? 'Boundary crossing unresolved — review zone membership.'
+      : `Crossings: ${(flow.boundary_crossings || []).join(', ') || 'none'}`;
+    return {
+      id: flow.id,
+      from: flow.source_id,
+      to: flow.target_id,
+      label: `${flow.display_id || flow.id} · ${compactFlowText(flow.name || data.join(', ') || 'unknown data', 34)}${mapped.length ? `\n${mapped.length} findings` : ''}`,
+      title: `${flow.display_id || flow.id}: ${source?.name || flow.source_id} → ${target?.name || flow.target_id}\n${data.join(', ') || 'Data label unknown'}\nInteraction: ${flow.interaction_kind}\n${crossingText}`,
+      arrows: { to: { enabled: true, scaleFactor: .75 } },
+      dashes: crossing ? [8, 6] : false,
+      color: { color: flow.crossing_status === 'unresolved' ? '#B7791F' : crossing ? '#D06B55' : '#6C91AA', highlight: '#1D3557', hover: '#1D3557' },
+      width: crossing ? 2 : 1.7,
+      font: { size: 10, color: '#526777', face: 'JetBrains Mono, monospace', background: 'rgba(255,255,255,.94)', strokeWidth: 0 },
+      smooth: { enabled: true, type: 'cubicBezier', forceDirection: 'horizontal', roundness: .22 },
+      _sourceLabel: source?.name || flow.source_id,
+      _destinationLabel: target?.name || flow.target_id,
+      _flowDetails: [
+        `${flow.display_id || flow.id}: ${flow.name || 'unknown data'}`,
+        `Interaction: ${flow.interaction_kind}`,
+        `Data: ${data.join(', ') || 'unknown'}`,
+        `Protocol: ${flow.protocol || 'unknown'}`,
+        `AuthN: ${flow.authn || 'unknown'} · AuthZ: ${flow.authz || 'unknown'}`,
+        crossingText,
+        `Evidence: ${(flow.evidence_refs || []).join(', ') || 'none'}`,
+      ],
+      _crossing: crossing,
+      _logical: flow.crossing_status === 'resolved' && !(flow.boundary_crossings || []).length,
+      _threats: mapped,
+    };
+  });
+  if (!nodeRows.length) {
+    container.innerHTML = '<div class="diagram-grounded-empty"><strong>Canonical DFD is empty</strong><span>Add or confirm model elements before running threat analysis.</span></div>';
+    return;
+  }
+  const data = { nodes: new vis.DataSet(nodeRows), edges: new vis.DataSet(edgeRows) };
+  const toolbarTitle = document.querySelector('.diagram-toolbar-title');
+  const toolbarSubtitle = document.querySelector('.diagram-toolbar-sub');
+  if (toolbarTitle) toolbarTitle.textContent = 'Canonical Context DFD';
+  if (toolbarSubtitle) toolbarSubtitle.textContent = `Revision ${model.revision} · ${model.nodes.length} nodes · ${model.flows.length} flows · unknown values remain reviewable`;
+  diagramNetwork = new vis.Network(container, data, {
+    physics: false,
+    interaction: { hover: true, tooltipDelay: 180, zoomView: true, dragView: true, keyboard: { enabled: true, bindToWindow: false } },
+    nodes: { chosen: true },
+    edges: { selectionWidth: 2.5, hoverWidth: 2.2 },
+  });
+  diagramNetwork.once('afterDrawing', () => diagramNetwork.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } }));
+  diagramNetwork.on('click', params => {
+    if (params.nodes.length) showNodeInspector(data.nodes.get(params.nodes[0]));
+    else if (params.edges.length) showFlowInspector(data.edges.get(params.edges[0]));
+    else document.getElementById('node-inspector').style.display = 'none';
+  });
 }
 
 function renderDiagramTextAlternative(report) {
@@ -2357,6 +2551,23 @@ function exportDiagramPng() {
     showToast('Diagram exported as PNG', 'success');
   } catch {
     showToast('Could not export diagram', 'error');
+  }
+}
+
+async function exportDiagramSvg() {
+  if (!projectId) return;
+  try {
+    const response = await API.dfd.exportSvg(projectId);
+    if (!response.ok) throw new Error('SVG export failed');
+    const blob = await response.blob();
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `dfd-${projectId}.svg`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    showToast('Canonical DFD exported as SVG', 'success');
+  } catch {
+    showToast('Could not export canonical DFD', 'error');
   }
 }
 

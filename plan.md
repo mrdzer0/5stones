@@ -38,9 +38,8 @@ Sudah tersedia:
 
 Yang masih kurang pada milestone ini:
 
-- Baseline fixture synthetic customer registration sesuai dokumen.
-- Test contract/invariant untuk semantic DFD.
 - Dokumentasi arsitektur target dan migration strategy.
+- Full end-to-end baseline terhadap semua acceptance criteria.
 
 Referensi utama: `backend/services/trust_boundary_service.py`, `backend/services/posture_service.py`, `frontend/analysis.html`, `frontend/js/analysis.js`.
 
@@ -54,6 +53,9 @@ Progress pada branch `codex/dfd-threat-model-alignment`:
 - `backend/services/dfd_model_service.py` menambahkan deterministic adapter dan semantic hash/revision.
 - Analysis report menyimpan `dfd_model` dan `dfd_validation`.
 - Model DFD menjadi input prompt STRIDE/LINDDUN dan membawa revision/hash untuk stale detection.
+- Endpoint `GET/PUT /api/projects/{project_id}/dfd` menyimpan model canonical dengan schema validation dan optimistic revision check.
+- Model memiliki `layout_revision` terpisah dari semantic `revision`.
+- Model evidence, per-attribute unknown assertions, process metadata, store metadata, dan feature projections tersimpan.
 
 Deliverables:
 
@@ -93,6 +95,9 @@ Progress:
 - Validator sudah mendeteksi duplicate ID, dangling reference, invalid parent process, missing zone/data/boundary refs, dan zone cycle.
 - Validator memisahkan blocking graph errors dari reviewable warnings.
 - Regression tests untuk typed refs dan invalid graph sudah ditambahkan.
+- Crossing metadata, projection mappings, store readers/writers, data labels, and question refs ikut divalidasi.
+- OpenAPI/Postman operation metadata menghasilkan flow request/response terpisah bila response fields tersedia.
+- Flow tanpa process/data label tetap tersimpan sebagai review warning; tidak dibuatkan process fiktif.
 
 Deliverables:
 
@@ -122,6 +127,9 @@ Progress:
 - Canonical model sekarang memiliki field terpisah untuk scope, ownership, dan exposure dengan default `unknown`.
 - Threat mapping tidak lagi fan-out ke seluruh boundary ketika tidak ada match.
 - Regression test multi-boundary unmapped threat sudah ditambahkan.
+- Crossing dihitung dari membership node dan ancestor zone dengan guard agar common ancestor tidak dihitung sebagai crossing.
+- Logical reviewer crossing dapat dipertahankan pada same-zone flow; membership unknown menghasilkan `crossing_status=unresolved`.
+- Synthetic customer-registration fixture mencakup nested organization/application/restricted-data zones serta vendor reverse flow.
 
 Deliverables:
 
@@ -158,6 +166,8 @@ Sudah ada:
 - Reconciliation dan conflict record sederhana.
 - Redaction secret diterapkan pada structured parser, generic AI parser, dan evidence/use-case verification.
 - Fallback parser juga memakai konten redacted ketika provider AI gagal.
+- Canonical model mengubah evidence catalog menjadi `DfdEvidenceRef` dengan document revision/hash dan redacted excerpt.
+- Confident fact tidak dipromosikan dari unknown classification; unknown lifecycle fields menghasilkan questions/assertions.
 
 Yang perlu ditambahkan:
 
@@ -176,7 +186,14 @@ Definition of done:
 
 ### M5 — DFD views dan UI editing lifecycle
 
-Status: **Belum selesai — prioritas P1**
+Status: **Partial — prioritas P1**
+
+Progress:
+
+- Canonical context/system views dan per-process feature projections tersedia di model.
+- Context canvas memilih canonical DFD sebagai source of truth ketika model tersedia.
+- Flow request/response ditampilkan sebagai edge terpisah dengan data label, interaction kind, crossing, evidence, dan unknown status.
+- Canonical SVG export tersedia dan sudah diuji terhadap escaping.
 
 Deliverables:
 
@@ -194,6 +211,11 @@ Deliverables:
 - Tambahkan undo/redo serta delete impact preview.
 - Simpan posisi, viewport, collapsed group, dan layout revision.
 - Regenerate menghasilkan proposal diff, tidak menimpa human edit.
+
+Implementasi tambahan pada checkpoint terbaru:
+
+- Source change saat human-edited DFD masih aktif dipertahankan sebagai model utama.
+- Regenerate menghasilkan `dfd_proposal` berisi diff per section dan downstream analysis tetap stale sampai proposal direview.
 
 Definition of done:
 
@@ -213,6 +235,8 @@ Progress:
 - Coverage AI disimpan terpisah pada `analysis_coverage` setelah validasi.
 - Taxonomy LINDDUN canonical digunakan untuk output baru dengan alias legacy untuk kompatibilitas report lama.
 - Fallback sekarang menghasilkan satu candidate yang `Needs Info`, `candidate_only`, dan tertaut ke flow DFD pertama bila tersedia.
+- Validasi AI menolak shape list yang salah, memfilter evidence/DFD IDs dangling, menambahkan title/scenario/controls/mitigations, serta menandai `analyzed_revision`.
+- Non-compliance tanpa obligation dan evidence diturunkan menjadi `needs_context`/`Needs Info`, bukan confirmed legal violation.
 
 Deliverables STRIDE:
 
@@ -246,6 +270,8 @@ Progress:
 - Perubahan semantic DFD hash/revision sekarang menandai dependent analysis stages stale.
 - Mapping threat yang tidak terbukti tetap `unmapped`.
 - `affected_refs` dari AI dipetakan langsung ke typed semantic `target_refs` sebelum heuristic matching.
+- Control fallback mengenali alias legacy LINDDUN untuk taxonomy canonical.
+- Threat target langsung dari canonical IDs dipakai untuk highlight flow/node tanpa fan-out heuristic.
 
 Deliverables:
 
@@ -261,7 +287,12 @@ Deliverables:
 
 ### M8 — Persistence, authorization, export, dan failure states
 
-Status: **Belum selesai — prioritas P0/P1**
+Status: **Partial — prioritas P0/P1**
+
+Progress:
+
+- Canonical DFD persistence endpoint, optimistic revision conflict, semantic stale marking, dan SVG export tersedia.
+- UI memiliki tombol export SVG canonical.
 
 Deliverables:
 
@@ -281,9 +312,9 @@ Status: **Sebagian selesai — prioritas P1/P2**
 
 Progress:
 
-- Test suite bertambah dari 24 menjadi 27 Python tests.
-- Test baru mencakup canonical model typed refs, graph invalidity, zone cycle, dan multi-boundary threat mapping.
-- Synthetic customer-registration fixture lengkap dan acceptance coverage AC01–AC20 masih belum selesai.
+- Test suite bertambah dari 24 menjadi 44 Python tests.
+- Test baru mencakup canonical model typed refs, graph invalidity, zone cycle, multi-boundary threat mapping, request/response, fixture crossing, DFD persistence, SVG escaping, threat schema validation, dan redaction.
+- Synthetic customer-registration source/model fixture tersedia; full acceptance coverage AC01–AC20 masih belum selesai.
 
 Fixture synthetic customer registration:
 
@@ -314,20 +345,20 @@ Acceptance test groups:
 |---|---|
 | Artifact ingestion dan basic evidence | Partial / cukup baik |
 | Postman nested/inherited auth | Partial / sudah ada |
-| Canonical semantic DFD | Partial: contract, adapter, persistence, hash/revision, validator |
-| Stable typed node/flow model | Partial: typed node/flow/data/boundary refs tersedia; editor belum ada |
-| Ownership/scope/exposure separation | Partial: field dan unknown/question tersedia; review/edit semantics belum ada |
-| Nested and logical boundary | Belum ada |
-| Same-zone analysis | Belum terpenuhi |
+| Canonical semantic DFD | Partial: contract, adapter, persistence, evidence/assertions, hash/revision, validator |
+| Stable typed node/flow model | Partial: typed node/flow/data/boundary refs, request/response, feature projections; editor belum ada |
+| Ownership/scope/exposure separation | Partial: independent fields, unknown questions, semantic crossing; reviewer editor belum lengkap |
+| Nested and logical boundary | Partial: ancestor crossing, common-parent guard, logical reviewer crossing; UI editor belum ada |
+| Same-zone analysis | Partial: same-zone flows retained and analyzed; full UI coverage belum ada |
 | Threat traceability | Partial: explicit DFD refs, unmapped state, cross-boundary fan-out fixed |
-| STRIDE coverage model | Partial: prompt, coverage persistence, output validation; deterministic full coverage belum ada |
-| LINDDUN PRO-aligned model | Partial: canonical labels/aliases, sender-flow-receiver prompt; lifecycle metadata belum ada |
-| Editable DFD dan layout persistence | Belum ada |
-| Regenerate diff/revision conflict | Belum ada |
-| JSON round-trip/SVG export | Belum ada |
+| STRIDE coverage model | Partial: prompt, coverage persistence, output schema/revision validation; deterministic full coverage belum ada |
+| LINDDUN PRO-aligned model | Partial: canonical labels/aliases, sender-flow-receiver prompt, non-compliance guard; lifecycle metadata analysis belum lengkap |
+| Editable DFD dan layout persistence | Partial: persistence/layout revision API; editor/undo/impact preview belum ada |
+| Regenerate diff/revision conflict | Partial: revision conflict dan proposal diff sudah ada; apply/resolve workflow belum ada |
+| JSON round-trip/SVG export | Partial: JSON model PUT/GET dan SVG export; import workflow/visual QA belum lengkap |
 | Authentication/project isolation | Belum ada |
-| Synthetic DFD fixture | Belum ada |
-| Automated verification sesuai AC01–AC20 | Partial: 32 Python tests + JS regression; AC fixture belum lengkap |
+| Synthetic DFD fixture | Partial: customer-registration source/model tersedia; Postman-only fixture inline test |
+| Automated verification sesuai AC01–AC20 | Partial: 44 Python tests + JS regression; end-to-end/UI/access criteria belum lengkap |
 
 ## Prioritas implementasi
 
@@ -345,7 +376,9 @@ Acceptance test groups:
 - 2026-09-19: Created branch `codex/dfd-threat-model-alignment` for rollback-safe enhanced/revamp work.
 - 2026-09-19: Added canonical DFD contract, deterministic model adapter, graph validator, DFD persistence in analysis report, DFD context in STRIDE/LINDDUN prompts, semantic stale detection, and multi-boundary threat mapping regression fix.
 - 2026-09-19: Added secret redaction, AI threat/coverage validation, canonical LINDDUN labels with legacy aliases, direct `affected_refs` mapping, and reviewable DFD-tied fallbacks.
-- 2026-09-19: Verification: 32 Python unit tests and JavaScript analysis visibility regression passed.
+- 2026-09-19: Added semantic ancestor/logical crossing calculation, request/response graph flows, evidence/assertion/lifecycle metadata, canonical DFD persistence API, revision conflict handling, canonical context canvas projection, and escaped SVG export.
+- 2026-09-19: Added human-edited DFD preservation, regeneration proposal diff, and pending-proposal stale guard.
+- 2026-09-19: Verification: 44 Python unit tests, JavaScript analysis visibility regression, JS syntax checks, Python compilation, and diff whitespace checks passed.
 
 ## Progress rule
 

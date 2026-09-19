@@ -6,18 +6,25 @@ import json
 from collections import defaultdict
 
 from backend.models.dfd import (
+    DfdAssertion,
     DfdBoundary,
     DfdDataObject,
+    DfdEvidenceRef,
     DfdFlow,
     DfdModel,
     DfdNode,
+    DfdProcessMetadata,
+    DfdStoreMetadata,
     DfdQuestion,
     DfdView,
     DfdZone,
 )
+from backend.services.posture_service import build_project_evidence_catalog
 
 
 DFD_SCHEMA_VERSION = "dfd-v1"
+_VALID_INTERACTIONS = {"request", "response", "event", "read", "write", "replication", "unknown"}
+_VALID_BOUNDARY_TYPES = {"network", "identity", "privilege", "tenant", "organization", "unknown"}
 
 
 def _stable_id(prefix: str, *values: object) -> str:
@@ -67,6 +74,243 @@ def _source_refs(project: dict) -> list[str]:
     if project.get("manual_context"):
         refs.append("manual:context")
     return _unique(refs)
+
+
+def _model_evidence(project: dict) -> list[DfdEvidenceRef]:
+    sources = {
+        str(source.get("filename") or source.get("artifact_type") or ""): source
+        for source in project.get("artifact_sources", []) or []
+        if isinstance(source, dict) and source.get("active", True)
+    }
+    result = []
+    for item in build_project_evidence_catalog(project)[:96]:
+        source = sources.get(str(item.get("source") or ""))
+        result.append(DfdEvidenceRef(
+            id=str(item.get("evidence_id")),
+            document_id=str((source or {}).get("artifact_id") or "project-context"),
+            document_revision=(source or {}).get("revision"),
+            document_hash=(source or {}).get("content_hash"),
+            locator=str(item.get("locator") or "Artifact content"),
+            excerpt_redacted=str(item.get("snippet") or ""),
+        ))
+    return result
+
+
+def _unknown_assertions(nodes: list[DfdNode], flows: list[DfdFlow], stores: dict[str, DfdStoreMetadata]) -> list:
+    assertions = []
+    for node in nodes:
+        for field in ("scope", "ownership", "exposure"):
+            value = getattr(node, field)
+            if value == "unknown":
+                assertions.append(DfdAssertion(
+                    object_id=node.id,
+                    field_path=field,
+                    value=None,
+                    status="unknown",
+                    evidence_refs=node.evidence_refs,
+                    inference_reason="The current grounded topology does not establish this classification.",
+                ))
+    for flow in flows:
+        if flow.interaction_kind == "unknown":
+            assertions.append(DfdAssertion(
+                object_id=flow.id,
+                field_path="interaction_kind",
+                value=None,
+                status="unknown",
+                evidence_refs=flow.evidence_refs,
+                inference_reason="The source does not distinguish request, response, event, read, write, or replication.",
+            ))
+    for store_id, store in stores.items():
+        for field in ("retention", "deletion", "backup"):
+            if getattr(store, field) in (None, "unknown"):
+                assertions.append(DfdAssertion(
+                    object_id=store_id,
+                    field_path=field,
+                    value=None,
+                    status="unknown",
+                    inference_reason="Lifecycle metadata is not documented.",
+                ))
+    return assertions
+
+
+def _conflict_assertions(project: dict) -> list[DfdAssertion]:
+    assertions = []
+    for conflict in project.get("artifact_conflicts", []) or []:
+        if not isinstance(conflict, dict):
+            continue
+        operation_key = str(conflict.get("operation_key") or "unknown-operation")
+        field = str(conflict.get("field") or "unknown-field")
+        source_refs = [
+            f"artifact:{item.get('artifact_id')}"
+            for item in (conflict.get("values") or [])
+            if isinstance(item, dict) and item.get("artifact_id")
+        ]
+        assertions.append(DfdAssertion(
+            object_id=_stable_id("conflict", operation_key, field),
+            field_path=f"operation[{operation_key}].{field}",
+            value=conflict.get("values"),
+            status="conflicting",
+            evidence_refs=source_refs,
+            inference_reason=str(conflict.get("message") or "Source documents disagree."),
+        ))
+    return assertions
+
+
+def _semantic_hash(model: DfdModel) -> str:
+    """Hash semantic state only; view positions and viewport are presentation."""
+    payload = model.model_dump(exclude={
+        "views", "semantic_hash", "revision", "layout_revision",
+        "human_edit_revision", "source_semantic_hash",
+    })
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def _zone_membership(node: DfdNode, zones_by_id: dict[str, DfdZone]) -> tuple[set[str], bool]:
+    """Return a node's zone plus ancestors and whether membership is unresolved."""
+    if not node.zone_ids:
+        return set(), True
+    members: set[str] = set()
+    unresolved = False
+    for zone_id in node.zone_ids:
+        current = zone_id
+        seen: set[str] = set()
+        while current:
+            if current in seen:
+                unresolved = True
+                break
+            seen.add(current)
+            zone = zones_by_id.get(current)
+            if not zone:
+                unresolved = True
+                break
+            members.add(current)
+            current = zone.parent_zone_id
+    return members, unresolved
+
+
+def recalculate_boundary_crossings(model: DfdModel) -> DfdModel:
+    """Derive zone crossings from semantic membership, preserving reviewer links.
+
+    Visual line intersections are deliberately not consulted. A missing or
+    invalid zone membership makes the flow unresolved rather than silently
+    asserting that no boundary was crossed.
+    """
+    zones_by_id = {zone.id: zone for zone in model.zones}
+    nodes_by_id = {node.id: node for node in model.nodes}
+    boundary_by_id = {boundary.id: boundary for boundary in model.boundaries}
+    memberships = {
+        node_id: _zone_membership(node, zones_by_id)
+        for node_id, node in nodes_by_id.items()
+    }
+    flow_matches: dict[str, set[str]] = defaultdict(set)
+
+    for flow in model.flows:
+        source_members, source_unresolved = memberships.get(flow.source_id, (set(), True))
+        target_members, target_unresolved = memberships.get(flow.target_id, (set(), True))
+        reviewer_crossings = {
+            boundary_id for boundary_id in flow.boundary_crossings
+            if boundary_id in boundary_by_id
+            and flow.crossing_origins.get(boundary_id) == "reviewer"
+        }
+        # Models from before crossing_origins existed may still contain a
+        # reviewer-authored non-derived boundary link. Preserve it when the
+        # boundary is explicitly marked non-derived.
+        reviewer_crossings.update(
+            boundary_id for boundary_id in flow.boundary_crossings
+            if boundary_id in boundary_by_id
+            and not boundary_by_id[boundary_id].derived
+            and boundary_id not in flow.crossing_origins
+        )
+        derived_crossings: set[str] = set()
+        for boundary in model.boundaries:
+            if boundary.status == "rejected":
+                continue
+            if boundary.transition_scope == "logical":
+                continue
+            if not boundary.source_zone_ids or not boundary.target_zone_ids:
+                continue
+            if source_unresolved or target_unresolved:
+                continue
+            source_boundary = set(boundary.source_zone_ids)
+            target_boundary = set(boundary.target_zone_ids)
+            # An ancestor is useful for matching a child node to a parent
+            # boundary, but a shared ancestor must not turn an intra-zone flow
+            # into a crossing. Require each endpoint to be outside the other
+            # side of the transition.
+            forward = bool(
+                source_members & source_boundary
+                and target_members & target_boundary
+                and not source_members & target_boundary
+                and not target_members & source_boundary
+            )
+            reverse = bool(
+                source_members & target_boundary
+                and target_members & source_boundary
+                and not source_members & source_boundary
+                and not target_members & target_boundary
+            )
+            if forward or reverse:
+                derived_crossings.add(boundary.id)
+                direction = "source-to-target" if forward else "target-to-source"
+                flow.crossing_rationales[boundary.id] = (
+                    f"Derived from zone membership ({direction}); "
+                    f"{flow.source_id} → {flow.target_id} crosses {boundary.name}."
+                )
+                flow.crossing_origins[boundary.id] = "derived"
+
+        crossing_ids = sorted(reviewer_crossings | derived_crossings)
+        flow.boundary_crossings = crossing_ids
+        flow.crossing_status = "unresolved" if source_unresolved or target_unresolved else "resolved"
+        for boundary_id in crossing_ids:
+            flow_matches.setdefault(boundary_id, set()).add(flow.id)
+
+    for boundary in model.boundaries:
+        preserved = {
+            flow.id for flow in model.flows
+            if boundary.id in flow.boundary_crossings
+            and (flow.crossing_origins.get(boundary.id) == "reviewer" or not boundary.derived)
+        }
+        boundary.crossing_flow_ids = sorted(preserved | flow_matches.get(boundary.id, set()))
+
+    model.semantic_hash = _semantic_hash(model)
+    return model
+
+
+def diff_dfd_models(previous: DfdModel, candidate: DfdModel) -> dict:
+    """Return a reviewable semantic proposal without mutating the saved model."""
+    def index(items):
+        return {item.id: item.model_dump() for item in items}
+
+    sections = {}
+    for name in ("nodes", "data_objects", "flows", "zones", "boundaries", "questions"):
+        old = index(getattr(previous, name))
+        new = index(getattr(candidate, name))
+        sections[name] = {
+            "added": sorted(set(new) - set(old)),
+            "removed": sorted(set(old) - set(new)),
+            "changed": sorted(key for key in set(old) & set(new) if old[key] != new[key]),
+        }
+    return {
+        "base_revision": previous.revision,
+        "candidate_revision": candidate.revision,
+        "base_semantic_hash": previous.semantic_hash,
+        "candidate_semantic_hash": candidate.semantic_hash,
+        "sections": sections,
+    }
+
+
+def reconcile_generated_dfd(generated: DfdModel, previous: dict | None) -> tuple[DfdModel, dict | None, bool]:
+    """Keep human edits authoritative and expose source changes as a proposal."""
+    if not isinstance(previous, dict) or int(previous.get("human_edit_revision", 0) or 0) <= 0:
+        return generated, None, False
+    try:
+        prior = DfdModel.model_validate(previous)
+    except Exception:
+        return generated, None, False
+    source_baseline = prior.source_semantic_hash or prior.semantic_hash
+    if generated.semantic_hash == source_baseline:
+        return prior, None, False
+    return prior, diff_dfd_models(prior, generated), True
 
 
 def build_dfd_model(project: dict, trust_model: dict, previous: dict | None = None) -> DfdModel:
@@ -119,9 +363,21 @@ def build_dfd_model(project: dict, trust_model: dict, previous: dict | None = No
             evidence_refs=_unique(item.get("evidence_refs", [])),
         ))
 
+    canonical_operations = [item for item in (project.get("canonical_operations") or []) if isinstance(item, dict)]
+    operation_request_fields = _unique(
+        field for operation in canonical_operations for field in (operation.get("request_fields") or [])
+    )
+    operation_response_fields = _unique(
+        field for operation in canonical_operations for field in (operation.get("response_fields") or [])
+    )
+    all_flow_data = [
+        *(field for flow in flows for field in (flow.get("data") or [])),
+        *operation_request_fields,
+        *operation_response_fields,
+    ]
     data_objects = []
     data_object_by_name = {}
-    for value in _unique(field for flow in flows for field in (flow.get("data") or [])):
+    for value in _unique(all_flow_data):
         object_id = _stable_id("data-object", value)
         data_object_by_name[value.casefold()] = object_id
         data_objects.append(DfdDataObject(
@@ -132,21 +388,32 @@ def build_dfd_model(project: dict, trust_model: dict, previous: dict | None = No
         ))
 
     dfd_flows = []
-    for index, flow in enumerate(flows, start=1):
+    flow_variants = []
+    for flow in flows:
+        flow_variants.append((flow, "request", flow.get("data") or operation_request_fields, False))
+        if canonical_operations and operation_response_fields:
+            flow_variants.append((flow, "response", operation_response_fields, True))
+    for index, (flow, interaction_kind, variant_data, reverse_direction) in enumerate(flow_variants, start=1):
         source = entity_by_name.get(str(flow.get("source") or "").casefold())
         target = entity_by_name.get(str(flow.get("destination") or "").casefold())
         if not source or not target:
             continue
-        data_ids = [data_object_by_name[str(value).casefold()] for value in flow.get("data") or [] if str(value).casefold() in data_object_by_name]
+        raw_interaction = str(flow.get("interaction_kind") or interaction_kind)
+        if raw_interaction not in _VALID_INTERACTIONS or raw_interaction == "unknown":
+            raw_interaction = interaction_kind
+        data_ids = [data_object_by_name[str(value).casefold()] for value in variant_data if str(value).casefold() in data_object_by_name]
+        flow_id = flow["flow_id"] if not reverse_direction else _stable_id("flow-response", flow["flow_id"])
         dfd_flows.append(DfdFlow(
-            id=flow["flow_id"],
+            id=flow_id,
             display_id=f"F{index}",
-            source_id=source["entity_id"],
-            target_id=target["entity_id"],
-            name=(flow.get("data") or ["Unknown data flow"])[0],
+            source_id=target["entity_id"] if reverse_direction else source["entity_id"],
+            target_id=source["entity_id"] if reverse_direction else target["entity_id"],
+            name=(variant_data or ["Unknown data flow"])[0],
             data_object_ids=data_ids,
             protocol=flow.get("protocol"),
-            interaction_kind="unknown",
+            interaction_kind=raw_interaction,
+            authn=project.get("auth_method") or None,
+            authz=("documented" if any(operation.get("security_status") == "secured" for operation in canonical_operations) else None),
             boundary_crossings=[],
             crossing_status="resolved",
             evidence_refs=_unique(flow.get("evidence_refs", [])),
@@ -166,15 +433,17 @@ def build_dfd_model(project: dict, trust_model: dict, previous: dict | None = No
         crossing_flow_ids = [flow_id for flow_id in boundary.get("crossing_flow_ids", []) if flow_id in dfd_flow_by_id]
         for flow_id in crossing_flow_ids:
             dfd_flow_by_id[flow_id].boundary_crossings.append(boundary_id)
+        boundary_types = [value for value in (boundary.get("boundary_types") or []) if value in _VALID_BOUNDARY_TYPES]
         dfd_boundaries.append(DfdBoundary(
             id=boundary_id,
             display_id=boundary_display[boundary_id],
             name=boundary.get("boundary_label") or f"{boundary.get('source')} → {boundary.get('destination')}",
-            types=["unknown"],
+            types=boundary_types or ["unknown"],
             rationale=boundary.get("basis"),
             source_zone_ids=[zone_ref[source_zone]] if source_zone in zone_ref else [],
             target_zone_ids=[zone_ref[target_zone]] if target_zone in zone_ref else [],
             crossing_flow_ids=crossing_flow_ids,
+            transition_scope="zone" if source_zone in zone_ref and target_zone in zone_ref else "unknown",
             status={"Candidate": "candidate", "Confirmed": "confirmed", "Rejected": "rejected"}.get(boundary.get("status"), "unresolved"),
             derived=True,
             evidence_refs=_unique(boundary.get("evidence_refs", [])),
@@ -183,21 +452,69 @@ def build_dfd_model(project: dict, trust_model: dict, previous: dict | None = No
     for flow in dfd_flows:
         flow.boundary_crossings = _unique(flow.boundary_crossings)
 
+    flow_inputs: dict[str, list[str]] = defaultdict(list)
+    flow_outputs: dict[str, list[str]] = defaultdict(list)
+    store_data: dict[str, set[str]] = defaultdict(set)
+    store_readers: dict[str, set[str]] = defaultdict(set)
+    store_writers: dict[str, set[str]] = defaultdict(set)
+    for flow in dfd_flows:
+        flow_outputs[flow.source_id].append(flow.id)
+        flow_inputs[flow.target_id].append(flow.id)
+        if node_by_id := next((node for node in nodes if node.id == flow.target_id), None):
+            if node_by_id.type == "data_store":
+                store_data[node_by_id.id].update(flow.data_object_ids)
+                store_writers[node_by_id.id].add(flow.source_id)
+        if node_by_id := next((node for node in nodes if node.id == flow.source_id), None):
+            if node_by_id.type == "data_store":
+                store_data[node_by_id.id].update(flow.data_object_ids)
+                store_readers[node_by_id.id].add(flow.target_id)
+    nodes = [
+        node.model_copy(update={
+            "process_metadata": DfdProcessMetadata(
+                input_flow_ids=sorted(flow_inputs.get(node.id, [])),
+                output_flow_ids=sorted(flow_outputs.get(node.id, [])),
+            ) if node.type == "process" else None,
+        })
+        for node in nodes
+    ]
+
     all_element_ids = [item.id for item in nodes] + [item.id for item in dfd_flows] + [item.id for item in dfd_boundaries] + [item.id for item in data_objects]
+    identity_projection = {element_id: [element_id] for element_id in all_element_ids}
     views = [
         DfdView(
             id="view-context",
             kind="context",
             element_refs=all_element_ids,
-            projection_mappings={item.id: [item.id] for item in nodes},
+            projection_mappings=identity_projection,
         ),
         DfdView(
             id="view-system",
             kind="system",
             element_refs=all_element_ids,
-            projection_mappings={item.id: [item.id] for item in nodes},
+            projection_mappings=identity_projection,
         ),
     ]
+    for process in [node for node in nodes if node.type == "process"]:
+        related_flows = [
+            flow for flow in dfd_flows
+            if flow.source_id == process.id or flow.target_id == process.id
+        ]
+        related_nodes = {
+            node_id for flow in related_flows for node_id in (flow.source_id, flow.target_id)
+        }
+        feature_refs = sorted({
+            process.id,
+            *related_nodes,
+            *(flow.id for flow in related_flows),
+            *(data_id for flow in related_flows for data_id in flow.data_object_ids),
+        })
+        views.append(DfdView(
+            id=f"view-feature-{process.id}",
+            kind="feature",
+            parent_process_id=process.id,
+            element_refs=feature_refs,
+            projection_mappings={element_id: [element_id] for element_id in feature_refs},
+        ))
 
     questions = []
     unknown_nodes = [item.id for item in nodes if item.scope == "unknown" or item.ownership == "unknown" or item.exposure == "unknown"]
@@ -217,37 +534,83 @@ def build_dfd_model(project: dict, trust_model: dict, previous: dict | None = No
             reason="The current artifact model does not reliably distinguish interaction direction/semantics.",
             source_refs=_source_refs(project),
         ))
+    if canonical_operations and not operation_response_fields:
+        questions.append(DfdQuestion(
+            id="question-response-semantics",
+            affected_refs=[flow.id for flow in dfd_flows if flow.interaction_kind == "request"],
+            question="What response payloads and direction should be modeled for these API operations?",
+            reason="The available API collection describes requests but does not document response data.",
+            source_refs=_source_refs(project),
+        ))
 
-    semantic_payload = {
-        "nodes": [item.model_dump() for item in nodes],
-        "data_objects": [item.model_dump() for item in data_objects],
-        "flows": [item.model_dump() for item in dfd_flows],
-        "boundaries": [item.model_dump() for item in dfd_boundaries],
-        "zones": [item.model_dump() for item in zones],
+    stores = {
+        store_id: DfdStoreMetadata(
+            data_object_ids=sorted(data_ids),
+            readers=sorted(store_readers.get(store_id, set())),
+            writers=sorted(store_writers.get(store_id, set())),
+        )
+        for store_id, data_ids in store_data.items()
     }
-    semantic_hash = hashlib.sha256(json.dumps(semantic_payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
-    previous_hash = previous.get("semantic_hash") if isinstance(previous, dict) else None
-    previous_revision = int(previous.get("revision", 0)) if isinstance(previous, dict) else 0
-    revision = previous_revision + 1 if previous_hash and previous_hash != semantic_hash else max(previous_revision, 1)
-
-    return DfdModel(
+    if any(value in (None, "unknown") for store in stores.values() for value in (store.retention, store.deletion, store.backup)):
+        lifecycle_refs = sorted({
+            *stores.keys(),
+            *(data_id for store in stores.values() for data_id in store.data_object_ids),
+        })
+        questions.append(DfdQuestion(
+            id="question-data-lifecycle",
+            affected_refs=lifecycle_refs,
+            question="What are the retention, deletion, backup, and vendor lifecycle rules for stored data?",
+            reason="Data-store lifecycle metadata is unknown and must not be treated as safe or compliant.",
+            source_refs=_source_refs(project),
+        ))
+    model_assertions = [
+        *_unknown_assertions(nodes, dfd_flows, stores),
+        *_conflict_assertions(project),
+    ]
+    assertions_by_object: dict[str, list[DfdAssertion]] = defaultdict(list)
+    for assertion in model_assertions:
+        assertions_by_object[assertion.object_id].append(assertion)
+    nodes = [node.model_copy(update={"assertions": assertions_by_object.get(node.id, [])}) for node in nodes]
+    model_evidence = _model_evidence(project)
+    if any(assertion.status == "conflicting" for assertion in model_assertions):
+        questions.append(DfdQuestion(
+            id="question-conflicting-sources",
+            affected_refs=[],
+            question="Which source or runtime observation resolves the conflicting artifact assertions?",
+            reason="Conflicting source claims must remain visible and cannot be silently resolved by recency.",
+            source_refs=_source_refs(project),
+        ))
+    initial_revision = max(int(previous.get("revision", 0)), 1) if isinstance(previous, dict) else 1
+    model = DfdModel(
         id=(previous or {}).get("id") or _stable_id("dfd-model", project.get("project_id"), project.get("name")),
         project_id=str(project.get("project_id") or ""),
         schema_version=DFD_SCHEMA_VERSION,
-        revision=revision,
-        semantic_hash=semantic_hash,
+        revision=initial_revision,
+        layout_revision=int((previous or {}).get("layout_revision", 1)) if isinstance(previous, dict) else 1,
+        human_edit_revision=int((previous or {}).get("human_edit_revision", 0)) if isinstance(previous, dict) else 0,
+        source_semantic_hash=None,
         title=str(project.get("name") or "Threat Model"),
         scope_description=project.get("description"),
         source_refs=_source_refs(project),
+        evidence=model_evidence,
+        assertions=model_assertions,
         nodes=nodes,
         data_objects=data_objects,
         flows=dfd_flows,
-        stores={},
+        stores=stores,
         zones=zones,
         boundaries=dfd_boundaries,
         views=views,
         questions=questions,
     )
+    recalculate_boundary_crossings(model)
+    semantic_hash = model.semantic_hash
+    model.source_semantic_hash = semantic_hash
+    previous_hash = previous.get("semantic_hash") if isinstance(previous, dict) else None
+    previous_revision = int(previous.get("revision", 0)) if isinstance(previous, dict) else 0
+    revision = previous_revision + 1 if previous_hash and previous_hash != semantic_hash else max(previous_revision, 1)
+    model.revision = revision
+    return model
 
 
 def validate_dfd_model(model: DfdModel) -> dict:
@@ -320,6 +683,16 @@ def validate_dfd_model(model: DfdModel) -> dict:
             target_type = node_by_id[flow.target_id].type
             if source_type != "process" and target_type != "process":
                 warnings.append(f"Flow {flow.id} does not touch a process and requires review")
+            if not flow.data_object_ids:
+                warnings.append(f"Flow {flow.id} has no data object label and requires review")
+            if flow.name.casefold() in {str(flow.protocol or "").casefold(), "https", "http", "post", "get", "unknown data flow"}:
+                warnings.append(f"Flow {flow.id} name is not a data label and requires review")
+            if flow.crossing_status == "resolved" and (
+                not node_by_id[flow.source_id].zone_ids or not node_by_id[flow.target_id].zone_ids
+            ):
+                errors.append(f"Flow {flow.id} is marked resolved but has incomplete zone membership")
+        if flow.crossing_status == "unresolved":
+            warnings.append(f"Flow {flow.id} has unresolved zone membership or boundary crossing")
 
     for boundary in model.boundaries:
         for zone_id in [*boundary.source_zone_ids, *boundary.target_zone_ids]:
@@ -328,6 +701,18 @@ def validate_dfd_model(model: DfdModel) -> dict:
         for flow_id in boundary.crossing_flow_ids:
             if flow_id not in flow_set:
                 errors.append(f"Boundary {boundary.id} references missing flow {flow_id}")
+            elif boundary.id not in next(flow for flow in model.flows if flow.id == flow_id).boundary_crossings:
+                errors.append(f"Boundary {boundary.id} and flow {flow_id} have inconsistent crossing references")
+
+    for store_id, store in model.stores.items():
+        if store_id not in node_by_id or node_by_id[store_id].type != "data_store":
+            errors.append(f"Store metadata {store_id} does not reference a data_store node")
+        for data_id in store.data_object_ids:
+            if data_id not in data_set:
+                errors.append(f"Store {store_id} references missing data object {data_id}")
+        for actor_id in [*store.readers, *store.writers]:
+            if actor_id not in node_by_id:
+                errors.append(f"Store {store_id} references missing reader/writer node {actor_id}")
 
     for view in model.views:
         for element_id in view.element_refs:
@@ -335,6 +720,24 @@ def validate_dfd_model(model: DfdModel) -> dict:
                 errors.append(f"View {view.id} references missing element {element_id}")
         if view.parent_process_id and view.parent_process_id not in node_by_id:
             errors.append(f"View {view.id} references missing parent process {view.parent_process_id}")
+        elif view.parent_process_id and node_by_id[view.parent_process_id].type != "process":
+            errors.append(f"View {view.id} parent {view.parent_process_id} is not a process")
+        for projection_id, mapped_ids in view.projection_mappings.items():
+            if projection_id not in set(all_ids):
+                errors.append(f"View {view.id} projection references missing element {projection_id}")
+            for mapped_id in mapped_ids:
+                if mapped_id not in set(all_ids):
+                    errors.append(f"View {view.id} projection maps to missing element {mapped_id}")
+
+    for question in model.questions:
+        for affected_id in question.affected_refs:
+            if affected_id not in set(all_ids):
+                errors.append(f"Question {question.id} references missing element {affected_id}")
+
+    for flow in model.flows:
+        for crossing_id in [*flow.crossing_origins.keys(), *flow.crossing_rationales.keys()]:
+            if crossing_id not in boundary_set:
+                errors.append(f"Flow {flow.id} crossing metadata references missing boundary {crossing_id}")
 
     for flow in model.flows:
         if len(flow.boundary_crossings) != len(set(flow.boundary_crossings)):
@@ -362,7 +765,7 @@ def format_dfd_analysis_context(dfd_model: dict | None) -> str:
 
     lines = [
         f"DFD model id: {dfd_model.get('id', 'unknown')}",
-        f"DFD schema: {dfd_model.get('schema_version', 'unknown')} · revision: {dfd_model.get('revision', 'unknown')}",
+        f"DFD schema: {dfd_model.get('schema_version', 'unknown')} · revision: {dfd_model.get('revision', 'unknown')} · layout_revision: {dfd_model.get('layout_revision', 'unknown')}",
         "NODES:",
     ]
     for node in dfd_model.get("nodes", []) or []:
@@ -377,7 +780,7 @@ def format_dfd_analysis_context(dfd_model: dict | None) -> str:
     for flow in dfd_model.get("flows", []) or []:
         lines.append(
             f"- {flow.get('id')} ({flow.get('display_id')}) · {flow.get('source_id')} → {flow.get('target_id')} · "
-            f"data={flow.get('name')} · interaction={flow.get('interaction_kind')} · boundaries={flow.get('boundary_crossings') or []}"
+            f"data={flow.get('name')} · interaction={flow.get('interaction_kind')} · boundaries={flow.get('boundary_crossings') or []} · crossing={flow.get('crossing_status')}"
         )
     lines.append("BOUNDARIES:")
     for boundary in dfd_model.get("boundaries", []) or []:

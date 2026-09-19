@@ -22,6 +22,8 @@ InteractionKind = Literal["request", "response", "event", "read", "write", "repl
 ViewKind = Literal["context", "system", "feature"]
 QuestionStatus = Literal["open", "answered", "deferred"]
 BoundaryStatus = Literal["candidate", "confirmed", "rejected", "unresolved"]
+CrossingOrigin = Literal["derived", "reviewer"]
+TransitionScope = Literal["zone", "logical", "mixed", "unknown"]
 
 
 class DfdBase(BaseModel):
@@ -80,6 +82,17 @@ class DfdNode(DfdBase):
     implementation_status: ImplementationStatus = "unknown"
     evidence_refs: list[str] = Field(default_factory=list)
     assertions: list[DfdAssertion] = Field(default_factory=list)
+    process_metadata: "DfdProcessMetadata | None" = None
+
+
+class DfdProcessMetadata(DfdBase):
+    purpose: str | None = None
+    execution_identity: str | None = None
+    privileges: list[str] = Field(default_factory=list)
+    input_flow_ids: list[str] = Field(default_factory=list)
+    output_flow_ids: list[str] = Field(default_factory=list)
+    transformations: list[str] = Field(default_factory=list)
+    control_refs: list[str] = Field(default_factory=list)
 
 
 class DfdFlow(DfdBase):
@@ -94,6 +107,8 @@ class DfdFlow(DfdBase):
     authn: str | None = None
     authz: str | None = None
     boundary_crossings: list[str] = Field(default_factory=list)
+    crossing_rationales: dict[str, str] = Field(default_factory=dict)
+    crossing_origins: dict[str, CrossingOrigin] = Field(default_factory=dict)
     crossing_status: Literal["resolved", "unresolved"] = "resolved"
     evidence_refs: list[str] = Field(default_factory=list)
     knowledge_status: KnowledgeStatus = "unknown"
@@ -131,7 +146,9 @@ class DfdBoundary(DfdBase):
     source_zone_ids: list[str] = Field(default_factory=list)
     target_zone_ids: list[str] = Field(default_factory=list)
     crossing_flow_ids: list[str] = Field(default_factory=list)
+    transition_scope: TransitionScope = "unknown"
     controls: list[str] = Field(default_factory=list)
+    assertions: list[DfdAssertion] = Field(default_factory=list)
     status: BoundaryStatus = "unresolved"
     derived: bool = True
     evidence_refs: list[str] = Field(default_factory=list)
@@ -165,6 +182,9 @@ class DfdModel(BaseModel):
     project_id: str
     schema_version: str = "dfd-v1"
     revision: int = Field(default=1, ge=1)
+    layout_revision: int = Field(default=1, ge=1)
+    human_edit_revision: int = Field(default=0, ge=0)
+    source_semantic_hash: str | None = None
     semantic_hash: str | None = None
     title: str
     scope_description: str | None = None
@@ -180,3 +200,8 @@ class DfdModel(BaseModel):
     views: list[DfdView] = Field(default_factory=list)
     questions: list[DfdQuestion] = Field(default_factory=list)
 
+
+# DfdNode intentionally keeps the process metadata optional because entity and
+# data-store nodes do not need it. Resolve the forward reference once all
+# domain classes are available.
+DfdNode.model_rebuild()

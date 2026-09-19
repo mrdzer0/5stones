@@ -11,7 +11,7 @@ from backend.services.trust_boundary_service import (
     build_trust_model,
     propagate_target_refs,
 )
-from backend.services.dfd_model_service import build_dfd_model, validate_dfd_model
+from backend.services.dfd_model_service import build_dfd_model, reconcile_generated_dfd, validate_dfd_model
 from backend.services.stride_service import generate_stride_threats
 from backend.services.linddun_service import generate_linddun_threats
 from backend.services.threat_validation_service import validate_coverage, validate_generated_threats
@@ -29,6 +29,7 @@ from backend.services.posture_service import (
     enrich_threats,
     merge_deduped_threats,
     normalize_report_evidence,
+    build_project_evidence_catalog,
     update_item_by_id,
 )
 import uuid
@@ -111,6 +112,11 @@ async def run_full_analysis(project_id: str, body: dict = None):
         }
 
     report["completeness"] = compute_completeness(project)
+    evidence_ids = {
+        str(item.get("evidence_id"))
+        for item in build_project_evidence_catalog(project)
+        if item.get("evidence_id")
+    }
     report.setdefault("ai_status", {})
     _clear_review_visibility_stale(report)
 
@@ -128,7 +134,19 @@ async def run_full_analysis(project_id: str, body: dict = None):
                 item["status"] = boundary_status.get(item.get("element_id"), item.get("status", "Candidate"))
             trust_boundaries = active_trust_boundaries(reviewed_boundaries)
             report["data_flows"] = trust_model["data_flows"]
-            dfd_model = build_dfd_model(project, trust_model, previous=report.get("dfd_model"))
+            generated_dfd_model = build_dfd_model(project, trust_model, previous=report.get("dfd_model"))
+            dfd_model, dfd_proposal, _human_edit_protected = reconcile_generated_dfd(
+                generated_dfd_model, report.get("dfd_model")
+            )
+            if dfd_proposal:
+                report["dfd_proposal"] = dfd_proposal
+                _mark_analysis_stale(
+                    report,
+                    BOUNDARY_DOWNSTREAM_STAGES,
+                    "Source context changed while a human-edited DFD exists. Review the regeneration proposal before applying it.",
+                )
+            else:
+                report.pop("dfd_proposal", None)
             dfd_validation = validate_dfd_model(dfd_model)
             report["dfd_model"] = dfd_model.model_dump()
             report["dfd_validation"] = dfd_validation
@@ -205,9 +223,11 @@ async def run_full_analysis(project_id: str, body: dict = None):
             )
             report["ai_status"]["stride"] = {"ok": False, "error": str(exc), "engine": "fallback"}
         stride_coverage = getattr(stride_threats, "coverage", [])
-        valid_stride_coverage, coverage_warnings = validate_coverage(stride_coverage, report.get("dfd_model"))
+        valid_stride_coverage, coverage_warnings = validate_coverage(
+            stride_coverage, report.get("dfd_model"), "STRIDE"
+        )
         stride_threats, stride_warnings = validate_generated_threats(
-            stride_threats, "STRIDE", report.get("dfd_model")
+            stride_threats, "STRIDE", report.get("dfd_model"), evidence_ids
         )
         report.setdefault("analysis_coverage", {})["STRIDE"] = valid_stride_coverage
         report["ai_status"].setdefault("stride", {})["validation_warnings"] = [*coverage_warnings, *stride_warnings]
@@ -243,9 +263,11 @@ async def run_full_analysis(project_id: str, body: dict = None):
             )
             report["ai_status"]["linddun"] = {"ok": False, "error": str(exc), "engine": "fallback"}
         linddun_coverage = getattr(linddun_threats, "coverage", [])
-        valid_linddun_coverage, coverage_warnings = validate_coverage(linddun_coverage, report.get("dfd_model"))
+        valid_linddun_coverage, coverage_warnings = validate_coverage(
+            linddun_coverage, report.get("dfd_model"), "LINDDUN"
+        )
         linddun_threats, linddun_warnings = validate_generated_threats(
-            linddun_threats, "LINDDUN", report.get("dfd_model")
+            linddun_threats, "LINDDUN", report.get("dfd_model"), evidence_ids
         )
         report.setdefault("analysis_coverage", {})["LINDDUN"] = valid_linddun_coverage
         report["ai_status"].setdefault("linddun", {})["validation_warnings"] = [*coverage_warnings, *linddun_warnings]
@@ -318,7 +340,12 @@ async def run_full_analysis(project_id: str, body: dict = None):
     report["generated_at"] = datetime.utcnow().isoformat()
     propagate_target_refs(report)
 
-    _clear_completed_stale_stages(report, types)
+    # A source change with a human-edited DFD leaves a proposal pending. Keep
+    # downstream stages stale until the reviewer applies or resolves it.
+    _clear_completed_stale_stages(
+        report,
+        [] if report.get("dfd_proposal") else types,
+    )
 
     stage_duration = round(time.perf_counter() - stage_started_at, 2)
     stage_metrics = report.setdefault("stage_metrics", {})

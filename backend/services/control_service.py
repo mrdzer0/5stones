@@ -6,6 +6,15 @@ from backend.utils.storage import get_controls_catalog
 from backend.services.ai_service import chat_complete_json, get_active_provider_config
 
 
+CONTROL_CATEGORY_ALIASES = {
+    "Linking": ["Linkability"],
+    "Identifying": ["Identifiability"],
+    "Detecting": ["Detectability"],
+    "Data Disclosure": ["Disclosure of Information", "Information Disclosure"],
+    "Unawareness & Unintervenability": ["Unawareness"],
+}
+
+
 async def map_controls(threats: List[dict], force_fallback: bool = False) -> List[dict]:
     """Map recommended controls from catalog or generate them using AI."""
     if not threats:
@@ -76,7 +85,7 @@ Deduplicate: one control can address multiple threats."""
 def _catalog_fallback(threats: list, catalog: list) -> list:
     """Simple keyword-based control matching."""
     threat_text = " ".join([
-        f"{t.get('threat_category','')} {t.get('threat_description','')}"
+        f"{t.get('threat_category','')} {' '.join(CONTROL_CATEGORY_ALIASES.get(t.get('threat_category'), []))} {t.get('threat_description','')}"
         for t in threats
     ]).lower()
 

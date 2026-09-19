@@ -65,7 +65,9 @@ EVIDENCE CATALOG:
   "threats": [
     {{
     "framework": "STRIDE",
-    "taxonomy_version": "adapter-version",
+    "taxonomy_version": "stride-v1",
+    "title": "short threat title",
+    "scenario": "specific source-flow-destination attack scenario",
     "threat_category": "Spoofing|Tampering|Repudiation|Information Disclosure|Denial of Service|Elevation of Privilege",
     "component": "affected component",
     "source": "where attack originates",
@@ -77,6 +79,8 @@ EVIDENCE CATALOG:
     "threat_description": "specific threat description",
     "abuse_case": "how an attacker would execute this",
     "recommended_control": "primary recommended control",
+    "known_controls": ["controls explicitly evidenced by the project context"],
+    "recommended_mitigations": ["actionable mitigation steps"],
     "evidence_refs": ["one or more exact EV-... IDs from the catalog, or an empty array"],
     "assumption": "what assumption was made if evidence is missing",
     "missing_info": "what information would change this analysis",
