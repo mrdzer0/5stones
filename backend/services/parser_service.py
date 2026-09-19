@@ -20,6 +20,7 @@ SENSITIVE_FIELD_TOKENS = {
     "address", "authorization", "birth", "card", "cookie", "credential", "dob", "email",
     "jwt", "ktp", "location", "name", "password", "phone", "secret", "ssn", "token",
 }
+_POSTMAN_VARIABLE_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 
 
 async def parse_artifact(artifact_type: str, content: str, data_policy: str | None = None) -> dict:
@@ -428,6 +429,64 @@ def _postman_body_fields(body: Any) -> tuple[list[str], list[str]]:
     return _unique_strings(fields), ([mode] if mode else [])
 
 
+def _postman_variable_refs(value: Any) -> list[str]:
+    """Extract variable names only; never retain Postman variable values."""
+    if isinstance(value, str):
+        return _unique_strings(match.group(1).strip() for match in _POSTMAN_VARIABLE_RE.finditer(value))
+    if isinstance(value, dict):
+        return _unique_strings(
+            item
+            for key, nested in value.items()
+            for item in [*_postman_variable_refs(key), *_postman_variable_refs(nested)]
+        )
+    if isinstance(value, list):
+        return _unique_strings(item for value_item in value for item in _postman_variable_refs(value_item))
+    return []
+
+
+def _postman_saved_response_examples(item: dict) -> list[dict]:
+    """Capture response shape metadata without persisting response payloads."""
+    examples = []
+    for response in item.get("response") or []:
+        if not isinstance(response, dict):
+            continue
+        body_fields: list[str] = []
+        body = response.get("body")
+        if isinstance(body, str):
+            try:
+                body_fields = _json_field_names(json.loads(body))
+            except (json.JSONDecodeError, TypeError):
+                body_fields = []
+        header_names = _unique_strings(
+            header.get("key")
+            for header in response.get("header") or []
+            if isinstance(header, dict) and header.get("key")
+        )
+        examples.append({
+            "name": " ".join(str(response.get("name") or "Saved response").split())[:160],
+            "status": " ".join(str(response.get("status") or "").split())[:80],
+            "code": response.get("code") if isinstance(response.get("code"), int) else None,
+            "header_names": header_names,
+            "body_fields": body_fields[:48],
+            "has_body": bool(body),
+        })
+    return examples[:12]
+
+
+def _unique_dicts(values) -> list[dict]:
+    result = []
+    seen = set()
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        key = json.dumps(value, sort_keys=True, default=str)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+    return result
+
+
 def parse_postman_document(document: dict) -> dict:
     collection = document.get("collection") if isinstance(document.get("collection"), dict) else document
     if not isinstance(collection.get("info"), dict) or not isinstance(collection.get("item"), list):
@@ -437,6 +496,29 @@ def parse_postman_document(document: dict) -> dict:
 
     scenarios: list[dict] = []
     evidence_items: list[dict] = []
+    known_variables = {
+        str(item.get("key")).strip()
+        for item in (collection.get("variable") or [])
+        if isinstance(item, dict) and str(item.get("key") or "").strip()
+    }
+    unresolved_variables: set[str] = set()
+    ignored_script_count = 0
+
+    def script_count(events: Any) -> int:
+        nonlocal ignored_script_count
+        count = 0
+        for event in events or []:
+            if not isinstance(event, dict) or event.get("listen") not in {"prerequest", "test"}:
+                continue
+            exec_block = (event.get("script") or {}).get("exec") if isinstance(event.get("script"), dict) else None
+            if isinstance(exec_block, list):
+                count += 1
+            elif exec_block:
+                count += 1
+        ignored_script_count += count
+        return count
+
+    script_count(collection.get("event"))
 
     def walk(items: list, folders: list[str], inherited_auth: Any):
         for item in items:
@@ -444,6 +526,7 @@ def parse_postman_document(document: dict) -> dict:
                 continue
             name = " ".join(str(item.get("name") or "Unnamed request").split())
             effective_auth = item.get("auth", inherited_auth)
+            item_script_count = script_count(item.get("event"))
             if "request" not in item and isinstance(item.get("item"), list):
                 walk(item["item"], [*folders, name], effective_auth)
                 continue
@@ -455,10 +538,25 @@ def parse_postman_document(document: dict) -> dict:
             if not isinstance(request, dict):
                 continue
             request_auth = request.get("auth", effective_auth)
+            auth_source = (
+                "request" if "auth" in request
+                else "item" if "auth" in item
+                else "inherited" if effective_auth is not None
+                else "none"
+            )
             method = str(request.get("method") or "GET").upper()
             path = _postman_url_path(request.get("url"))
             security_status, auth_methods = _postman_auth(request_auth)
             body_fields, body_modes = _postman_body_fields(request.get("body"))
+            variable_refs = _postman_variable_refs(request)
+            unresolved_refs = sorted(set(variable_refs) - known_variables, key=str.casefold)
+            unresolved_variables.update(unresolved_refs)
+            saved_response_examples = _postman_saved_response_examples(item)
+            response_fields = _unique_strings(
+                field
+                for example in saved_response_examples
+                for field in example.get("body_fields", [])
+            )
             url = request.get("url") if isinstance(request.get("url"), dict) else {}
             query_names = _unique_strings(
                 query.get("key") for query in (url.get("query") or []) if isinstance(query, dict) and query.get("key")
@@ -481,10 +579,16 @@ def parse_postman_document(document: dict) -> dict:
                 "service": service,
                 "security_status": security_status,
                 "auth_methods": auth_methods,
+                "auth_source": auth_source,
                 "request_fields": _unique_strings([*query_names, *body_fields]),
                 "query_parameters": query_names,
                 "header_names": header_names,
                 "body_modes": body_modes,
+                "response_fields": response_fields,
+                "saved_response_examples": saved_response_examples,
+                "variable_refs": variable_refs,
+                "unresolved_variable_refs": unresolved_refs,
+                "scripts_not_executed": item_script_count,
                 "locator": locator,
             }
             scenarios.append(scenario)
@@ -518,22 +622,41 @@ def parse_postman_document(document: dict) -> dict:
             "tags": _unique_strings(scenario["folder"] for scenario in group if scenario["folder"]),
             "security_status": security_status,
             "auth_methods": _unique_strings(method for scenario in group for method in scenario["auth_methods"]),
+            "auth_sources": _unique_strings(scenario.get("auth_source") for scenario in group),
             "parameters": [],
             "request_fields": _unique_strings(field for scenario in group for field in scenario["request_fields"]),
-            "response_fields": [],
+            "response_fields": _unique_strings(field for scenario in group for field in scenario.get("response_fields", [])),
+            "saved_response_examples": _unique_dicts(
+                example for scenario in group for example in scenario.get("saved_response_examples", [])
+            ),
+            "unresolved_variable_refs": _unique_strings(
+                value for scenario in group for value in scenario.get("unresolved_variable_refs", [])
+            ),
             "content_types": _unique_strings(mode for scenario in group for mode in scenario["body_modes"]),
             "scenarios": [{key: value for key, value in scenario.items() if key not in {"match_key", "service"}} for scenario in group],
             "locator": first["locator"],
         })
 
     services = _unique_strings(operation["service"] for operation in operations)
-    data_fields = _unique_strings(field for operation in operations for field in operation["request_fields"])
+    data_fields = _unique_strings(
+        field
+        for operation in operations
+        for field in [*operation["request_fields"], *operation.get("response_fields", [])]
+    )
     auth_methods = _unique_strings(method for operation in operations for method in operation["auth_methods"])
     name = str(collection.get("info", {}).get("name") or "Postman Collection")
     duplicate_count = len(scenarios) - len(operations)
     warnings = []
     if duplicate_count:
         warnings.append(f"{duplicate_count} request variants were attached as scenarios instead of duplicate entry points.")
+    if unresolved_variables:
+        warnings.append(
+            f"{len(unresolved_variables)} Postman variable reference(s) could not be resolved; names were preserved without values."
+        )
+    if ignored_script_count:
+        warnings.append(
+            f"{ignored_script_count} Postman pre-request/test script(s) were detected and intentionally not executed."
+        )
     return {
         "actors": [],
         "components": services,
@@ -554,6 +677,8 @@ def parse_postman_document(document: dict) -> dict:
             "operation_count": len(operations),
             "duplicate_scenario_count": duplicate_count,
             "service_count": len(services),
+            "unresolved_variable_count": len(unresolved_variables),
+            "ignored_script_count": ignored_script_count,
         },
         "parser": {
             "kind": "postman",

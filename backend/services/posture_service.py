@@ -229,12 +229,43 @@ def build_project_evidence_catalog(project: dict) -> list[dict]:
         candidate.update(metadata or {})
         candidates.append(candidate)
 
+    active_sources = [
+        item for item in (project.get("artifact_sources") or [])
+        if isinstance(item, dict) and item.get("active", True)
+    ]
+
+    def source_metadata(filename: str, item: dict | None = None) -> dict:
+        item = item or {}
+        matching = next(
+            (
+                source for source in active_sources
+                if item.get("artifact_id") and str(source.get("artifact_id")) == str(item.get("artifact_id"))
+            ),
+            None,
+        ) or next(
+            (
+                source for source in active_sources
+                if str(source.get("filename") or source.get("artifact_type") or "") == str(filename)
+            ),
+            None,
+        )
+        if not matching:
+            return {}
+        return {
+            "document_id": matching.get("artifact_id"),
+            "document_revision": matching.get("revision"),
+            "document_hash": matching.get("content_hash"),
+        }
+
     # Only snippets verified during upload are treated as direct artifact evidence.
     for item in project.get("artifact_evidence", []) or []:
         if not isinstance(item, dict):
             continue
         filename = item.get("filename") or item.get("artifact_type") or "Uploaded artifact"
-        add("direct", filename, item.get("locator") or "Artifact content", item.get("snippet"), item.get("topics"))
+        add(
+            "direct", filename, item.get("locator") or "Artifact content", item.get("snippet"), item.get("topics"),
+            source_metadata(str(filename), item),
+        )
 
     for source in project.get("artifact_sources", []) or []:
         if not isinstance(source, dict) or not source.get("active", True):
@@ -242,7 +273,14 @@ def build_project_evidence_catalog(project: dict) -> list[dict]:
         filename = source.get("filename") or source.get("artifact_type") or "Uploaded artifact"
         for item in source.get("evidence_items", []) or []:
             if isinstance(item, dict):
-                add("direct", filename, item.get("locator") or "Artifact content", item.get("snippet"), item.get("topics"))
+                add(
+                    "direct", filename, item.get("locator") or "Artifact content", item.get("snippet"), item.get("topics"),
+                    {
+                        "document_id": source.get("artifact_id"),
+                        "document_revision": source.get("revision"),
+                        "document_hash": source.get("content_hash"),
+                    },
+                )
 
     for field, label, prefix in _PROJECT_SIGNAL_FIELDS:
         for value in project.get(field, []) or []:

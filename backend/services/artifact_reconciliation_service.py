@@ -270,9 +270,24 @@ def _merge_operations(sources: list[dict]) -> tuple[list[dict], list[dict]]:
             "tags": unique_strings(tag for _, op in assertions for tag in (op.get("tags") or [])),
             "security_status": security_status,
             "auth_methods": canonical_auth_methods(method for _, op in assertions for method in (op.get("auth_methods") or [])),
+            "auth_sources": unique_strings(
+                source
+                for _, op in assertions
+                for source in (op.get("auth_sources") or [])
+            ),
             "parameters": _unique_dicts(item for _, op in assertions for item in (op.get("parameters") or [])),
             "request_fields": unique_strings(field for _, op in assertions for field in (op.get("request_fields") or [])),
             "response_fields": unique_strings(field for _, op in assertions for field in (op.get("response_fields") or [])),
+            "saved_response_examples": _unique_dicts(
+                example
+                for _, op in assertions
+                for example in (op.get("saved_response_examples") or [])
+            ),
+            "unresolved_variable_refs": unique_strings(
+                value
+                for _, op in assertions
+                for value in (op.get("unresolved_variable_refs") or [])
+            ),
             "content_types": unique_strings(value for _, op in assertions for value in (op.get("content_types") or [])),
             "scenarios": _scenarios_with_sources(assertions),
             "coverage": coverage,

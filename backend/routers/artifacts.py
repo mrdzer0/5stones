@@ -212,6 +212,8 @@ async def upload_artifact(
     )
 
     artifact_id = f"artifact-{content_hash[:16]}"
+    for evidence in verified_evidence:
+        evidence["artifact_id"] = artifact_id
     revision = 1 + max((
         int(source.get("revision", 1)) for source in existing_sources
         if source.get("filename") == filename and source.get("artifact_type") == data.artifact_type

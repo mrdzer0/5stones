@@ -5,7 +5,7 @@
 - Acuan: `DFD_Feature_AI_Agent_Prompt.md`
 - Status project saat ini: **grounded threat-modeling MVP dengan DFD visualization**.
 - Target akhir: **semantic DFD modeling feature** yang menjadi source of truth untuk canvas, inventory, export, STRIDE, dan LINDDUN.
-- Verifikasi branch saat ini: 89 test Python lulus, 1 regression test JavaScript lulus, syntax/diff checks lulus, dan Playwright smoke-test UI/API lulus.
+- Verifikasi branch saat ini: 94 test Python lulus, 1 regression test JavaScript lulus, syntax/diff checks lulus, dan Playwright smoke-test UI/API lulus.
 - Branch enhanced/revamp: `codex/dfd-threat-model-alignment`.
 - Checkpoint fondasi: `77db35f Add canonical DFD semantic model foundation`.
 - Audit core terbaru: **2026-09-19**, terhadap commit `d6b8111` dan report demo revision 5. Gunakan bagian **Audit core function dan optimasi** serta milestone **C0–C6** sebagai urutan pekerjaan berikutnya; M0–M9 tetap menjadi peta alignment historis.
@@ -345,7 +345,7 @@ Definition of done:
 
 ### M4 — Source, evidence, assertion, dan ingestion pipeline
 
-Status: **Partial — perlu diperkuat, prioritas P1**
+Status: **Core remediation complete — hardening pipeline observability remains P1**
 
 Sudah ada:
 
@@ -355,25 +355,24 @@ Sudah ada:
 - Redaction secret diterapkan pada structured parser, generic AI parser, dan evidence/use-case verification.
 - Fallback parser juga memakai konten redacted ketika provider AI gagal.
 - Canonical model mengubah evidence catalog menjadi `DfdEvidenceRef` dengan document revision/hash dan redacted excerpt.
+- `DfdEvidenceRef` sekarang juga menyimpan `evidence_type`, source, topics, document identity, revision, hash, locator, dan redacted excerpt; upload menautkan evidence item ke artifact ID.
 - Confident fact tidak dipromosikan dari unknown classification; unknown lifecycle fields menghasilkan questions/assertions.
 - Unknown privacy metadata pada data object juga menghasilkan assertions/questions untuk kebutuhan LINDDUN.
+- Validator menolak duplicate evidence ID, documented/conflicting assertion tanpa evidence, inferred assertion tanpa reason, unknown assertion yang membawa nilai, question source/evidence ref yang tidak ada, dan answered question tanpa resolution.
+- Conflict record dipertahankan sebagai satu assertion `conflicting` per source/value, sehingga reviewer dapat melihat kedua klaim dan provenance-nya.
+- Postman parser menyimpan unresolved variable names, inherited/request auth source, safe saved-response shape/field metadata, dan script-count warning; response body/value tidak dipersist dan pre-request/test script tidak dieksekusi.
 
-Yang perlu ditambahkan:
+Hardening tersisa:
 
-- Pipeline eksplisit: ingest → extract → normalize → validate → review → analyze → persist.
-- Evidence dengan `documentId`, `documentRevision`, `documentHash`, locator terstruktur, dan redacted excerpt.
-- Assertion per atribut dengan status `documented`, `inferred`, `unknown`, `conflicting`.
-- Question dengan `affectedRefs`, `sourceRefs`, reason, status, dan resolution.
-- Privacy readiness assessment yang menghitung field unresolved per data object/store dan mengubah konteks LINDDUN menjadi `needs_context` bila metadata belum cukup.
-- Evidence-reference editing untuk node, flow, data object, store, zone, dan boundary; reference yang tidak ada ditolak oleh validator backend.
-- Retain both assertions saat dokumen bertentangan.
-- Redact secret sebelum konten dikirim ke AI, termasuk jalur generic PRD/Markdown/text.
-- Postman: simpan unresolved variable references, inherited auth result, dan saved response examples bila ada.
-- Jangan mengeksekusi pre-request/test script atau request dari collection.
+- Persist audit event per stage: ingest → extract → normalize → validate → review → analyze → persist.
+- Expose locator terstruktur dan evidence provenance lengkap pada UI review/export.
+- Tambahkan end-to-end acceptance untuk privacy readiness dan editing evidence reference lintas seluruh elemen DFD.
 
 Definition of done:
 
-- Test secret redaction, prompt-injection text, conflicting evidence, unresolved variables, dan saved response examples.
+- Test secret redaction, prompt-injection text, conflicting evidence, unresolved variables, saved response examples, assertion/question provenance, dan script non-execution.
+- Core test coverage sudah tersedia; stage audit dan UI evidence review tetap menjadi P1 hardening.
+- Hardening tersisa: persist stage-level ingest/extract/normalize/validate/review/analyze/persist audit event dan expose structured locator pada UI review.
 
 ### M5 — DFD views dan UI editing lifecycle
 
@@ -602,7 +601,7 @@ Acceptance test groups:
 | Authentication/project isolation | Partial: configurable token-per-workspace guard + cross-workspace resource check; IdP/JWT production integration belum ada |
 | Failure/retry/provider safety | Partial: persisted analysis run state, retry endpoint/UI, URL allowlist, local-only policy, and bounded token/timeout/retries; server-side cancellation/quota belum ada |
 | Synthetic DFD fixture | Partial: customer-registration source/model tersedia; Postman-only fixture inline test |
-| Automated verification sesuai AC01–AC20 | Partial: 89 Python tests + JS regression + Playwright DFD/report/privacy/proposal smoke-test + access-control/provider/failure helper tests; audit core menemukan gap CT01–CT15, full end-to-end/UI mutation criteria belum lengkap |
+| Automated verification sesuai AC01–AC20 | Partial: 94 Python tests + JS regression + Playwright DFD/report/privacy/proposal smoke-test + access-control/provider/failure helper tests; audit core menemukan gap CT01–CT15, full end-to-end/UI mutation criteria belum lengkap |
 
 ## Prioritas implementasi
 
@@ -625,6 +624,7 @@ database atas perbaikan data/hasil yang sudah terbukti salah.
 - 2026-09-19: Completed M1 core contract hardening: explicit per-project canonical DFD storage, legacy envelope migration, supported-schema gate, empty-draft readiness state, orphan assertion/layout/evidence validation, and report-to-canonical lazy hydration. Verification: 82 Python tests, JavaScript regression, Playwright GET `/dfd` status 200 with `dfd-v1` revision 5, 20 nodes/8 flows/90 evidence/226 assertions, `valid=true`, and expected `semantic_ready=false` topology warnings.
 - 2026-09-19: Completed M2 core graph remediation: ancestor-aware zone connectivity, process metadata and lineage reference validation, actionable direct-transfer/data-label checks, operation-scoped request/response projection, and complete DFD analysis context. Verification: 86 Python tests, JavaScript regression, Playwright GET `/dfd` status 200 with `valid=true`, `semantic_ready=false` only for the active demo's evidenced topology gaps, and zero console errors.
 - 2026-09-19: Completed M3 core ownership/scope/exposure remediation: explicit entity/zone/boundary metadata inputs, unknown-preserving classification, nested zone projection, evidence-backed boundary types/rationale, same-ownership-group separation, and word-boundary-safe threat mapping. Verification: 89 Python tests, JavaScript regression, Playwright GET `/dfd` status 200 with `valid=true`, and zero console errors.
+- 2026-09-19: Remediated M4 evidence/assertion/ingestion findings: structured evidence provenance (type/source/topics/document identity/revision/hash), per-source conflicting assertions, multi-conflict preservation during assertion refresh, semantic assertion/question provenance validation, Postman unresolved-variable and saved-response shape metadata, and explicit non-execution warnings for pre-request/test scripts. Verification: 94 Python tests, Python compilation, JavaScript regression, and Playwright API/UI smoke passed with HTTP 200, `dfd-v1`, `valid=true`, and zero console errors.
 - 2026-09-19: Created branch `codex/dfd-threat-model-alignment` for rollback-safe enhanced/revamp work.
 - 2026-09-19: Added canonical DFD contract, deterministic model adapter, graph validator, DFD persistence in analysis report, DFD context in STRIDE/LINDDUN prompts, semantic stale detection, and multi-boundary threat mapping regression fix.
 - 2026-09-19: Added secret redaction, AI threat/coverage validation, canonical LINDDUN labels with legacy aliases, direct `affected_refs` mapping, and reviewable DFD-tied fallbacks.

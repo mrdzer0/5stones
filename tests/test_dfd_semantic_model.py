@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from backend.models.dfd import DfdAssertion, DfdBoundary
+from backend.models.dfd import DfdAssertion, DfdBoundary, DfdEvidenceRef, DfdQuestion
 from backend.routers.dfd import apply_dfd_regeneration_proposal, export_dfd, import_dfd, save_dfd, resolve_dfd_regeneration_proposal
 from backend.services.dfd_model_service import (
     apply_dfd_proposal,
@@ -20,6 +20,7 @@ from backend.services.dfd_model_service import (
     validate_dfd_model,
 )
 from backend.services.trust_boundary_service import attach_boundary_refs, attach_target_refs, build_trust_model
+from backend.services.parser_service import parse_postman_document
 from backend.models.dfd import DfdFlow, DfdModel, DfdNode, DfdZone
 
 
@@ -292,6 +293,114 @@ class DfdSemanticModelTests(unittest.TestCase):
 
         self.assertTrue(any(assertion.status == "conflicting" for assertion in model.assertions))
         self.assertTrue(any(question.id == "question-conflicting-sources" for question in model.questions))
+
+    def test_conflicting_artifact_assertions_retain_one_assertion_per_source(self):
+        project = {
+            **self.project,
+            "artifact_sources": [
+                {"artifact_id": "openapi-1", "filename": "api.json", "active": True},
+                {"artifact_id": "postman-1", "filename": "collection.json", "active": True},
+            ],
+            "artifact_conflicts": [{
+                "operation_key": "POST /register",
+                "field": "security_status",
+                "values": [
+                    {"artifact_id": "openapi-1", "security_status": "secured"},
+                    {"artifact_id": "postman-1", "security_status": "public"},
+                ],
+                "message": "Artifacts disagree about authentication.",
+            }],
+        }
+        model = build_dfd_model(project, build_trust_model(project))
+        assertions = [item for item in model.assertions if item.status == "conflicting"]
+
+        self.assertEqual(len(assertions), 2)
+        self.assertEqual({item.value for item in assertions}, {"secured", "public"})
+        self.assertEqual(
+            {ref for item in assertions for ref in item.evidence_refs},
+            {"artifact:openapi-1", "artifact:postman-1"},
+        )
+
+    def test_refresh_preserves_multiple_conflicting_assertions_for_a_field(self):
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        data_object = next(item for item in model.data_objects if item.id == "DO5")
+        data_object.recipients = ["Vendor email service"]
+        data_object.assertions = [
+            DfdAssertion(
+                object_id=data_object.id,
+                field_path="recipients",
+                value=["Vendor email service"],
+                status="conflicting",
+                evidence_refs=["EVIDENCE-1"],
+                inference_reason="Source A disagrees with Source B.",
+            ),
+            DfdAssertion(
+                object_id=data_object.id,
+                field_path="recipients",
+                value=["Internal mailer"],
+                status="conflicting",
+                evidence_refs=["EVIDENCE-2"],
+                inference_reason="Source A disagrees with Source B.",
+            ),
+        ]
+
+        refresh_attribute_assertions(model)
+        recipients = [item for item in data_object.assertions if item.field_path == "recipients"]
+
+        self.assertEqual(len(recipients), 2)
+        self.assertEqual({item.value[0] for item in recipients}, {"Vendor email service", "Internal mailer"})
+
+    def test_validator_enforces_assertion_and_question_provenance(self):
+        model = DfdModel(
+            id="m4-provenance",
+            project_id="project-1",
+            title="M4 provenance",
+            source_refs=["artifact:doc-1"],
+            evidence=[DfdEvidenceRef(id="artifact:doc-1", evidence_type="direct")],
+            assertions=[
+                DfdAssertion(object_id="m4-provenance", field_path="scope", status="documented"),
+            ],
+            questions=[DfdQuestion(
+                id="q-1",
+                question="What is the trust zone?",
+                reason="Zone classification is missing.",
+                source_refs=["artifact:missing"],
+                status="answered",
+            )],
+        )
+
+        validation = validate_dfd_model(model)
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(any("requires evidence" in error for error in validation["errors"]))
+        self.assertTrue(any("missing source/evidence" in error for error in validation["errors"]))
+        self.assertTrue(any("requires a resolution" in error for error in validation["errors"]))
+
+    def test_postman_parser_never_executes_scripts_or_persists_saved_response_values(self):
+        result = parse_postman_document({
+            "info": {"name": "M4 parser"},
+            "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "secret-token"}]},
+            "event": [{"listen": "test", "script": {"exec": ["sendRequest('https://example.test')"]}}],
+            "item": [{
+                "name": "Get profile",
+                "request": {"method": "GET", "url": "{{base_url}}/profile/{{user_id}}"},
+                "response": [{
+                    "name": "Saved profile",
+                    "code": 200,
+                    "status": "OK",
+                    "body": json.dumps({"email": "secret@example.test"}),
+                }],
+            }],
+        })
+
+        serialized = json.dumps(result)
+        operation = result["operations"][0]
+        self.assertEqual(operation["unresolved_variable_refs"], ["base_url", "user_id"])
+        self.assertEqual(operation["auth_sources"], ["inherited"])
+        self.assertEqual(operation["response_fields"], ["email"])
+        self.assertEqual(result["stats"]["ignored_script_count"], 1)
+        self.assertNotIn("secret@example.test", serialized)
 
     def test_validator_reports_dangling_refs_and_zone_cycles(self):
         model = DfdModel(

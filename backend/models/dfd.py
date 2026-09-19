@@ -32,6 +32,9 @@ class DfdBase(BaseModel):
 
 class DfdEvidenceRef(DfdBase):
     id: str
+    evidence_type: str | None = None
+    source: str | None = None
+    topics: list[str] = Field(default_factory=list)
     document_id: str | None = None
     document_revision: int | None = None
     document_hash: str | None = None

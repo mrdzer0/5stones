@@ -213,6 +213,8 @@ def _model_evidence(project: dict, additional_refs: list[str] | None = None) -> 
                            if isinstance(item, dict) and str(item.get("artifact_id")) == artifact_id), {})
             result.append(DfdEvidenceRef(
                 id=source_ref,
+                evidence_type="direct",
+                source=str(source.get("filename") or source.get("artifact_type") or artifact_id),
                 document_id=artifact_id,
                 document_revision=source.get("revision"),
                 document_hash=source.get("content_hash"),
@@ -221,18 +223,24 @@ def _model_evidence(project: dict, additional_refs: list[str] | None = None) -> 
         elif source_ref == "manual:context":
             result.append(DfdEvidenceRef(
                 id=source_ref,
+                evidence_type="context",
+                source="Project context",
                 document_id="manual-context",
                 locator="Project context",
             ))
     for item in build_project_evidence_catalog(project)[:96]:
         source = sources.get(str(item.get("source") or ""))
+        document_id = item.get("document_id") or (source or {}).get("artifact_id") or "project-context"
         if any(existing.id == str(item.get("evidence_id")) for existing in result):
             continue
         result.append(DfdEvidenceRef(
             id=str(item.get("evidence_id")),
-            document_id=str((source or {}).get("artifact_id") or "project-context"),
-            document_revision=(source or {}).get("revision"),
-            document_hash=(source or {}).get("content_hash"),
+            evidence_type=str(item.get("evidence_type") or "context"),
+            source=str(item.get("source") or "Project context"),
+            topics=_unique(item.get("topics") or []),
+            document_id=str(document_id),
+            document_revision=item.get("document_revision") or (source or {}).get("revision"),
+            document_hash=item.get("document_hash") or (source or {}).get("content_hash"),
             locator=str(item.get("locator") or "Artifact content"),
             excerpt_redacted=str(item.get("snippet") or ""),
         ))
@@ -242,6 +250,8 @@ def _model_evidence(project: dict, additional_refs: list[str] | None = None) -> 
         prefix, _, locator = evidence_id.partition(":")
         result.append(DfdEvidenceRef(
             id=evidence_id,
+            evidence_type="inference",
+            source="Grounded model",
             document_id=prefix or "grounded-model",
             locator=locator or "Grounded model reference",
         ))
@@ -318,14 +328,19 @@ def _conflict_assertions(project: dict) -> list[DfdAssertion]:
             for item in (conflict.get("values") or [])
             if isinstance(item, dict) and item.get("artifact_id")
         ]
-        assertions.append(DfdAssertion(
-            object_id=_stable_id("conflict", operation_key, field),
-            field_path=f"operation[{operation_key}].{field}",
-            value=conflict.get("values"),
-            status="conflicting",
-            evidence_refs=source_refs,
-            inference_reason=str(conflict.get("message") or "Source documents disagree."),
-        ))
+        for value in conflict.get("values") or []:
+            if not isinstance(value, dict):
+                continue
+            artifact_id = str(value.get("artifact_id") or "unknown-source")
+            evidence_ref = f"artifact:{artifact_id}" if value.get("artifact_id") else None
+            assertions.append(DfdAssertion(
+                object_id=_stable_id("conflict", operation_key, field),
+                field_path=f"operation[{operation_key}].{field}@{artifact_id}",
+                value=value.get(field),
+                status="conflicting",
+                evidence_refs=[evidence_ref] if evidence_ref else source_refs,
+                inference_reason=str(conflict.get("message") or "Source documents disagree."),
+            ))
     return assertions
 
 
@@ -499,14 +514,18 @@ def refresh_attribute_assertions(model: DfdModel) -> DfdModel:
         fields: tuple[str, ...],
         evidence_refs: list[str],
     ) -> list[DfdAssertion]:
-        existing = {assertion.field_path: assertion for assertion in current}
+        existing_by_field: dict[str, list[DfdAssertion]] = defaultdict(list)
+        for assertion in current:
+            existing_by_field[assertion.field_path].append(assertion)
         owner = value_by_object[object_id]
         updated: list[DfdAssertion] = []
         for field in fields:
             value = getattr(owner, field, None)
-            prior = existing.get(field)
-            if prior and prior.status == "conflicting":
-                updated.append(prior)
+            prior_values = existing_by_field.get(field, [])
+            prior = prior_values[0] if prior_values else None
+            conflicting = [item for item in prior_values if item.status == "conflicting"]
+            if conflicting:
+                updated.extend(conflicting)
                 continue
             if is_missing(value):
                 updated.append(DfdAssertion(
@@ -1161,6 +1180,7 @@ def validate_dfd_model(model: DfdModel) -> dict:
     duplicates(all_ids, "model element")
     duplicates([item.id for item in model.views], "view")
     duplicates([item.id for item in model.questions], "question")
+    duplicates([item.id for item in model.evidence], "evidence")
     for items, label in (
         (model.nodes, "node display"),
         (model.data_objects, "data object display"),
@@ -1177,6 +1197,7 @@ def validate_dfd_model(model: DfdModel) -> dict:
     boundary_set = set(boundary_ids)
     flow_set = set(flow_ids)
     evidence_set = {item.id for item in model.evidence}
+    source_ref_set = set(model.source_refs) | evidence_set
     element_set = {model.id, *all_ids}
 
     def validate_evidence_refs(owner: str, refs: list[str]):
@@ -1226,6 +1247,18 @@ def validate_dfd_model(model: DfdModel) -> dict:
             )
         if not str(assertion.field_path or "").strip():
             errors.append(f"Assertion for {assertion.object_id} has an empty field path")
+        if assertion.status in {"documented", "conflicting"} and not assertion.evidence_refs:
+            errors.append(
+                f"{assertion.status.title()} assertion {assertion.object_id}.{assertion.field_path} requires evidence"
+            )
+        if assertion.status == "inferred" and not str(assertion.inference_reason or "").strip():
+            errors.append(
+                f"Inferred assertion {assertion.object_id}.{assertion.field_path} requires an inference reason"
+            )
+        if assertion.status == "unknown" and assertion.value not in (None, "", [], "unknown"):
+            errors.append(
+                f"Unknown assertion {assertion.object_id}.{assertion.field_path} cannot carry a value"
+            )
 
     for zone in model.zones:
         if zone.parent_zone_id and zone.parent_zone_id not in zone_set:
@@ -1398,6 +1431,13 @@ def validate_dfd_model(model: DfdModel) -> dict:
         for affected_id in question.affected_refs:
             if affected_id not in set(all_ids):
                 errors.append(f"Question {question.id} references missing element {affected_id}")
+        for source_ref in question.source_refs:
+            if source_ref not in source_ref_set:
+                errors.append(f"Question {question.id} references missing source/evidence {source_ref}")
+        if question.status == "answered" and not str(question.resolution or "").strip():
+            errors.append(f"Answered question {question.id} requires a resolution")
+        if question.status in {"open", "deferred"} and str(question.resolution or "").strip():
+            warnings.append(f"Question {question.id} has a resolution but remains {question.status}")
 
     for flow in model.flows:
         for crossing_id in [*flow.crossing_origins.keys(), *flow.crossing_rationales.keys()]:
