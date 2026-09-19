@@ -8,7 +8,9 @@ from fastapi import HTTPException
 from backend.models.dfd import DfdBoundary
 from backend.routers.dfd import apply_dfd_regeneration_proposal, export_dfd, import_dfd, save_dfd, resolve_dfd_regeneration_proposal
 from backend.services.dfd_model_service import (
+    apply_dfd_proposal,
     build_dfd_model,
+    diff_dfd_models,
     preview_dfd_delete_impact,
     recalculate_boundary_crossings,
     reconcile_generated_dfd,
@@ -75,6 +77,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertTrue(validation["valid"], validation)
         self.assertEqual(model.schema_version, "dfd-v1")
         self.assertEqual({node.type for node in model.nodes}, {"entity", "process", "data_store"})
+        self.assertTrue({"Customer", "Customer Database"}.issubset({node.name for node in model.nodes}))
         self.assertTrue(all(flow.source_id in {node.id for node in model.nodes} for flow in model.flows))
         self.assertTrue(all(flow.target_id in {node.id for node in model.nodes} for flow in model.flows))
         self.assertTrue(model.source_refs)
@@ -87,6 +90,47 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertTrue(all(view.port_mappings.get("input") == view.input_flow_ids for view in feature_views))
         self.assertTrue(all(view.port_mappings.get("output") == view.output_flow_ids for view in feature_views))
         self.assertTrue(any(question.id == "question-data-privacy-context" for question in model.questions))
+
+    def test_aliases_and_declared_endpoint_types_produce_grounded_zone_crossings(self):
+        project = {
+            "project_id": "story-portal",
+            "name": "Story portal",
+            "actors": ["Customer"],
+            "components": ["Backend (Python FastAPI)", "Database (PostgreSQL with PostGIS)", "VLLM APIs (Gemini, GPT-4o)"],
+            "external_systems": ["Planet Data API", "Gemini", "GPT-4o"],
+            "manual_context": {"actors": ["Customer"]},
+            "canonical_operations": [],
+            "artifact_sources": [{"artifact_id": "prd", "active": True}],
+            "extracted_data_flows": [
+                {"flow_id": "store", "source": "Backend (FastAPI)", "destination": "PostgreSQL/PostGIS", "source_entity_type": "component", "destination_entity_type": "component", "data": ["story metadata"], "evidence_refs": ["artifact:prd"], "evidence_type": "direct"},
+                {"flow_id": "provider", "source": "Backend (FastAPI)", "destination": "VLLM APIs", "source_entity_type": "component", "destination_entity_type": "component", "data": ["images"], "evidence_refs": ["artifact:prd"], "evidence_type": "direct"},
+                {"flow_id": "planet", "source": "Planet Data API", "destination": "Backend (FastAPI)", "source_entity_type": "component", "destination_entity_type": "component", "data": ["stories"], "evidence_refs": ["artifact:prd"], "evidence_type": "direct"},
+            ],
+        }
+
+        trust_model = build_trust_model(project)
+        entities = {item["name"]: item for item in trust_model["entities"]}
+        flows = {item["flow_id"]: item for item in trust_model["data_flows"]}
+        model = build_dfd_model(project, trust_model)
+
+        self.assertEqual(flows["store"]["destination"], "Database (PostgreSQL with PostGIS)")
+        self.assertEqual(flows["store"]["destination_entity_type"], "data_store")
+        self.assertEqual(flows["provider"]["destination"], "VLLM APIs (Gemini, GPT-4o)")
+        self.assertEqual(flows["provider"]["destination_entity_type"], "external_system")
+        self.assertEqual(flows["planet"]["source_entity_type"], "external_system")
+        self.assertEqual(flows["planet"]["destination"], "Backend (Python FastAPI)")
+        self.assertEqual(entities["Database (PostgreSQL with PostGIS)"]["zone_id"], "data")
+        self.assertEqual(entities["Planet Data API"]["zone_id"], "external-dependency")
+        self.assertTrue({"Gemini", "GPT-4o"}.issubset(entities))
+        self.assertNotIn("PostgreSQL/PostGIS", entities)
+        self.assertNotIn("Backend (FastAPI)", entities)
+        self.assertEqual(len(trust_model["boundaries"]), 2)
+        provider_boundary = next(item for item in trust_model["boundaries"] if "External Dependency" in item["boundary_label"])
+        self.assertEqual(set(provider_boundary["crossing_flow_ids"]), {"provider", "planet"})
+        self.assertTrue(all(item["evidence_refs"] for item in trust_model["boundaries"]))
+        self.assertEqual(len(model.boundaries), 2)
+        self.assertEqual(len(next(boundary for boundary in model.boundaries if "External Dependency" in boundary.name).crossing_flow_ids), 2)
+        self.assertFalse(any("Customer" in (flow["source"], flow["destination"]) for flow in trust_model["data_flows"]))
 
     def test_canonical_operations_split_request_and_response_flows(self):
         project = {
@@ -148,6 +192,27 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertFalse(any(node.type == "data_store" for node in model.nodes))
         self.assertFalse(any("database" in node.name.casefold() for node in model.nodes))
         self.assertTrue(any(question.id == "question-response-semantics" for question in model.questions))
+
+    def test_validation_marks_isolated_zone_as_semantically_incomplete(self):
+        project = {**self.project, "extracted_data_flows": self.project["extracted_data_flows"][1:]}
+        model = build_dfd_model(project, build_trust_model(project))
+        validation = validate_dfd_model(model)
+
+        self.assertTrue(validation["valid"])
+        self.assertFalse(validation["semantic_ready"])
+        self.assertTrue(any("External" in issue and "no evidenced cross-zone flow" in issue for issue in validation["semantic_issues"]))
+        self.assertTrue(any("Nodes without evidenced flows" in issue for issue in validation["semantic_issues"]))
+
+        complete_project = {**self.project, "extracted_data_flows": [
+            *self.project["extracted_data_flows"],
+            {"flow_id": "flow-3", "source": "Registration API", "destination": "Email Provider", "source_entity_type": "component", "destination_entity_type": "external_system", "data": ["activation email"], "evidence_refs": ["artifact:artifact-1"], "evidence_type": "direct"},
+            {"flow_id": "flow-4", "source": "Web App", "destination": "Registration API", "source_entity_type": "ingress", "destination_entity_type": "component", "data": ["registration form"], "evidence_refs": ["artifact:artifact-1"], "evidence_type": "direct"},
+        ]}
+        complete = build_dfd_model(complete_project, build_trust_model(complete_project))
+        self.assertTrue(validate_dfd_model(complete)["semantic_ready"])
+        complete.boundaries = []
+        recalculate_boundary_crossings(complete)
+        self.assertTrue(any("crosses zones without a trust boundary" in issue for issue in validate_dfd_model(complete)["semantic_issues"]))
 
     def test_conflicting_artifact_assertions_remain_conflicting(self):
         project = {
@@ -486,6 +551,19 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertIsNone(response["proposal"])
         self.assertEqual(response["model"]["revision"], current.revision + 1)
         self.assertTrue(report["analysis_stale"]["stages"])
+
+    def test_regeneration_proposal_includes_store_metadata(self):
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        current = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        candidate = current.model_copy(deep=True)
+        store_id = next(iter(candidate.stores))
+        candidate.stores[store_id].retention = "30 days"
+
+        proposal = diff_dfd_models(current, candidate)
+        self.assertIn(store_id, proposal["sections"]["stores"]["changed"])
+        applied = apply_dfd_proposal(current, candidate, ["stores"])
+        self.assertEqual(applied.stores[store_id].retention, "30 days")
+        self.assertEqual(current.stores[store_id].retention, "unknown")
 
     def test_regeneration_proposal_can_be_dismissed_without_mutating_model(self):
         fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"

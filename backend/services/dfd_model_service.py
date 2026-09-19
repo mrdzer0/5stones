@@ -409,9 +409,9 @@ def diff_dfd_models(previous: DfdModel, candidate: DfdModel) -> dict:
         return {item.id: item.model_dump() for item in items}
 
     sections = {}
-    for name in ("nodes", "data_objects", "flows", "zones", "boundaries", "questions"):
-        old = index(getattr(previous, name))
-        new = index(getattr(candidate, name))
+    for name in ("nodes", "data_objects", "flows", "stores", "zones", "boundaries", "questions"):
+        old = {key: value.model_dump() for key, value in previous.stores.items()} if name == "stores" else index(getattr(previous, name))
+        new = {key: value.model_dump() for key, value in candidate.stores.items()} if name == "stores" else index(getattr(candidate, name))
         sections[name] = {
             "added": sorted(set(new) - set(old)),
             "removed": sorted(set(old) - set(new)),
@@ -440,7 +440,7 @@ def reconcile_generated_dfd(generated: DfdModel, previous: dict | None) -> tuple
     return prior, diff_dfd_models(prior, generated), True
 
 
-PROPOSAL_SECTIONS = ("nodes", "data_objects", "flows", "zones", "boundaries", "questions")
+PROPOSAL_SECTIONS = ("nodes", "data_objects", "flows", "stores", "zones", "boundaries", "questions")
 
 
 def preview_dfd_delete_impact(
@@ -1124,8 +1124,40 @@ def validate_dfd_model(model: DfdModel) -> dict:
         if len(flow.boundary_crossings) != len(set(flow.boundary_crossings)):
             errors.append(f"Flow {flow.id} contains duplicate boundary crossings")
 
+    # Structural validity permits a partial draft. Report disconnected trust
+    # zones separately so a green schema check cannot imply a usable topology.
+    zone_members = {zone.id: set() for zone in model.zones}
+    for node in model.nodes:
+        for zone_id in node.zone_ids:
+            if zone_id in zone_members:
+                zone_members[zone_id].add(node.id)
+    connected_zones: set[str] = set()
+    connected_nodes: set[str] = set()
+    semantic_issues: list[str] = []
+    for flow in model.flows:
+        if flow.source_id not in node_by_id or flow.target_id not in node_by_id:
+            continue
+        connected_nodes.update((flow.source_id, flow.target_id))
+        source_zones = set(node_by_id[flow.source_id].zone_ids)
+        target_zones = set(node_by_id[flow.target_id].zone_ids)
+        if source_zones and target_zones and source_zones != target_zones:
+            connected_zones.update(source_zones | target_zones)
+            if not flow.boundary_crossings:
+                semantic_issues.append(f"Flow {flow.display_id} crosses zones without a trust boundary")
+    if len(zone_members) > 1:
+        for zone in model.zones:
+            if zone.id not in connected_zones:
+                reason = "has no nodes" if not zone_members[zone.id] else "has no evidenced cross-zone flow"
+                semantic_issues.append(f"Zone {zone.display_id} ({zone.name}) {reason}")
+    isolated_nodes = [node.display_id for node in model.nodes if node.id not in connected_nodes]
+    if isolated_nodes:
+        semantic_issues.append(f"Nodes without evidenced flows: {', '.join(isolated_nodes)}")
+    warnings.extend(semantic_issues)
+
     return {
         "valid": not errors,
+        "semantic_ready": not errors and not semantic_issues,
+        "semantic_issues": _unique(semantic_issues),
         "errors": _unique(errors),
         "warnings": _unique(warnings),
         "counts": {

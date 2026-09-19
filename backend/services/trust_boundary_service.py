@@ -75,16 +75,54 @@ def _entity_type(label: str, declared_type: str = "") -> str:
     return "component"
 
 
+def _identity_tokens(label: str) -> tuple[str, ...]:
+    """Compare explicit names without treating a shared technology as identity."""
+    ignored = {"database", "db", "with", "python"}
+    return tuple(sorted(token for token in re.findall(r"[a-z0-9]+", label.casefold()) if token not in ignored))
+
+
+def _same_entity_name(left: str, right: str) -> bool:
+    if left.casefold() == right.casefold():
+        return True
+    left_tokens, right_tokens = _identity_tokens(left), _identity_tokens(right)
+    if len(left_tokens) >= 2 and left_tokens == right_tokens:
+        return True
+    # A parenthesized technology list may elaborate a declared component.
+    # Require the same base name and the same first technology when both have
+    # details; mere token overlap (e.g. two services using React) is not enough.
+    left_base, _, left_detail = left.partition("(")
+    right_base, _, right_detail = right.partition("(")
+    base = _identity_tokens(left_base)
+    if len(base) < 2 or base != _identity_tokens(right_base):
+        return False
+    left_first = _identity_tokens(left_detail.split(",", 1)[0])
+    right_first = _identity_tokens(right_detail.split(",", 1)[0])
+    return not left_first or not right_first or left_first == right_first
+
+
+def _composite_external_endpoint(label: str, external_systems: list[str]) -> bool:
+    base, separator, detail = label.partition("(")
+    if not separator or not re.search(r"\b(?:apis?|providers?)\b", base, re.I):
+        return False
+    detail_tokens = set(_identity_tokens(detail))
+    return any(set(_identity_tokens(external)) <= detail_tokens for external in external_systems if _identity_tokens(external))
+
+
 def build_entity_registry(project: dict, flows: list[dict] | None = None) -> dict[str, dict]:
     """Build the allowlist of entities that boundary results may reference."""
     manual = project.get("manual_context") if isinstance(project.get("manual_context"), dict) else {}
     registry: dict[str, dict] = {}
+    external_systems = [str(value) for value in (project.get("external_systems") or []) if value]
+    type_rank = {"component": 0, "ingress": 1, "actor": 2, "data_store": 3, "external_system": 3}
 
     def add(label: Any, entity_type: str, source: str, locator: str, confidence: str):
         display = _display_label(label)
         if not display:
             return
-        key = display.casefold()
+        matches = [key for key, item in registry.items() if _same_entity_name(display, item["name"])]
+        key = matches[0] if len(matches) == 1 else display.casefold()
+        if entity_type == "component" and _composite_external_endpoint(display, external_systems):
+            entity_type = "external_system"
         zone_id, trust_level = _entity_zone(entity_type, display)
         record = registry.setdefault(key, {
             "entity_id": _stable_id("entity", display),
@@ -96,6 +134,13 @@ def build_entity_registry(project: dict, flows: list[dict] | None = None) -> dic
             "evidence_refs": [],
         })
         record["evidence_refs"] = _unique_strings([*record["evidence_refs"], f"{source}:{locator}"])
+        if type_rank.get(entity_type, 0) > type_rank.get(record["entity_type"], 0):
+            record.update(entity_type=entity_type, zone_id=zone_id, trust_level=trust_level)
+        if source != "flow" and record["name"] != display and type_rank.get(entity_type, 0) >= type_rank.get(record["entity_type"], 0):
+            record["name"] = display
+            record["entity_id"] = _stable_id("entity", display)
+        if confidence == "High":
+            record["confidence"] = "High"
 
     actors = manual.get("actors") or project.get("actors") or []
     for index, actor in enumerate(actors):
@@ -123,7 +168,7 @@ def build_entity_registry(project: dict, flows: list[dict] | None = None) -> dic
         destination_type = flow.get("destination_entity_type") or "ingress"
         add(flow.get("source"), source_type, "flow", flow.get("flow_id", "unknown"), flow.get("confidence", "Low"))
         add(flow.get("destination"), destination_type, "flow", flow.get("flow_id", "unknown"), flow.get("confidence", "Low"))
-    return registry
+    return {item["name"].casefold(): item for item in registry.values()}
 
 
 def build_grounded_data_flows(project: dict) -> list[dict]:
@@ -315,6 +360,33 @@ def active_trust_boundaries(boundaries: list[dict] | None) -> list[dict]:
         boundary for boundary in (boundaries or [])
         if isinstance(boundary, dict) and boundary.get("status") != "Rejected"
     ]
+
+
+def _group_zone_boundaries(boundaries: list[dict]) -> list[dict]:
+    """A trust boundary separates zones; several evidenced flows may cross it."""
+    grouped: dict[tuple[str, str], list[dict]] = {}
+    for boundary in boundaries:
+        key = tuple(sorted((boundary["source_zone_id"], boundary["destination_zone_id"])))
+        grouped.setdefault(key, []).append(boundary)
+    result = []
+    for zone_pair, members in grouped.items():
+        if len(members) == 1:
+            result.append(members[0])
+            continue
+        first = dict(members[0])
+        evidence_refs = _unique_strings(ref for item in members for ref in item.get("evidence_refs", []))
+        flow_ids = _unique_strings(flow_id for item in members for flow_id in item.get("crossing_flow_ids", []))
+        first.update({
+            "boundary_id": _stable_id("boundary", *zone_pair),
+            "boundary_label": f"{zone_pair[0].replace('-', ' ').title()} ↔ {zone_pair[1].replace('-', ' ').title()}",
+            "basis": "Evidenced flows cross this trust-zone transition; review the controls for each flow.",
+            "evidence_refs": evidence_refs,
+            "crossing_flow_ids": flow_ids,
+            "status": "Candidate" if any(item.get("status") != "Confirmed" for item in members) else "Confirmed",
+            "model_fingerprint": _stable_id("topology", *zone_pair, *sorted(evidence_refs), *sorted(flow_ids)),
+        })
+        result.append(first)
+    return result
 
 
 def build_hierarchical_views(
@@ -845,6 +917,16 @@ def propagate_target_refs(report: dict) -> dict:
 def build_trust_model(project: dict) -> dict:
     flows = build_grounded_data_flows(project)
     registry = build_entity_registry(project, flows)
+    normalized_flows = []
+    for flow in flows:
+        normalized = dict(flow)
+        for endpoint, type_field in (("source", "source_entity_type"), ("destination", "destination_entity_type")):
+            matches = [item for item in registry.values() if _same_entity_name(str(flow.get(endpoint) or ""), item["name"])]
+            if len(matches) == 1:
+                normalized[endpoint] = matches[0]["name"]
+                normalized[type_field] = matches[0]["entity_type"]
+        normalized_flows.append(normalized)
+    flows = normalized_flows
     candidates = []
     for flow in flows:
         source = registry.get(str(flow.get("source") or "").casefold())
@@ -864,6 +946,7 @@ def build_trust_model(project: dict) -> dict:
         })
 
     boundaries, warnings = validate_boundary_candidates(candidates, registry, flows)
+    boundaries = _group_zone_boundaries(boundaries)
     views = build_hierarchical_views(project, registry, flows, boundaries)
     declared_external = {_display_label(value).casefold() for value in (project.get("external_systems") or []) if value}
     connected_entities = {

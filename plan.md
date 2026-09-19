@@ -5,7 +5,7 @@
 - Acuan: `DFD_Feature_AI_Agent_Prompt.md`
 - Status project saat ini: **grounded threat-modeling MVP dengan DFD visualization**.
 - Target akhir: **semantic DFD modeling feature** yang menjadi source of truth untuk canvas, inventory, export, STRIDE, dan LINDDUN.
-- Verifikasi branch saat ini: 76 test Python lulus, 1 regression test JavaScript lulus, syntax/diff checks lulus, dan Playwright smoke-test UI/API lulus.
+- Verifikasi branch saat ini: 79 test Python lulus, 1 regression test JavaScript lulus, syntax/diff checks lulus, dan Playwright smoke-test UI/API lulus.
 - Branch enhanced/revamp: `codex/dfd-threat-model-alignment`.
 - Checkpoint fondasi: `77db35f Add canonical DFD semantic model foundation`.
 
@@ -28,8 +28,8 @@ belum cukup untuk menyatakan fitur DFD/threat analysis selesai.
 | Area acuan | Kondisi saat ini | Gap yang perlu ditutup | Prioritas |
 |---|---|---|---|
 | Canonical DFD sebagai source of truth | Model typed, revisioned, persisted, dan dipakai oleh canvas/prompt | Hasil import masih banyak `unknown`/`inferred`; perlu workflow resolve/approve metadata sebelum confidence tinggi | P0 |
-| Graph semantics | Dangling/duplicate/cycle, request-response, data labels, feature ports, crossing metadata, dan duplicate display IDs divalidasi | Rule domain untuk beberapa kombinasi store/process masih reviewable warning; mutation integration test belum lengkap | P0 |
-| Trust zone dan boundary | Ancestor crossing, logical reviewer crossing, common-ancestor guard, unresolved membership, zone/boundary inspector, add/remove UI, dan question resolution tersedia | Pemodelan boundary logical/identity/tenant dan evidence-backed review belum lengkap di seluruh workflow | P0 |
+| Graph semantics | Dangling/duplicate/cycle, request-response, data labels, feature ports, crossing metadata, duplicate display IDs, serta isolated zone/node divalidasi | `semantic_ready` masih false pada demo karena Customer dan beberapa komponen/provider belum punya evidenced flow; mutation integration test belum lengkap | P0 |
+| Trust zone dan boundary | Alias endpoint dinormalisasi, tipe store/external dari deklarasi diprioritaskan, cross-zone flow serta zone boundary dihasilkan dari evidence; ancestor/logical crossing dan reviewer metadata tersedia | Customer interaction dan provider-level flow yang belum didokumentasikan perlu evidence/review; logical/identity/tenant boundary workflow belum lengkap | P0 |
 | Data privacy/lifecycle | Data-object privacy assertions/questions, store lifecycle unknowns, deterministic privacy assessment, LINDDUN context annotation, dan inspector metadata tersedia | Resolusi metadata privacy/lifecycle masih manual dan belum menjadi legal/compliance decision engine; evidence source untuk setiap field masih perlu dilengkapi | P1 |
 | Evidence dan provenance | Evidence catalog, redaction, assertion status, evidence validation, conflict/question records, per-attribute assertion refresh, dan evidence-reference editor tersedia | Pipeline review/resolution lintas semua atribut dan UI evidence browser belum lengkap; source edit tetap perlu evidence yang valid | P1 |
 | STRIDE/LINDDUN | Prompt menerima canonical snapshot; output/taxonomy/refs/coverage/revision divalidasi; deterministic graph coverage melengkapi pasangan element/category; fallback ditandai candidate-only | Demo masih memiliki banyak metadata unknown/inferred; accepted finding/control lifecycle dan engine-backed coverage review belum lengkap | P0/P1 |
@@ -234,6 +234,8 @@ Progress:
 - Regeneration proposal memiliki candidate model yang dapat diterapkan eksplisit tanpa menghapus layout manual.
 - Regeneration proposal memiliki section-level review dan aksi dismiss yang menyimpan resolution history tanpa mengubah canonical model.
 - Canonical renderer sekarang memakai topology-aware layout, directed flow labels, dynamic nested zone containers, dan lane terpisah untuk node tanpa flow agar graph tetap terbaca tanpa mengarang koneksi.
+- System DFD sekarang memusatkan graph pada node dengan evidenced flow, menempatkan zone terkait di sekitar hub, serta menyediakan tombol untuk menampilkan node terisolasi; banner menampilkan semantic issues dari validator.
+- Alias entity dari component/flow/declared external/store digabung secara konservatif. Boundary zone yang sama mengelompokkan beberapa evidenced flow; regeneration proposal juga mengikutsertakan store metadata agar review tidak membuang lifecycle mapping.
 - SVG export memakai fallback layout dan zone containers yang sama secara semantik, termasuk label flow dan dashed boundary semantics; legacy evidence refs di-hydrate saat read/export agar report lama tetap dapat divisualisasikan.
 - Canonical DFD JSON export/import telah ditambahkan melalui schema validation dan optimistic revision check.
 - Inventory sekarang mencakup zone; boundary inspector dapat mengubah status, tipe,
@@ -473,6 +475,7 @@ Acceptance test groups:
 - 2026-09-19: Aligned canonical DFD rendering with the Mermaid reference pattern: topology-aware node placement, visible directed flow labels, dynamic nested zone containers, isolated-node evidence lane, cache-busted assets, and zone-aware SVG export.
 - 2026-09-19: Verification: 76 Python unit tests, JavaScript analysis visibility regression, JS syntax checks, Python compilation, diff whitespace checks, and Playwright DFD/report/privacy/proposal smoke-test passed; favicon route returns 200.
 - 2026-09-19: DFD visual verification: Playwright confirmed 23 canonical nodes, 8 labeled edges, 4 visible zone containers, SVG export 200 with zones/flows, and zero console errors.
+- 2026-09-19: Fixed canonical topology in the active demo: 20 nodes after evidence-based alias merge, 8 flows, 4 cross-zone flows, 2 zone boundaries, and 1 store with lifecycle metadata. `semantic_ready=false` correctly reports the isolated Customer zone and 13 nodes without evidenced flows; no relationship was invented. Added proposal coverage for stores and a connected System DFD view with review toggle. Python tests: 79 passing.
 
 ## Progress rule
 

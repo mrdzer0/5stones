@@ -7,7 +7,7 @@
   <meta name="description" content="Run a structured STRIDE and LINDDUN threat analysis." />
   <link rel="stylesheet" href="/static/css/style.css" />
   <link rel="stylesheet" href="/static/css/components.css" />
-  <link rel="stylesheet" href="/static/css/pages.css?v=20260919c" />
+  <link rel="stylesheet" href="/static/css/pages.css?v=20260919e" />
   <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
 </head>
 <body>
@@ -399,6 +399,7 @@
                   </div>
                   <label class="sr-only" for="canonical-feature-select">Feature DFD process</label>
                   <select class="form-select" id="canonical-feature-select" style="width:auto;display:none;" aria-label="Feature DFD process"></select>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-diagram-unconnected" aria-pressed="false" hidden>Show unconnected</button>
                   <div class="diagram-mode-switch" role="group" aria-label="Diagram view">
                     <button type="button" class="diagram-mode-btn active" data-diagram-mode="improved" aria-pressed="true">Improved</button>
                     <button type="button" class="diagram-mode-btn" data-diagram-mode="classic" aria-pressed="false">Classic</button>
@@ -460,6 +461,7 @@
                 <span><strong>C</strong> Critical threat</span>
                 <span><strong>H</strong> High threat</span>
               </div>
+              <div id="dfd-topology-status" class="dfd-topology-status" role="status" hidden></div>
               <details class="dfd-inventory" id="dfd-inventory-panel">
                 <summary>Canonical DFD inventory</summary>
                 <div id="dfd-inventory" role="region" aria-label="Canonical DFD inventory table"></div>
@@ -554,6 +556,6 @@
 
 <script src="/static/js/sidebar.js"></script>
 <script src="/static/js/api.js"></script>
-<script src="/static/js/analysis.js?v=20260919d"></script>
+<script src="/static/js/analysis.js?v=20260919g"></script>
 </body>
 </html>

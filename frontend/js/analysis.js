@@ -12,6 +12,7 @@ let canonicalUndoStack = [];
 let canonicalRedoStack = [];
 let canonicalFeatureViewId = null;
 let canonicalRenderedViewKind = 'context';
+let canonicalShowUnconnected = false;
 let diagramViewMode = loadDiagramViewMode();
 let diagramLevel = loadDiagramLevel();
 let analysisIsRunning = false;
@@ -72,6 +73,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Diagram toolbar
   document.getElementById('btn-diagram-fit')?.addEventListener('click', () => diagramNetwork?.fit());
+  document.getElementById('btn-diagram-unconnected')?.addEventListener('click', () => {
+    canonicalShowUnconnected = !canonicalShowUnconnected;
+    if (currentReport) renderDiagram(currentReport);
+  });
   document.getElementById('btn-dfd-undo')?.addEventListener('click', () => restoreCanonicalDfdHistory('undo'));
   document.getElementById('btn-dfd-redo')?.addEventListener('click', () => restoreCanonicalDfdHistory('redo'));
   document.getElementById('btn-diagram-export')?.addEventListener('click', exportDiagramPng);
@@ -368,6 +373,8 @@ function syncDiagramLevelUi() {
     : (diagramLevel === 'context' ? 'Context Data Flow Diagram' : diagramLevel === 'services' ? 'Service-level Model' : 'Scenario Flows & API Operations');
   const featureSelect = document.getElementById('canonical-feature-select');
   if (featureSelect) featureSelect.style.display = canonical && diagramLevel === 'scenarios' ? '' : 'none';
+  const unconnectedButton = document.getElementById('btn-diagram-unconnected');
+  if (unconnectedButton) unconnectedButton.hidden = !canonical || diagramLevel !== 'services';
   ['btn-diagram-fit', 'btn-diagram-export', 'btn-diagram-export-svg', 'btn-diagram-export-json', 'btn-diagram-import-json'].forEach(id => {
     const button = document.getElementById(id);
     if (button) button.hidden = diagramLevel === 'scenarios';
@@ -375,7 +382,9 @@ function syncDiagramLevelUi() {
   const subtitle = document.querySelector('.diagram-toolbar-sub');
   if (subtitle) {
     if (diagramLevel === 'services') {
-      subtitle.textContent = 'Evidence readiness determines whether this is a logical service map, architecture candidate, or insufficient model';
+      subtitle.textContent = canonical
+        ? 'Connected data flows are shown first; review unconnected elements in the inventory or toggle Show unconnected.'
+        : 'Evidence readiness determines whether this is a logical service map, architecture candidate, or insufficient model';
     } else if (diagramLevel === 'scenarios') {
       subtitle.textContent = 'Business activities and API operations remain separate · Shapes preserve actor, action, decision, store, and external semantics';
     }
@@ -1397,7 +1406,7 @@ function renderDfdProposal(report) {
     return;
   }
   const labels = {
-    nodes: 'Nodes', data_objects: 'Data objects', flows: 'Flows',
+    nodes: 'Nodes', data_objects: 'Data objects', flows: 'Flows', stores: 'Store metadata',
     zones: 'Zones', boundaries: 'Boundaries', questions: 'Questions',
   };
   const changedSections = Object.entries(proposal.sections || {})
@@ -1867,7 +1876,16 @@ function canonicalNodeVisualZone(node) {
 function renderDfdInventory(report) {
   const panel = document.getElementById('dfd-inventory-panel');
   const container = document.getElementById('dfd-inventory');
+  const topologyStatus = document.getElementById('dfd-topology-status');
   const model = report?.dfd_model;
+  if (topologyStatus) {
+    const validation = report?.dfd_validation;
+    const issues = validation?.semantic_issues || [];
+    topologyStatus.hidden = !model || !issues.length;
+    topologyStatus.innerHTML = issues.length ? `
+      <strong>DFD topology needs review (${issues.length}):</strong>
+      <ul>${issues.map(issue => `<li>${escHtml(issue)}</li>`).join('')}</ul>` : '';
+  }
   if (!panel || !container) return;
   if (!model) {
     panel.style.display = 'none';
@@ -2334,6 +2352,10 @@ function focusThreatTargets(threatId) {
   });
   switchTab('diagram');
   window.setTimeout(() => {
+    if (diagramLevel === 'services' && !canonicalShowUnconnected && [...nodeIds].some(id => !diagramNetwork?.body.data.nodes.get(id))) {
+      canonicalShowUnconnected = true;
+      renderDiagram(currentReport);
+    }
     if (!diagramNetwork) return;
     const visibleNodeIds = [...nodeIds].filter(id => diagramNetwork.body.data.nodes.get(id));
     const visibleFlowIds = [...flowIds].filter(id => diagramNetwork.body.data.edges.get(id));
@@ -2354,6 +2376,10 @@ function canonicalSortKey(node) {
 }
 
 function canonicalLayoutPositions(model, visibleNodes, visibleFlows, viewKind, selectedView = null) {
+  if (viewKind === 'system' && visibleFlows.length) {
+    const systemLayout = canonicalSystemZoneLayout(model, visibleNodes, visibleFlows);
+    if (systemLayout) return systemLayout;
+  }
   const view = selectedView || (model.views || []).find(item => item.kind === viewKind) || (model.views || []).find(item => item.kind === 'context');
   const saved = view?.positions || {};
   const hasCompleteSavedLayout = visibleNodes.length > 0 && visibleNodes.every(node => {
@@ -2489,6 +2515,75 @@ function canonicalTopZoneId(zoneId, zonesById) {
     current = zonesById.get(String(current.parent_zone_id));
   }
   return current?.id ? String(current.id) : '__unknown__';
+}
+
+function canonicalSystemZoneLayout(model, visibleNodes, visibleFlows) {
+  const zonesById = new Map((model.zones || []).map(zone => [String(zone.id), zone]));
+  const nodeById = new Map(visibleNodes.map(node => [String(node.id), node]));
+  const topZone = node => canonicalTopZoneId(String(node.zone_ids?.[0] || ''), zonesById);
+  const zoneGroups = new Map();
+  visibleNodes.forEach(node => {
+    const id = topZone(node);
+    if (!zoneGroups.has(id)) zoneGroups.set(id, []);
+    zoneGroups.get(id).push(node);
+  });
+  const degrees = new Map(visibleNodes.map(node => [String(node.id), 0]));
+  const zoneDegrees = new Map([...zoneGroups.keys()].map(id => [id, 0]));
+  const connectedIds = new Set();
+  visibleFlows.forEach(flow => {
+    const source = nodeById.get(String(flow.source_id));
+    const target = nodeById.get(String(flow.target_id));
+    if (!source || !target) return;
+    connectedIds.add(String(source.id));
+    connectedIds.add(String(target.id));
+    degrees.set(String(source.id), (degrees.get(String(source.id)) || 0) + 1);
+    degrees.set(String(target.id), (degrees.get(String(target.id)) || 0) + 1);
+    if (topZone(source) !== topZone(target)) {
+      zoneDegrees.set(topZone(source), (zoneDegrees.get(topZone(source)) || 0) + 1);
+      zoneDegrees.set(topZone(target), (zoneDegrees.get(topZone(target)) || 0) + 1);
+    }
+  });
+  const rankedZones = [...zoneGroups.keys()].sort((a, b) =>
+    (zoneDegrees.get(b) || 0) - (zoneDegrees.get(a) || 0)
+    || zoneGroups.get(b).length - zoneGroups.get(a).length
+    || a.localeCompare(b));
+  const hubZone = rankedZones[0];
+  if (!hubZone || (zoneDegrees.get(hubZone) || 0) === 0) return null;
+  const orderedNodes = nodes => [...nodes].sort((a, b) =>
+    Number(connectedIds.has(String(b.id))) - Number(connectedIds.has(String(a.id)))
+    || (degrees.get(String(b.id)) || 0) - (degrees.get(String(a.id)) || 0)
+    || canonicalSortKey(a).localeCompare(canonicalSortKey(b)));
+  const positions = {};
+  const hubNodes = orderedNodes(zoneGroups.get(hubZone));
+  const hubX = 440;
+  positions[hubNodes[0].id] = { x: hubX, y: 130 };
+  hubNodes.slice(1).forEach((node, index) => {
+    positions[node.id] = { x: hubX + ((index % 3) - 1) * 200, y: 260 + Math.floor(index / 3) * 115 };
+  });
+  const hubBottom = Math.max(...hubNodes.map(node => positions[node.id].y));
+  const satelliteTop = hubBottom + 240;
+  const satellites = rankedZones.slice(1).filter(id => (zoneDegrees.get(id) || 0) > 0);
+  let satelliteLeft = 80;
+  let satelliteBottom = satelliteTop;
+  satellites.forEach(id => {
+    const nodes = orderedNodes(zoneGroups.get(id));
+    const columns = Math.min(2, nodes.length);
+    nodes.forEach((node, index) => {
+      positions[node.id] = { x: satelliteLeft + (index % columns) * 200, y: satelliteTop + Math.floor(index / columns) * 115 };
+    });
+    satelliteBottom = Math.max(satelliteBottom, ...nodes.map(node => positions[node.id].y));
+    satelliteLeft += columns * 200 + 170;
+  });
+  const isolatedZones = rankedZones.slice(1).filter(id => (zoneDegrees.get(id) || 0) === 0);
+  let isolatedTop = satelliteBottom + 235;
+  isolatedZones.forEach(id => {
+    const nodes = orderedNodes(zoneGroups.get(id));
+    nodes.forEach((node, index) => {
+      positions[node.id] = { x: 240 + (index % 3) * 200, y: isolatedTop + Math.floor(index / 3) * 115 };
+    });
+    isolatedTop += Math.ceil(nodes.length / 3) * 115 + 90;
+  });
+  return { positions, bounds: { width: Math.max(900, satelliteLeft + 80), height: Math.max(680, isolatedTop + 100) } };
 }
 
 function canonicalCompactZoneLayout(model, visibleNodes, basePositions) {
@@ -2643,8 +2738,19 @@ function renderCanonicalDiagram(report, viewKind = 'context') {
     ? featureViews.find(view => view.id === canonicalFeatureViewId) || featureViews[0]
     : null;
   const visibleRefs = selectedFeature ? new Set(selectedFeature.element_refs || []) : null;
-  const visibleNodes = visibleRefs ? (model.nodes || []).filter(node => visibleRefs.has(node.id)) : (model.nodes || []);
+  const allVisibleNodes = visibleRefs ? (model.nodes || []).filter(node => visibleRefs.has(node.id)) : (model.nodes || []);
   const visibleFlows = visibleRefs ? (model.flows || []).filter(flow => visibleRefs.has(flow.id)) : (model.flows || []);
+  const connectedNodeIds = new Set(visibleFlows.flatMap(flow => [String(flow.source_id), String(flow.target_id)]));
+  const hiddenUnconnectedCount = viewKind === 'system' && !canonicalShowUnconnected
+    ? allVisibleNodes.filter(node => !connectedNodeIds.has(String(node.id))).length : 0;
+  const visibleNodes = hiddenUnconnectedCount
+    ? allVisibleNodes.filter(node => connectedNodeIds.has(String(node.id))) : allVisibleNodes;
+  const unconnectedButton = document.getElementById('btn-diagram-unconnected');
+  if (unconnectedButton) {
+    unconnectedButton.hidden = viewKind !== 'system' || !allVisibleNodes.some(node => !connectedNodeIds.has(String(node.id)));
+    unconnectedButton.textContent = canonicalShowUnconnected ? 'Hide unconnected' : `Show unconnected (${hiddenUnconnectedCount})`;
+    unconnectedButton.setAttribute('aria-pressed', String(canonicalShowUnconnected));
+  }
   const layout = canonicalLayoutPositions(model, visibleNodes, visibleFlows, viewKind, selectedFeature);
   canonicalRenderedViewKind = viewKind;
   const shell = document.getElementById('diagram-canvas-shell');
@@ -2696,7 +2802,7 @@ function renderCanonicalDiagram(report, viewKind = 'context') {
       id: flow.id,
       from: flow.source_id,
       to: flow.target_id,
-      label: `${flow.display_id || flow.id} · ${compactFlowText(data.join(', ') || flow.name || 'unknown data', 42)}${mapped.length ? `\n${mapped.length} findings` : ''}`,
+      label: `${flow.display_id || flow.id} · ${compactFlowText(data[0] || flow.name || 'unknown data', 26)}${mapped.length ? `\n${mapped.length} findings` : ''}`,
       title: `${flow.display_id || flow.id}: ${source?.name || flow.source_id} → ${target?.name || flow.target_id}\n${data.join(', ') || 'Data label unknown'}\nInteraction: ${flow.interaction_kind}\n${crossingText}`,
       arrows: { to: { enabled: true, scaleFactor: .75 } },
       dashes: crossing ? [8, 6] : false,
@@ -2731,9 +2837,8 @@ function renderCanonicalDiagram(report, viewKind = 'context') {
   if (toolbarTitle) toolbarTitle.textContent = viewKind === 'feature'
     ? `Feature DFD · ${selectedFeature?.parent_process_id || 'process'}`
     : viewKind === 'system' ? 'Canonical System DFD' : 'Canonical Context DFD';
-  const connectedNodeIds = new Set(visibleFlows.flatMap(flow => [String(flow.source_id), String(flow.target_id)]));
   const isolatedCount = visibleNodes.filter(node => !connectedNodeIds.has(String(node.id))).length;
-  if (toolbarSubtitle) toolbarSubtitle.textContent = `Revision ${model.revision} · ${visibleNodes.length} nodes · ${visibleFlows.length} flows · ${isolatedCount ? `${isolatedCount} node${isolatedCount === 1 ? '' : 's'} without grounded flow shown separately · ` : ''}unknown values remain reviewable`;
+  if (toolbarSubtitle) toolbarSubtitle.textContent = `Revision ${model.revision} · ${visibleNodes.length} nodes · ${visibleFlows.length} flows · ${hiddenUnconnectedCount ? `${hiddenUnconnectedCount} unconnected nodes in inventory · ` : isolatedCount ? `${isolatedCount} nodes without grounded flow · ` : ''}unknown values remain reviewable`;
   diagramNetwork = new vis.Network(container, data, {
     physics: false,
     interaction: { hover: true, tooltipDelay: 180, zoomView: true, dragView: true, keyboard: { enabled: true, bindToWindow: false } },

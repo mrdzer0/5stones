@@ -107,6 +107,8 @@
 .dfd-editor-fieldset { margin: var(--space-3) 0; padding: 9px 10px; border: 1px solid var(--border); border-radius: 6px; }
 .dfd-editor-fieldset legend { padding: 0 5px; color: var(--text-muted); font-size: .72rem; font-weight: 650; }
 .dfd-inventory-actions { display: flex; flex-wrap: wrap; gap: 7px; padding: 9px 0; }
+.dfd-topology-status:not([hidden]) { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--yellow-border); border-radius: 7px; background: var(--yellow-light); color: #78350f; font-size: .78rem; }
+.dfd-topology-status ul { margin: 5px 0 0; padding-left: 20px; }
 .dfd-editor-actions { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; margin-top: var(--space-2); }
 .btn-danger { color: #B42318; border-color: #F0B8B2; background: #FFF5F3; }
 
