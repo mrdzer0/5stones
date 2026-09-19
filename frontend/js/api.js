@@ -107,7 +107,6 @@ function analysisVisibility(report = {}) {
   const inferredBoundaryIds = threat => {
     const explicit = (threat?.trust_boundary_ids || []).map(String).filter(Boolean);
     if (explicit.length) return explicit;
-    if (boundaries.length === 1) return [String(boundaries[0].boundary_id)];
     const text = [threat?.trust_boundary, threat?.source, threat?.destination]
       .filter(Boolean).join(' ').toLowerCase();
     return boundaries.filter(boundary => {

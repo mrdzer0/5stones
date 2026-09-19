@@ -11,6 +11,7 @@ from backend.services.trust_boundary_service import (
     build_trust_model,
     propagate_target_refs,
 )
+from backend.services.dfd_model_service import build_dfd_model, validate_dfd_model
 from backend.services.stride_service import generate_stride_threats
 from backend.services.linddun_service import generate_linddun_threats
 from backend.services.control_service import map_controls
@@ -115,6 +116,7 @@ async def run_full_analysis(project_id: str, body: dict = None):
     # 1. Trust Boundaries
     if "trust_boundary" in types:
         previous_signature = _active_topology_signature(report.get("trust_boundaries"))
+        previous_dfd_hash = (report.get("dfd_model") or {}).get("semantic_hash")
         try:
             trust_model = build_trust_model(project)
             reviewed_boundaries, review_warnings = apply_boundary_reviews(
@@ -125,6 +127,10 @@ async def run_full_analysis(project_id: str, body: dict = None):
                 item["status"] = boundary_status.get(item.get("element_id"), item.get("status", "Candidate"))
             trust_boundaries = active_trust_boundaries(reviewed_boundaries)
             report["data_flows"] = trust_model["data_flows"]
+            dfd_model = build_dfd_model(project, trust_model, previous=report.get("dfd_model"))
+            dfd_validation = validate_dfd_model(dfd_model)
+            report["dfd_model"] = dfd_model.model_dump()
+            report["dfd_validation"] = dfd_validation
             report["trust_model"] = {
                 "version": trust_model["version"],
                 "generation_method": trust_model["generation_method"],
@@ -151,6 +157,19 @@ async def run_full_analysis(project_id: str, body: dict = None):
                     BOUNDARY_DOWNSTREAM_STAGES,
                     "Trust-boundary topology or review state changed. Refresh dependent analysis stages.",
                 )
+            if previous_dfd_hash and previous_dfd_hash != dfd_model.semantic_hash:
+                _mark_analysis_stale(
+                    report,
+                    BOUNDARY_DOWNSTREAM_STAGES,
+                    "Canonical DFD semantic model changed. Refresh dependent analysis stages.",
+                )
+            report["ai_status"]["dfd_model"] = {
+                "ok": dfd_validation["valid"],
+                "engine": "deterministic",
+                "errors": dfd_validation["errors"],
+                "warnings": dfd_validation["warnings"],
+                "revision": dfd_model.revision,
+            }
         except Exception as exc:
             # Fail closed: an unavailable grounded model must never fall back to
             # guessed topology or re-run the same failing builder.
@@ -158,6 +177,7 @@ async def run_full_analysis(project_id: str, body: dict = None):
             report["data_flows"] = []
             report["trust_model"] = {"version": "unavailable", "entities": [], "warnings": [str(exc)]}
             report["ai_status"]["trust_boundary"] = {"ok": False, "error": str(exc), "engine": "deterministic"}
+            report["ai_status"]["dfd_model"] = {"ok": False, "error": str(exc), "engine": "deterministic"}
             report["trust_boundaries"] = []
     else:
         trust_boundaries = active_trust_boundaries(report.get("trust_boundaries", []))
@@ -168,10 +188,20 @@ async def run_full_analysis(project_id: str, body: dict = None):
         # Clear existing fallback STRIDE threats to avoid duplicates
         report["threats"] = [t for t in report.get("threats", []) if not (t.get("framework") == "STRIDE" and t.get("is_fallback"))]
         try:
-            stride_threats = await generate_stride_threats(project, trust_boundaries, force_fallback=False)
+            stride_threats = await generate_stride_threats(
+                project,
+                trust_boundaries,
+                force_fallback=False,
+                dfd_model=report.get("dfd_model"),
+            )
             report["ai_status"]["stride"] = {"ok": True, "engine": "AI"}
         except Exception as exc:
-            stride_threats = await generate_stride_threats(project, trust_boundaries, force_fallback=True)
+            stride_threats = await generate_stride_threats(
+                project,
+                trust_boundaries,
+                force_fallback=True,
+                dfd_model=report.get("dfd_model"),
+            )
             report["ai_status"]["stride"] = {"ok": False, "error": str(exc), "engine": "fallback"}
         stride_threats = enrich_threats(stride_threats, project, "STRIDE")
         attach_target_refs(stride_threats, report.get("trust_boundaries", trust_boundaries), report.get("trust_model", {}).get("views"))
@@ -184,10 +214,20 @@ async def run_full_analysis(project_id: str, body: dict = None):
         # Replace the framework results so a rerun cannot leave stale findings.
         report["threats"] = [t for t in report.get("threats", []) if t.get("framework") != "LINDDUN"]
         try:
-            linddun_threats = await generate_linddun_threats(project, trust_boundaries, force_fallback=False)
+            linddun_threats = await generate_linddun_threats(
+                project,
+                trust_boundaries,
+                force_fallback=False,
+                dfd_model=report.get("dfd_model"),
+            )
             report["ai_status"]["linddun"] = {"ok": True, "engine": "AI"}
         except Exception as exc:
-            linddun_threats = await generate_linddun_threats(project, trust_boundaries, force_fallback=True)
+            linddun_threats = await generate_linddun_threats(
+                project,
+                trust_boundaries,
+                force_fallback=True,
+                dfd_model=report.get("dfd_model"),
+            )
             report["ai_status"]["linddun"] = {"ok": False, "error": str(exc), "engine": "fallback"}
         linddun_threats = enrich_threats(linddun_threats, project, "LINDDUN")
         attach_target_refs(linddun_threats, report.get("trust_boundaries", trust_boundaries), report.get("trust_model", {}).get("views"))

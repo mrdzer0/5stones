@@ -693,7 +693,10 @@ def attach_target_refs(
                 label = str(boundary.get("boundary_label") or "").casefold()
                 if (source and destination and source in text and destination in text) or (label and label in text):
                     matched.append(str(boundary["boundary_id"]))
-            retained = sorted(matched or available_ids)
+            # An unmapped finding must remain unmapped. Falling back to every
+            # boundary creates false cross-boundary coverage and can hide a
+            # finding when one of several boundaries is rejected.
+            retained = sorted(matched)
         threat["trust_boundary_ids"] = retained
         for boundary in candidates:
             if str(boundary["boundary_id"]) not in retained:

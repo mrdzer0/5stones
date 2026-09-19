@@ -4,6 +4,7 @@ import uuid
 from typing import List
 from backend.services.ai_service import chat_complete_json, get_active_provider_config
 from backend.services.posture_service import build_evidence_context
+from backend.services.dfd_model_service import format_dfd_analysis_context
 
 STRIDE_SYSTEM_PROMPT = """You are a senior AppSec engineer performing STRIDE threat modeling.
 Generate realistic, specific threats based on the context. Each threat must be actionable and evidence-based.
@@ -21,7 +22,12 @@ STRIDE_CATEGORIES = [
 ]
 
 
-async def generate_stride_threats(project: dict, trust_boundaries: List[dict], force_fallback: bool = False) -> List[dict]:
+async def generate_stride_threats(
+    project: dict,
+    trust_boundaries: List[dict],
+    force_fallback: bool = False,
+    dfd_model: dict | None = None,
+) -> List[dict]:
     """Generate STRIDE threats from project context and trust boundaries."""
     if force_fallback:
         return _fallback_stride(project, trust_boundaries)
@@ -34,6 +40,7 @@ async def generate_stride_threats(project: dict, trust_boundaries: List[dict], f
         f"- {b.get('source')} → {b.get('destination')}: {b.get('boundary_label')}"
         for b in trust_boundaries[:10]
     ])
+    dfd_context = format_dfd_analysis_context(dfd_model)
 
     user_prompt = f"""Perform STRIDE threat analysis for this system.
 
@@ -43,19 +50,27 @@ PROJECT CONTEXT:
 TRUST BOUNDARIES:
 {boundaries_text}
 
+CANONICAL DFD MODEL:
+{dfd_context}
+
 EVIDENCE CATALOG:
 {evidence_context}
 
-Generate 6-10 high-value STRIDE threats. Return one JSON object with a "threats" array:
+    Generate only high-value candidate threats supported by the model. Do not create one
+    finding for every STRIDE category or every element. Return one JSON object with a
+    "threats" array and a separate "coverage" array:
 {{
+  "coverage": [{{"element_ref": "valid DFD id", "category": "STRIDE category", "status": "reviewed_no_candidate|candidate_identified|insufficient_information", "reason": "..."}}],
   "threats": [
     {{
     "framework": "STRIDE",
+    "taxonomy_version": "adapter-version",
     "threat_category": "Spoofing|Tampering|Repudiation|Information Disclosure|Denial of Service|Elevation of Privilege",
     "component": "affected component",
     "source": "where attack originates",
     "destination": "target component",
     "trust_boundary": "boundary name if applicable",
+    "affected_refs": ["valid DFD node/flow/boundary/data-object IDs only"],
     "asset": "what asset is at risk",
     "data_classification": "Public|Internal|PII|Financial|Secret",
     "threat_description": "specific threat description",
@@ -64,6 +79,9 @@ Generate 6-10 high-value STRIDE threats. Return one JSON object with a "threats"
     "evidence_refs": ["one or more exact EV-... IDs from the catalog, or an empty array"],
     "assumption": "what assumption was made if evidence is missing",
     "missing_info": "what information would change this analysis",
+    "preconditions": ["conditions required for the scenario"],
+    "impact": "system impact",
+    "validation_steps": ["Developer/QA validation step"],
     "confidence": "High|Medium|Low",
     "risk_level": "Critical|High|Medium|Low",
     "owner": "Dev|QA|Security|DevOps"

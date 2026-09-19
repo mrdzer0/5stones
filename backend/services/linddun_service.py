@@ -4,6 +4,7 @@ import uuid
 from typing import List
 from backend.services.ai_service import chat_complete_json, get_active_provider_config
 from backend.services.posture_service import build_evidence_context
+from backend.services.dfd_model_service import format_dfd_analysis_context
 
 LINDDUN_SYSTEM_PROMPT = """You are a privacy engineer performing LINDDUN privacy threat modeling.
 Evaluate direct PII and indirect privacy signals such as identifiers, geolocation, images,
@@ -25,7 +26,12 @@ LINDDUN_CATEGORIES = [
 ]
 
 
-async def generate_linddun_threats(project: dict, trust_boundaries: List[dict], force_fallback: bool = False) -> List[dict]:
+async def generate_linddun_threats(
+    project: dict,
+    trust_boundaries: List[dict],
+    force_fallback: bool = False,
+    dfd_model: dict | None = None,
+) -> List[dict]:
     """Generate LINDDUN privacy threats from project context."""
     if force_fallback:
         return _fallback_linddun(project)
@@ -38,6 +44,7 @@ async def generate_linddun_threats(project: dict, trust_boundaries: List[dict], 
         f"- {b.get('source')} → {b.get('destination')}: {b.get('boundary_label')}"
         for b in trust_boundaries[:8]
     ])
+    dfd_context = format_dfd_analysis_context(dfd_model)
 
     user_prompt = f"""Perform LINDDUN privacy threat analysis for this system.
 
@@ -47,23 +54,30 @@ PROJECT CONTEXT:
 TRUST BOUNDARIES:
 {boundaries_text}
 
+CANONICAL DFD MODEL:
+{dfd_context}
+
 EVIDENCE CATALOG:
 {evidence_context}
 
-Generate 5-8 specific LINDDUN privacy threats. Do not treat has_pii=false as proof that no
+    Generate only specific candidate privacy threats grounded in sender, flow, receiver, and
+    data lifecycle. Do not create a finding for every category. Do not treat has_pii=false as proof that no
 privacy risk exists. Evaluate location and image metadata, linkability across records,
 third-party model processing, inferred content, public API aggregation, retention, user
 awareness, and compliance where relevant.
-Return one JSON object with a "threats" array:
+    Return one JSON object with a "threats" array and a separate "coverage" array:
 {{
+  "coverage": [{{"element_ref": "valid DFD id", "category": "LINDDUN category", "status": "reviewed_no_candidate|candidate_identified|insufficient_information", "reason": "..."}}],
   "threats": [
     {{
     "framework": "LINDDUN",
+    "taxonomy_version": "adapter-version",
     "threat_category": "Linkability|Identifiability|Non-repudiation|Detectability|Disclosure of Information|Unawareness|Non-compliance",
     "component": "affected component",
     "source": "data origin",
     "destination": "data destination",
     "trust_boundary": "boundary crossed",
+    "affected_refs": ["valid DFD node/flow/boundary/data-object IDs only"],
     "asset": "personal data at risk",
     "data_classification": "PII",
     "threat_description": "specific privacy threat description",
@@ -72,6 +86,9 @@ Return one JSON object with a "threats" array:
     "evidence_refs": ["one or more exact EV-... IDs from the catalog, or an empty array"],
     "assumption": "assumption made",
     "missing_info": "clarification needed",
+    "preconditions": ["conditions required for the scenario"],
+    "impact": "impact on individuals or privacy expectations",
+    "validation_steps": ["Developer/QA/Product validation step"],
     "confidence": "High|Medium|Low",
     "risk_level": "Critical|High|Medium|Low",
     "owner": "Backend|Product|Legal|DevOps"
