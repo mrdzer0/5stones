@@ -72,7 +72,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // Diagram toolbar
-  document.getElementById('btn-diagram-fit')?.addEventListener('click', () => diagramNetwork?.fit());
+  document.getElementById('btn-diagram-fit')?.addEventListener('click', () => {
+    if (!diagramNetwork) return;
+    diagramNetwork.fit({ animation: { duration: 250, easingFunction: 'easeInOutQuad' } });
+    if (currentReport?.dfd_model) scheduleCanonicalLayoutSave();
+  });
   document.getElementById('btn-diagram-unconnected')?.addEventListener('click', () => {
     canonicalShowUnconnected = !canonicalShowUnconnected;
     if (currentReport) renderDiagram(currentReport);
@@ -89,7 +93,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   window.addEventListener('resize', () => {
     window.clearTimeout(diagramResizeTimer);
     diagramResizeTimer = window.setTimeout(() => {
-      diagramNetwork?.fit({ animation: false });
+      if (currentReport?.dfd_model && diagramNetwork) {
+        if (!restoreCanonicalViewport(currentReport.dfd_model)) diagramNetwork.fit({ animation: false });
+      } else diagramNetwork?.fit({ animation: false });
       updateTabScrollControls();
     }, 180);
   });
@@ -1936,7 +1942,7 @@ function renderDfdInventory(report) {
         <thead><tr><th scope="col">ID</th><th scope="col">Element</th><th scope="col">Detail</th></tr></thead>
         <tbody>${rows.map(row => `
           <tr>
-            <td><button type="button" class="btn btn-ghost btn-sm mono" data-dfd-select-type="${escHtml(row.type)}" data-dfd-select-id="${escHtml(row.id)}">${escHtml(row.displayId || row.id)}</button></td>
+            <td><button type="button" class="btn btn-ghost btn-sm mono" data-dfd-select-type="${escHtml(row.type)}" data-dfd-select-id="${escHtml(row.id)}">${escHtml(row.displayId || row.id)}</button>${row.type === 'zone' ? `<button type="button" class="btn btn-secondary btn-sm" data-dfd-toggle-zone="${escHtml(row.id)}">${canonicalCollapsedZoneIds(model, canonicalRenderedViewKind).has(String(row.id)) ? 'Expand' : 'Collapse'}</button>` : ''}</td>
             <td>${escHtml(row.name)}</td>
             <td class="text-sm text-muted">${escHtml(row.detail)}</td>
           </tr>`).join('')}</tbody>
@@ -1948,6 +1954,9 @@ function renderDfdInventory(report) {
   container.querySelectorAll('[data-dfd-add-type]').forEach(button => {
     button.addEventListener('click', () => showDfdCreateInspector(button.dataset.dfdAddType));
   });
+  container.querySelectorAll('[data-dfd-toggle-zone]').forEach(button => {
+    button.addEventListener('click', () => toggleDfdZone(button.dataset.dfdToggleZone));
+  });
 }
 
 function privacyReadinessRecord(report, dataObjectId) {
@@ -1957,6 +1966,25 @@ function privacyReadinessRecord(report, dataObjectId) {
 function privacyReadinessLabel(report, dataObjectId) {
   const record = privacyReadinessRecord(report, dataObjectId);
   return record ? `privacy ${record.status}` : 'privacy context unknown';
+}
+
+function canonicalCollapsedZoneIds(model, viewKind) {
+  const view = canonicalViewFor(model, viewKind);
+  return new Set((view?.collapsed_groups || []).map(value => String(value)));
+}
+
+async function toggleDfdZone(zoneId) {
+  const model = cloneCanonicalDfdModel(currentReport?.dfd_model);
+  if (!model) return;
+  const view = canonicalViewFor(model, canonicalRenderedViewKind);
+  if (!view) return;
+  const collapsed = canonicalCollapsedZoneIds(model, canonicalRenderedViewKind);
+  if (collapsed.has(String(zoneId))) collapsed.delete(String(zoneId));
+  else collapsed.add(String(zoneId));
+  view.collapsed_groups = [...collapsed].sort();
+  await persistCanonicalDfdModel(model, {
+    message: collapsed.has(String(zoneId)) ? 'DFD zone collapsed' : 'DFD zone expanded',
+  });
 }
 
 function focusDfdElement(type, id) {
@@ -2376,10 +2404,6 @@ function canonicalSortKey(node) {
 }
 
 function canonicalLayoutPositions(model, visibleNodes, visibleFlows, viewKind, selectedView = null) {
-  if (viewKind === 'system' && visibleFlows.length) {
-    const systemLayout = canonicalSystemZoneLayout(model, visibleNodes, visibleFlows);
-    if (systemLayout) return systemLayout;
-  }
   const view = selectedView || (model.views || []).find(item => item.kind === viewKind) || (model.views || []).find(item => item.kind === 'context');
   const saved = view?.positions || {};
   const hasCompleteSavedLayout = visibleNodes.length > 0 && visibleNodes.every(node => {
@@ -2396,6 +2420,10 @@ function canonicalLayoutPositions(model, visibleNodes, visibleFlows, viewKind, s
     const minX = Math.min(...Object.values(positions).map(position => position.x), 0);
     const minY = Math.min(...Object.values(positions).map(position => position.y), 0);
     return { positions, bounds: { width: maxX - minX + 300, height: maxY - minY + 220 } };
+  }
+  if (viewKind === 'system' && visibleFlows.length) {
+    const systemLayout = canonicalSystemZoneLayout(model, visibleNodes, visibleFlows);
+    if (systemLayout) return systemLayout;
   }
 
   const nodeById = new Map(visibleNodes.map(node => [String(node.id), node]));
@@ -2658,6 +2686,28 @@ function canonicalZoneDescendants(zoneId, zonesById, memo = new Map()) {
   return descendants;
 }
 
+function canonicalViewFor(model, viewKind) {
+  if (!model) return null;
+  if (viewKind === 'feature') {
+    return (model.views || []).find(view => view.id === canonicalFeatureViewId)
+      || (model.views || []).find(view => view.kind === 'feature');
+  }
+  return (model.views || []).find(view => view.kind === viewKind)
+    || (model.views || []).find(view => view.kind === 'context');
+}
+
+function restoreCanonicalViewport(model) {
+  if (!diagramNetwork || !model) return false;
+  const view = canonicalViewFor(model, canonicalRenderedViewKind);
+  const viewport = view?.viewport || {};
+  const x = Number(viewport.x);
+  const y = Number(viewport.y);
+  const scale = Number(viewport.scale);
+  if (![x, y, scale].every(Number.isFinite) || scale <= 0) return false;
+  diagramNetwork.moveTo({ position: { x, y }, scale, animation: false });
+  return true;
+}
+
 function renderCanonicalZoneLayer(model, visibleNodes) {
   const layer = document.getElementById('diagram-zone-layer');
   if (!layer) return;
@@ -2682,15 +2732,15 @@ function updateCanonicalZoneLayer(model, visibleIds = null) {
   if (!diagramNetwork) return;
   const layer = document.getElementById('diagram-zone-layer');
   if (!layer) return;
-  const nodesById = new Map((model.nodes || []).map(node => [String(node.id), node]));
   const positions = diagramNetwork.getPositions();
+  const visualNodes = diagramNetwork.body.data.nodes.get();
   const visible = visibleIds || new Set(Object.keys(positions));
   layer.querySelectorAll('[data-zone-id]').forEach(element => {
     const zoneId = element.dataset.zoneId;
     const zone = (model.zones || []).find(item => String(item.id) === String(zoneId));
     if (!zone) return;
     const zoneIds = new Set(canonicalZoneDescendants(String(zone.id), new Map((model.zones || []).map(item => [String(item.id), item]))));
-    const points = (model.nodes || []).filter(node => visible.has(String(node.id)) && (node.zone_ids || []).some(id => zoneIds.has(String(id))))
+    const points = visualNodes.filter(node => visible.has(String(node.id)) && (node.zone_ids || []).some(id => zoneIds.has(String(id))))
       .map(node => positions[node.id])
       .filter(Boolean)
       .map(position => diagramNetwork.canvasToDOM(position));
@@ -2713,6 +2763,74 @@ function updateCanonicalZoneLayer(model, visibleIds = null) {
     element.style.height = `${Math.max(110, bottom - top)}px`;
     element.title = `${zone.display_id || zone.id} ${zone.name} · ${points.length} visible node${points.length === 1 ? '' : 's'}`;
   });
+}
+
+function canonicalVisualProjection(model, nodes, flows, collapsedGroups) {
+  const zonesById = new Map((model.zones || []).map(zone => [String(zone.id), zone]));
+  const groups = new Map();
+  const nodeTarget = new Map();
+  const collapsedRoot = node => {
+    for (const zoneId of node.zone_ids || []) {
+      let current = String(zoneId);
+      const visited = new Set();
+      while (current && !visited.has(current)) {
+        if (collapsedGroups.has(current)) return current;
+        visited.add(current);
+        current = String(zonesById.get(current)?.parent_zone_id || '');
+      }
+    }
+    return null;
+  };
+  const visualNodes = [];
+  nodes.forEach(node => {
+    const root = collapsedRoot(node);
+    if (!root) {
+      visualNodes.push(node);
+      nodeTarget.set(String(node.id), String(node.id));
+      return;
+    }
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(node);
+  });
+  groups.forEach((members, zoneId) => {
+    const zone = zonesById.get(zoneId);
+    const groupId = `dfd-group-${zoneId}`;
+    visualNodes.push({
+      id: groupId,
+      display_id: `G${zone?.display_id || zoneId}`,
+      type: 'process',
+      name: `${zone?.name || zoneId} (${members.length} nodes)`,
+      scope: 'unknown',
+      ownership: 'unknown',
+      exposure: 'unknown',
+      zone_ids: [zoneId],
+      knowledge_status: 'inferred',
+      _collapsedZoneId: zoneId,
+      _collapsedNodeIds: members.map(node => node.id),
+    });
+    members.forEach(node => nodeTarget.set(String(node.id), groupId));
+  });
+  const projectedFlows = new Map();
+  flows.forEach(flow => {
+    const sourceId = nodeTarget.get(String(flow.source_id));
+    const targetId = nodeTarget.get(String(flow.target_id));
+    if (!sourceId || !targetId || sourceId === targetId) return;
+    const key = `${sourceId}::${targetId}`;
+    const existing = projectedFlows.get(key);
+    if (existing) {
+      existing._collapsedFlowIds.push(flow.id);
+      existing.data_object_ids = [...new Set([...(existing.data_object_ids || []), ...(flow.data_object_ids || [])])];
+      existing.name = existing._collapsedFlowIds.length > 1 ? `${existing.name} (+${existing._collapsedFlowIds.length - 1})` : existing.name;
+      return;
+    }
+    projectedFlows.set(key, {
+      ...flow,
+      source_id: sourceId,
+      target_id: targetId,
+      _collapsedFlowIds: [flow.id],
+    });
+  });
+  return { nodes: visualNodes, flows: [...projectedFlows.values()] };
 }
 
 function renderCanonicalDiagram(report, viewKind = 'context') {
@@ -2739,12 +2857,18 @@ function renderCanonicalDiagram(report, viewKind = 'context') {
     : null;
   const visibleRefs = selectedFeature ? new Set(selectedFeature.element_refs || []) : null;
   const allVisibleNodes = visibleRefs ? (model.nodes || []).filter(node => visibleRefs.has(node.id)) : (model.nodes || []);
-  const visibleFlows = visibleRefs ? (model.flows || []).filter(flow => visibleRefs.has(flow.id)) : (model.flows || []);
-  const connectedNodeIds = new Set(visibleFlows.flatMap(flow => [String(flow.source_id), String(flow.target_id)]));
+  const allVisibleFlows = visibleRefs ? (model.flows || []).filter(flow => visibleRefs.has(flow.id)) : (model.flows || []);
+  const connectedNodeIds = new Set(allVisibleFlows.flatMap(flow => [String(flow.source_id), String(flow.target_id)]));
   const hiddenUnconnectedCount = viewKind === 'system' && !canonicalShowUnconnected
     ? allVisibleNodes.filter(node => !connectedNodeIds.has(String(node.id))).length : 0;
-  const visibleNodes = hiddenUnconnectedCount
+  const baseVisibleNodes = hiddenUnconnectedCount
     ? allVisibleNodes.filter(node => connectedNodeIds.has(String(node.id))) : allVisibleNodes;
+  const baseNodeIds = new Set(baseVisibleNodes.map(node => String(node.id)));
+  const baseVisibleFlows = allVisibleFlows.filter(flow => baseNodeIds.has(String(flow.source_id)) && baseNodeIds.has(String(flow.target_id)));
+  const collapsedGroups = canonicalCollapsedZoneIds(model, viewKind);
+  const visualProjection = canonicalVisualProjection(model, baseVisibleNodes, baseVisibleFlows, collapsedGroups);
+  const visibleNodes = visualProjection.nodes;
+  const visibleFlows = visualProjection.flows;
   const unconnectedButton = document.getElementById('btn-diagram-unconnected');
   if (unconnectedButton) {
     unconnectedButton.hidden = viewKind !== 'system' || !allVisibleNodes.some(node => !connectedNodeIds.has(String(node.id)));
@@ -2785,7 +2909,7 @@ function renderCanonicalDiagram(report, viewKind = 'context') {
       _modelMeta: `${node.type} · ${zone?.name || 'zone unknown'} · ${status}${node.knowledge_status ? ` · knowledge=${node.knowledge_status}` : ''}`,
     };
   });
-  const nodeById = new Map((model.nodes || []).map(node => [String(node.id), node]));
+  const nodeById = new Map(visibleNodes.map(node => [String(node.id), node]));
   const edgeRows = visibleFlows.map(flow => {
     const source = nodeById.get(String(flow.source_id));
     const target = nodeById.get(String(flow.target_id));
@@ -2814,6 +2938,7 @@ function renderCanonicalDiagram(report, viewKind = 'context') {
       _destinationLabel: target?.name || flow.target_id,
       _flowDetails: [
         `${flow.display_id || flow.id}: ${flow.name || 'unknown data'}`,
+        flow._collapsedFlowIds?.length > 1 ? `Aggregated flows: ${flow._collapsedFlowIds.join(', ')}` : null,
         `Interaction: ${flow.interaction_kind}`,
         `Data: ${data.join(', ') || 'unknown'}`,
         `Protocol: ${flow.protocol || 'unknown'}`,
@@ -2837,7 +2962,8 @@ function renderCanonicalDiagram(report, viewKind = 'context') {
   if (toolbarTitle) toolbarTitle.textContent = viewKind === 'feature'
     ? `Feature DFD · ${selectedFeature?.parent_process_id || 'process'}`
     : viewKind === 'system' ? 'Canonical System DFD' : 'Canonical Context DFD';
-  const isolatedCount = visibleNodes.filter(node => !connectedNodeIds.has(String(node.id))).length;
+  const visualConnectedNodeIds = new Set(visibleFlows.flatMap(flow => [String(flow.source_id), String(flow.target_id)]));
+  const isolatedCount = visibleNodes.filter(node => !visualConnectedNodeIds.has(String(node.id))).length;
   if (toolbarSubtitle) toolbarSubtitle.textContent = `Revision ${model.revision} · ${visibleNodes.length} nodes · ${visibleFlows.length} flows · ${hiddenUnconnectedCount ? `${hiddenUnconnectedCount} unconnected nodes in inventory · ` : isolatedCount ? `${isolatedCount} nodes without grounded flow · ` : ''}unknown values remain reviewable`;
   diagramNetwork = new vis.Network(container, data, {
     physics: false,
@@ -2846,13 +2972,21 @@ function renderCanonicalDiagram(report, viewKind = 'context') {
     edges: { selectionWidth: 2.5, hoverWidth: 2.2 },
   });
   diagramNetwork.once('afterDrawing', () => {
-    diagramNetwork.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
+    if (!restoreCanonicalViewport(model)) {
+      diagramNetwork.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
+    }
     window.requestAnimationFrame(() => updateCanonicalZoneLayer(model, new Set(visibleNodes.map(node => String(node.id)))));
   });
   diagramNetwork.on('zoom', () => updateCanonicalZoneLayer(model, new Set(visibleNodes.map(node => String(node.id)))));
   diagramNetwork.on('dragging', () => updateCanonicalZoneLayer(model, new Set(visibleNodes.map(node => String(node.id)))));
   diagramNetwork.on('click', params => {
-    if (params.nodes.length) showNodeInspector(data.nodes.get(params.nodes[0]));
+    if (params.nodes.length) {
+      const selected = data.nodes.get(params.nodes[0]);
+      if (selected?._collapsedZoneId) {
+        const zone = (model.zones || []).find(item => String(item.id) === String(selected._collapsedZoneId));
+        if (zone) showZoneInspector(zone);
+      } else showNodeInspector(selected);
+    }
     else if (params.edges.length) showFlowInspector(data.edges.get(params.edges[0]));
     else document.getElementById('node-inspector').style.display = 'none';
   });
@@ -2867,14 +3001,25 @@ function scheduleCanonicalLayoutSave() {
   window.clearTimeout(canonicalLayoutSaveTimer);
   canonicalLayoutSaveTimer = window.setTimeout(async () => {
     const model = JSON.parse(JSON.stringify(currentReport.dfd_model));
-    const contextView = (model.views || []).find(view => view.kind === canonicalRenderedViewKind)
-      || (model.views || []).find(view => view.kind === 'context');
-    if (!contextView) return;
+    const view = canonicalViewFor(model, canonicalRenderedViewKind);
+    if (!view) return;
     const positions = diagramNetwork.getPositions();
-    contextView.positions = Object.fromEntries(Object.entries(positions).map(([id, position]) => [id, {
-      x: Number(position.x.toFixed(2)),
-      y: Number(position.y.toFixed(2)),
-    }]));
+    view.positions = {
+      ...(view.positions || {}),
+      ...Object.fromEntries(Object.entries(positions).map(([id, position]) => [id, {
+        x: Number(position.x.toFixed(2)),
+        y: Number(position.y.toFixed(2)),
+      }])),
+    };
+    const viewport = diagramNetwork.getViewPosition();
+    const scale = diagramNetwork.getScale();
+    if (viewport && Number.isFinite(Number(viewport.x)) && Number.isFinite(Number(viewport.y)) && Number.isFinite(Number(scale)) && Number(scale) > 0) {
+      view.viewport = {
+        x: Number(Number(viewport.x).toFixed(2)),
+        y: Number(Number(viewport.y).toFixed(2)),
+        scale: Number(Number(scale).toFixed(4)),
+      };
+    }
     await persistCanonicalDfdModel(model, { render: false, message: 'DFD layout saved' });
   }, 450);
 }
@@ -3585,8 +3730,8 @@ function showFlowInspector(edge) {
   const crossing = edge._crossing
     ? '<div class="flow-boundary-note">This flow crosses a trust boundary and should be reviewed for authentication, authorization, validation, and transport protection.</div>'
     : `<div class="flow-internal-note">${edge._logical ? 'Logical routing relationship; this does not assert a deployment or trust boundary.' : 'This flow stays within one trust zone.'}</div>`;
-  const details = (edge._flowDetails || []).length
-    ? edge._flowDetails.map(item => `<li>${escHtml(item)}</li>`).join('')
+  const details = (edge._flowDetails || []).filter(Boolean).length
+    ? edge._flowDetails.filter(Boolean).map(item => `<li>${escHtml(item)}</li>`).join('')
     : `<li>${escHtml(edge.label || 'Service interaction')}</li>`;
   const threats = uniqueThreats(edge._threats || []);
   const findings = threats.length

@@ -16,6 +16,7 @@ from backend.services.dfd_model_service import (
     recalculate_boundary_crossings,
     reconcile_generated_dfd,
     refresh_attribute_assertions,
+    sync_dfd_views,
     load_dfd_model,
     validate_dfd_model,
 )
@@ -697,6 +698,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         report = {"dfd_model": model.model_dump(), "dfd_validation": validate_dfd_model(model)}
         edited = model.model_dump()
         edited["views"][0]["positions"] = {"P1": {"x": 120, "y": 80}}
+        edited["views"][0]["viewport"] = {"x": 40, "y": 60, "scale": 1.25}
 
         with (
             patch("backend.routers.dfd.get_project", return_value={"project_id": "fixture-customer-registration"}),
@@ -713,6 +715,35 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertFalse(response["semantic_changed"])
         self.assertEqual(response["model"]["revision"], 1)
         self.assertEqual(response["model"]["layout_revision"], 2)
+        self.assertEqual(response["model"]["views"][0]["viewport"]["scale"], 1.25)
+
+    def test_sync_dfd_views_rebuilds_context_system_and_feature_projections(self):
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        model.views = []
+
+        sync_dfd_views(model)
+
+        self.assertEqual({view.kind for view in model.views}, {"context", "system", "feature"})
+        feature_views = [view for view in model.views if view.kind == "feature"]
+        self.assertEqual(
+            {view.parent_process_id for view in feature_views},
+            {node.id for node in model.nodes if node.type == "process"},
+        )
+        for view in feature_views:
+            self.assertEqual(view.port_mappings["input"], view.input_flow_ids)
+            self.assertEqual(view.port_mappings["output"], view.output_flow_ids)
+            self.assertIn(view.parent_process_id, view.element_refs)
+
+    def test_validator_rejects_invalid_viewport_state(self):
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        model.views[0].viewport = {"x": 0, "y": 0, "scale": 0}
+
+        validation = validate_dfd_model(model)
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(any("viewport scale" in error for error in validation["errors"]))
 
     def test_semantic_save_increments_revision_and_marks_downstream_analysis_stale(self):
         from backend.models.dfd import DfdModel

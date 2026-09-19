@@ -19,6 +19,7 @@ from backend.services.dfd_model_service import (
     refresh_attribute_assertions,
     _model_evidence,
     load_dfd_model,
+    sync_dfd_views,
     validate_dfd_model,
 )
 from backend.utils.audit import log_event
@@ -148,6 +149,7 @@ def _load_model(project_id: str) -> tuple[dict, DfdModel]:
     except (ValidationError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=500, detail="Stored canonical DFD model is invalid") from exc
     model = _hydrate_model_evidence(model, get_project(project_id))
+    sync_dfd_views(model)
     recalculate_boundary_crossings(model)
     hydrated_payload = model.model_dump()
     if migrated or not stored_payload or payload is report_payload or hydrated_payload != payload:
@@ -196,6 +198,7 @@ async def save_dfd(project_id: str, body: dict, request: Request = None):
     except (ValidationError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail="Canonical DFD schema validation failed") from exc
     _hydrate_model_evidence(model, get_project(project_id))
+    sync_dfd_views(model)
 
     if model.project_id != project_id or model.id != current.id:
         raise HTTPException(status_code=422, detail="DFD project_id or model id cannot be changed")
@@ -261,6 +264,7 @@ async def apply_dfd_regeneration_proposal(project_id: str, body: dict, request: 
     except (ValidationError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail="Stored DFD proposal candidate is invalid") from exc
     _hydrate_model_evidence(candidate, get_project(project_id))
+    sync_dfd_views(candidate)
     if candidate.project_id != project_id or candidate.id != current.id:
         raise HTTPException(status_code=422, detail="DFD proposal identity does not match the project model")
 
@@ -268,8 +272,10 @@ async def apply_dfd_regeneration_proposal(project_id: str, body: dict, request: 
     # per-attribute assertions do not appear as unrelated changes in every
     # proposal section.
     refresh_attribute_assertions(current)
+    sync_dfd_views(current)
     recalculate_boundary_crossings(current)
     refresh_attribute_assertions(candidate)
+    sync_dfd_views(candidate)
     recalculate_boundary_crossings(candidate)
 
     if body.get("accept_all"):

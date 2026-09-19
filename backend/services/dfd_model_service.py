@@ -574,6 +574,55 @@ def refresh_attribute_assertions(model: DfdModel) -> DfdModel:
     return model
 
 
+def sync_dfd_views(model: DfdModel) -> DfdModel:
+    """Keep canonical projections and feature ports derived from the semantic graph.
+
+    Views are presentation projections, but their references must never drift
+    after an import or an add/edit/delete operation. Existing presentation
+    state (positions, viewport, and collapsed groups) is deliberately retained.
+    """
+    semantic_ids = [
+        *(item.id for item in model.nodes),
+        *(item.id for item in model.data_objects),
+        *(item.id for item in model.flows),
+        *(item.id for item in model.boundaries),
+    ]
+    for kind in ("context", "system"):
+        view = next((item for item in model.views if item.kind == kind), None)
+        if view is None:
+            view = DfdView(id=f"view-{kind}", kind=kind)
+            model.views.append(view)
+        view.element_refs = list(dict.fromkeys([*view.element_refs, *semantic_ids]))
+        view.projection_mappings = {
+            **view.projection_mappings,
+            **{element_id: view.projection_mappings.get(element_id, [element_id]) for element_id in semantic_ids},
+        }
+
+    process_ids = {node.id for node in model.nodes if node.type == "process"}
+    for process_id in sorted(process_ids):
+        view = next((item for item in model.views if item.kind == "feature" and item.parent_process_id == process_id), None)
+        if view is None:
+            view = DfdView(id=f"view-feature-{process_id}", kind="feature", parent_process_id=process_id)
+            model.views.append(view)
+        related_flows = [
+            flow for flow in model.flows
+            if flow.source_id == process_id or flow.target_id == process_id
+        ]
+        related_nodes = {process_id, *(node_id for flow in related_flows for node_id in (flow.source_id, flow.target_id))}
+        related_data = {data_id for flow in related_flows for data_id in flow.data_object_ids}
+        refs = [
+            *sorted(related_nodes),
+            *(flow.id for flow in sorted(related_flows, key=lambda item: item.id)),
+            *sorted(related_data),
+        ]
+        view.element_refs = list(dict.fromkeys(refs))
+        view.projection_mappings = {element_id: [element_id] for element_id in view.element_refs}
+        view.input_flow_ids = sorted(flow.id for flow in related_flows if flow.target_id == process_id)
+        view.output_flow_ids = sorted(flow.id for flow in related_flows if flow.source_id == process_id)
+        view.port_mappings = {"input": list(view.input_flow_ids), "output": list(view.output_flow_ids)}
+    return model
+
+
 def diff_dfd_models(previous: DfdModel, candidate: DfdModel) -> dict:
     """Return a reviewable semantic proposal without mutating the saved model."""
     def index(items):
@@ -1400,6 +1449,19 @@ def validate_dfd_model(model: DfdModel) -> dict:
                 errors.append(f"View {view.id} position references missing element {position_id}")
             if not isinstance(position, dict) or not all(isinstance(value, (int, float)) for value in position.values()):
                 errors.append(f"View {view.id} position for {position_id} must contain numeric coordinates")
+        for group_id in view.collapsed_groups:
+            if group_id not in set(all_ids) | zone_set:
+                errors.append(f"View {view.id} collapsed group references missing element or zone {group_id}")
+        if view.viewport:
+            viewport_keys = set(view.viewport)
+            if not viewport_keys.issubset({"x", "y", "scale"}):
+                errors.append(f"View {view.id} viewport may only contain x, y, and scale")
+            if not {"x", "y", "scale"}.issubset(viewport_keys):
+                errors.append(f"View {view.id} viewport requires x, y, and scale")
+            elif not all(isinstance(value, (int, float)) for value in view.viewport.values()):
+                errors.append(f"View {view.id} viewport must contain numeric values")
+            elif view.viewport["scale"] <= 0:
+                errors.append(f"View {view.id} viewport scale must be greater than zero")
         if view.kind == "feature":
             if not view.parent_process_id or view.parent_process_id not in node_by_id:
                 errors.append(f"Feature view {view.id} requires a valid parent process")
@@ -1407,6 +1469,10 @@ def validate_dfd_model(model: DfdModel) -> dict:
                 errors.append(f"Feature view {view.id} parent {view.parent_process_id} is not a process")
             if view.parent_process_id and view.parent_process_id not in view.element_refs:
                 errors.append(f"Feature view {view.id} must include its parent process in element_refs")
+            if len(view.input_flow_ids) != len(set(view.input_flow_ids)):
+                errors.append(f"Feature view {view.id} contains duplicate input port flows")
+            if len(view.output_flow_ids) != len(set(view.output_flow_ids)):
+                errors.append(f"Feature view {view.id} contains duplicate output port flows")
             for port_name, flow_ids in {
                 "input": view.input_flow_ids,
                 "output": view.output_flow_ids,

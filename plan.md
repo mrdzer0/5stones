@@ -5,7 +5,7 @@
 - Acuan: `DFD_Feature_AI_Agent_Prompt.md`
 - Status project saat ini: **grounded threat-modeling MVP dengan DFD visualization**.
 - Target akhir: **semantic DFD modeling feature** yang menjadi source of truth untuk canvas, inventory, export, STRIDE, dan LINDDUN.
-- Verifikasi branch saat ini: 94 test Python lulus, 1 regression test JavaScript lulus, syntax/diff checks lulus, dan Playwright smoke-test UI/API lulus.
+- Verifikasi branch saat ini: 96 test Python lulus, 1 regression test JavaScript lulus, syntax/diff checks lulus, dan Playwright smoke-test UI/API lulus.
 - Branch enhanced/revamp: `codex/dfd-threat-model-alignment`.
 - Checkpoint fondasi: `77db35f Add canonical DFD semantic model foundation`.
 - Audit core terbaru: **2026-09-19**, terhadap commit `d6b8111` dan report demo revision 5. Gunakan bagian **Audit core function dan optimasi** serta milestone **C0–C6** sebagai urutan pekerjaan berikutnya; M0–M9 tetap menjadi peta alignment historis.
@@ -376,7 +376,7 @@ Definition of done:
 
 ### M5 — DFD views dan UI editing lifecycle
 
-Status: **Partial — prioritas P1**
+Status: **Core view/layout remediation complete — automated UI mutation coverage remains P1**
 
 Progress:
 
@@ -386,6 +386,10 @@ Progress:
 - Canonical SVG export tersedia dan sudah diuji terhadap escaping.
 - Canonical DFD inventory dapat dinavigasi dari canvas, dan inspector dapat mengedit metadata node/flow melalui revision-safe API.
 - Drag pada canonical context menyimpan posisi sebagai layout-only revision.
+- Posisi System/Feature tidak lagi selalu ditimpa auto-layout setelah reload; view menyimpan dan memulihkan `x`, `y`, dan `scale` viewport.
+- Backend menyelaraskan Context/System projection dan Feature input/output ports setelah import, add/edit/delete, dan proposal apply; presentation state tetap dipertahankan.
+- Validator memeriksa viewport, collapsed-group references, dan duplicate feature port flows.
+- Inventory menyediakan collapse/expand per zone; projection visual memakai group node dan mengagregasi flow tanpa mengubah canonical semantic graph, sementara `collapsed_groups` tersimpan pada view yang aktif.
 - Toolbar canonical DFD menyediakan undo/redo history untuk semantic maupun layout snapshot.
 - Level UI canonical memisahkan Context, System DFD, dan Feature DFD dengan pemilihan parent process.
 - Regeneration proposal memiliki candidate model yang dapat diterapkan eksplisit tanpa menghapus layout manual.
@@ -435,6 +439,9 @@ Definition of done:
 - Drag node tidak mengubah semantic membership secara diam-diam.
 - Reload memulihkan model dan layout.
 - Perubahan layout saja tidak membuat threat analysis stale.
+- System/Feature layout dan viewport tersimpan pada view yang benar, bukan fallback Context view.
+- Import atau edit tidak dapat meninggalkan projection/port mapping yang stale.
+- Collapse/expand zone hanya memengaruhi projection visual dan dapat dipulihkan saat reload.
 
 ### M6 — Graph-driven STRIDE dan LINDDUN
 
@@ -601,7 +608,7 @@ Acceptance test groups:
 | Authentication/project isolation | Partial: configurable token-per-workspace guard + cross-workspace resource check; IdP/JWT production integration belum ada |
 | Failure/retry/provider safety | Partial: persisted analysis run state, retry endpoint/UI, URL allowlist, local-only policy, and bounded token/timeout/retries; server-side cancellation/quota belum ada |
 | Synthetic DFD fixture | Partial: customer-registration source/model tersedia; Postman-only fixture inline test |
-| Automated verification sesuai AC01–AC20 | Partial: 94 Python tests + JS regression + Playwright DFD/report/privacy/proposal smoke-test + access-control/provider/failure helper tests; audit core menemukan gap CT01–CT15, full end-to-end/UI mutation criteria belum lengkap |
+| Automated verification sesuai AC01–AC20 | Partial: 96 Python tests + JS regression + Playwright DFD/report/privacy/proposal smoke-test + access-control/provider/failure helper tests; audit core menemukan gap CT01–CT15, full end-to-end/UI mutation criteria belum lengkap |
 
 ## Prioritas implementasi
 
@@ -625,6 +632,7 @@ database atas perbaikan data/hasil yang sudah terbukti salah.
 - 2026-09-19: Completed M2 core graph remediation: ancestor-aware zone connectivity, process metadata and lineage reference validation, actionable direct-transfer/data-label checks, operation-scoped request/response projection, and complete DFD analysis context. Verification: 86 Python tests, JavaScript regression, Playwright GET `/dfd` status 200 with `valid=true`, `semantic_ready=false` only for the active demo's evidenced topology gaps, and zero console errors.
 - 2026-09-19: Completed M3 core ownership/scope/exposure remediation: explicit entity/zone/boundary metadata inputs, unknown-preserving classification, nested zone projection, evidence-backed boundary types/rationale, same-ownership-group separation, and word-boundary-safe threat mapping. Verification: 89 Python tests, JavaScript regression, Playwright GET `/dfd` status 200 with `valid=true`, and zero console errors.
 - 2026-09-19: Remediated M4 evidence/assertion/ingestion findings: structured evidence provenance (type/source/topics/document identity/revision/hash), per-source conflicting assertions, multi-conflict preservation during assertion refresh, semantic assertion/question provenance validation, Postman unresolved-variable and saved-response shape metadata, and explicit non-execution warnings for pre-request/test scripts. Verification: 94 Python tests, Python compilation, JavaScript regression, and Playwright API/UI smoke passed with HTTP 200, `dfd-v1`, `valid=true`, and zero console errors.
+- 2026-09-19: Remediated M5 view/layout lifecycle findings: backend projection synchronization for Context/System/Feature views, feature port rebuilding after import/edit/proposal, viewport validation and persistence, restoration of saved System/Feature layouts, layout-only acceptance coverage, and persisted zone collapse/expand projection with flow aggregation. Verification: 96 Python tests, JavaScript regression, syntax/diff checks, and Playwright smoke passed with HTTP 200, `valid=true`, all three DFD levels visible, 13 valid feature views, collapse/expand round-trip restored, and zero console errors.
 - 2026-09-19: Created branch `codex/dfd-threat-model-alignment` for rollback-safe enhanced/revamp work.
 - 2026-09-19: Added canonical DFD contract, deterministic model adapter, graph validator, DFD persistence in analysis report, DFD context in STRIDE/LINDDUN prompts, semantic stale detection, and multi-boundary threat mapping regression fix.
 - 2026-09-19: Added secret redaction, AI threat/coverage validation, canonical LINDDUN labels with legacy aliases, direct `affected_refs` mapping, and reviewable DFD-tied fallbacks.
