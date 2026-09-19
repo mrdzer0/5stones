@@ -60,9 +60,18 @@ const API = {
   dfd: {
     get:  (id) => apiFetch(`/api/projects/${id}/dfd`),
     exportSvg: (id) => fetch(`/api/projects/${id}/dfd/export?format=svg`),
+    exportJson: (id) => fetch(`/api/projects/${id}/dfd/export?format=json`),
     save: (id, model, expectedRevision) => apiFetch(`/api/projects/${id}/dfd`, {
       method: 'PUT',
       body: JSON.stringify({ model, expected_revision: expectedRevision }),
+    }),
+    applyProposal: (id, data) => apiFetch(`/api/projects/${id}/dfd/proposal/apply`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+    importJson: (id, data) => apiFetch(`/api/projects/${id}/dfd/import`, {
+      method: 'POST',
+      body: JSON.stringify(data),
     }),
   },
   export: {

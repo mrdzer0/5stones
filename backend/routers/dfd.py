@@ -5,11 +5,17 @@ from datetime import datetime, timezone
 from html import escape
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 
 from backend.models.dfd import DfdModel
-from backend.services.dfd_model_service import recalculate_boundary_crossings, validate_dfd_model
+from backend.services.dfd_model_service import (
+    PROPOSAL_SECTIONS,
+    apply_dfd_proposal,
+    diff_dfd_models,
+    recalculate_boundary_crossings,
+    validate_dfd_model,
+)
 from backend.utils.audit import log_event
 from backend.utils.storage import get_project, get_report, save_report
 
@@ -109,17 +115,109 @@ async def save_dfd(project_id: str, body: dict):
     }
 
 
+@router.post("/{project_id}/dfd/proposal/apply")
+async def apply_dfd_regeneration_proposal(project_id: str, body: dict):
+    """Apply only an explicitly reviewed source-regeneration proposal."""
+    if not get_project(project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    report, current = _load_model(project_id)
+    proposal = report.get("dfd_proposal")
+    if not isinstance(proposal, dict) or not isinstance(proposal.get("candidate_model"), dict):
+        raise HTTPException(status_code=404, detail="No reviewable DFD regeneration proposal")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Request body is required")
+    try:
+        expected_revision = int(body.get("expected_revision"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="expected_revision must be an integer") from exc
+    if expected_revision != current.revision:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "DFD revision conflict", "current_revision": current.revision},
+        )
+
+    try:
+        candidate = DfdModel.model_validate(proposal["candidate_model"])
+    except (ValidationError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="Stored DFD proposal candidate is invalid") from exc
+    if candidate.project_id != project_id or candidate.id != current.id:
+        raise HTTPException(status_code=422, detail="DFD proposal identity does not match the project model")
+
+    if body.get("accept_all"):
+        selected_sections = list(PROPOSAL_SECTIONS)
+    else:
+        selected_sections = body.get("sections")
+        if not isinstance(selected_sections, list) or not selected_sections:
+            raise HTTPException(
+                status_code=422,
+                detail={"message": "Select proposal sections or set accept_all=true", "sections": list(PROPOSAL_SECTIONS)},
+            )
+        if any(section not in PROPOSAL_SECTIONS for section in selected_sections):
+            raise HTTPException(status_code=422, detail={"message": "Unsupported proposal section", "sections": list(PROPOSAL_SECTIONS)})
+
+    try:
+        model = apply_dfd_proposal(current, candidate, selected_sections)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    validation = validate_dfd_model(model)
+    if not validation["valid"]:
+        raise HTTPException(status_code=422, detail={"message": "Applied DFD proposal is invalid", **validation})
+
+    model.revision = current.revision + 1
+    model.layout_revision = max(current.layout_revision, model.layout_revision) + 1
+    model.human_edit_revision = current.human_edit_revision + 1
+    remaining = diff_dfd_models(model, candidate)
+    has_remaining = any(
+        section.get("added") or section.get("removed") or section.get("changed")
+        for section in remaining["sections"].values()
+    )
+    if has_remaining:
+        model.source_semantic_hash = current.source_semantic_hash or current.semantic_hash
+        report["dfd_proposal"] = {
+            **remaining,
+            "candidate_model": candidate.model_dump(),
+            "selected_sections": selected_sections,
+        }
+    else:
+        model.source_semantic_hash = candidate.semantic_hash
+        report.pop("dfd_proposal", None)
+    report["dfd_model"] = model.model_dump()
+    report["dfd_validation"] = validation
+    _stale(report, "A reviewed DFD regeneration proposal changed the canonical semantic model. Refresh dependent analysis stages.")
+    save_report(project_id, report)
+    log_event("dfd.proposal_applied", details={
+        "project_id": project_id,
+        "revision": model.revision,
+        "sections": selected_sections,
+        "remaining": has_remaining,
+    })
+    return {
+        "success": True,
+        "model": model.model_dump(),
+        "validation": validation,
+        "proposal": report.get("dfd_proposal"),
+        "semantic_changed": True,
+    }
+
+
 @router.get("/{project_id}/dfd/export")
 async def export_dfd(project_id: str, format: str = "svg"):
-    """Export a readable, escaped SVG projection of the canonical DFD."""
-    if format.lower() != "svg":
-        raise HTTPException(status_code=400, detail="Unsupported DFD export format. Use: svg")
+    """Export the canonical model as schema-versioned JSON or escaped SVG."""
+    normalized_format = format.lower()
+    if normalized_format not in {"svg", "json"}:
+        raise HTTPException(status_code=400, detail="Unsupported DFD export format. Use: json or svg")
     if not get_project(project_id):
         raise HTTPException(status_code=404, detail="Project not found")
     _, model = _load_model(project_id)
     validation = validate_dfd_model(model)
     if not validation["valid"]:
         raise HTTPException(status_code=422, detail={"message": "Cannot export invalid DFD", **validation})
+    if normalized_format == "json":
+        log_event("dfd.exported", details={"project_id": project_id, "format": "json", "revision": model.revision})
+        return JSONResponse(
+            content=model.model_dump(),
+            headers={"Content-Disposition": f"attachment; filename=dfd-{project_id}.json"},
+        )
 
     context_view = next((view for view in model.views if view.kind == "context"), None)
     positions = context_view.positions if context_view else {}
@@ -182,3 +280,11 @@ async def export_dfd(project_id: str, format: str = "svg"):
         media_type="image/svg+xml",
         headers={"Content-Disposition": f"attachment; filename=dfd-{project_id}.svg"},
     )
+
+
+@router.post("/{project_id}/dfd/import")
+async def import_dfd(project_id: str, body: dict):
+    """Import a schema-validated canonical DFD through the normal save path."""
+    if not isinstance(body, dict) or not isinstance(body.get("model"), dict):
+        raise HTTPException(status_code=422, detail="Request must contain an exported model object")
+    return await save_dfd(project_id, body)

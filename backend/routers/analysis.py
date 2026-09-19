@@ -139,6 +139,7 @@ async def run_full_analysis(project_id: str, body: dict = None):
                 generated_dfd_model, report.get("dfd_model")
             )
             if dfd_proposal:
+                dfd_proposal["candidate_model"] = generated_dfd_model.model_dump()
                 report["dfd_proposal"] = dfd_proposal
                 _mark_analysis_stale(
                     report,

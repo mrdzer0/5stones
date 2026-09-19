@@ -175,6 +175,16 @@
               Refresh affected stages
             </button>
           </div>
+          <div class="analysis-stale-notice" id="dfd-proposal-panel" role="region" aria-live="polite" style="display:none;">
+            <div>
+              <strong>DFD regeneration proposal</strong>
+              <span id="dfd-proposal-summary">Source changes are waiting for review.</span>
+              <div id="dfd-proposal-sections" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;"></div>
+            </div>
+            <button type="button" class="btn btn-primary btn-sm" id="btn-apply-dfd-proposal">
+              Apply reviewed source changes
+            </button>
+          </div>
 
           <!-- Analyzing state -->
           <div class="card" id="analyzing-card" style="display:none;">
@@ -373,6 +383,8 @@
                     <button type="button" class="diagram-level-btn" data-diagram-level="services" aria-pressed="false">L1 Services</button>
                     <button type="button" class="diagram-level-btn" data-diagram-level="scenarios" aria-pressed="false">L2 Scenarios</button>
                   </div>
+                  <label class="sr-only" for="canonical-feature-select">Feature DFD process</label>
+                  <select class="form-select" id="canonical-feature-select" style="width:auto;display:none;" aria-label="Feature DFD process"></select>
                   <div class="diagram-mode-switch" role="group" aria-label="Diagram view">
                     <button type="button" class="diagram-mode-btn active" data-diagram-mode="improved" aria-pressed="true">Improved</button>
                     <button type="button" class="diagram-mode-btn" data-diagram-mode="classic" aria-pressed="false">Classic</button>
@@ -381,6 +393,8 @@
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
                     Fit
                   </button>
+                  <button class="btn btn-secondary btn-sm" id="btn-dfd-undo" title="Undo last canonical DFD change" disabled>Undo</button>
+                  <button class="btn btn-secondary btn-sm" id="btn-dfd-redo" title="Redo last canonical DFD change" disabled>Redo</button>
                   <button class="btn btn-secondary btn-sm" id="btn-diagram-export" title="Export as PNG">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                     Export PNG
@@ -389,6 +403,13 @@
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                     Export SVG
                   </button>
+                  <button class="btn btn-secondary btn-sm" id="btn-diagram-export-json" title="Export canonical DFD as JSON">
+                    Export JSON
+                  </button>
+                  <button class="btn btn-secondary btn-sm" id="btn-diagram-import-json" title="Import canonical DFD JSON">
+                    Import JSON
+                  </button>
+                  <input type="file" id="dfd-json-import" accept="application/json,.json" hidden />
                   <button class="btn btn-secondary btn-sm" id="btn-diagram-fullscreen" title="Open diagram fullscreen" aria-label="Open diagram fullscreen">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3m0 8v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/></svg>
                     <span id="diagram-fullscreen-label">Fullscreen</span>
@@ -428,6 +449,10 @@
                 <span><strong>C</strong> Critical threat</span>
                 <span><strong>H</strong> High threat</span>
               </div>
+              <details class="dfd-inventory" id="dfd-inventory-panel">
+                <summary>Canonical DFD inventory</summary>
+                <div id="dfd-inventory" role="region" aria-label="Canonical DFD inventory table"></div>
+              </details>
               <details class="diagram-text-alternative" id="diagram-text-alternative">
                 <summary>Accessible diagram details</summary>
                 <div id="diagram-text-content">Diagram details will appear after the analysis is loaded.</div>

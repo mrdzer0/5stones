@@ -160,6 +160,9 @@ class DfdView(DfdBase):
     parent_process_id: str | None = None
     element_refs: list[str] = Field(default_factory=list)
     projection_mappings: dict[str, list[str]] = Field(default_factory=dict)
+    input_flow_ids: list[str] = Field(default_factory=list)
+    output_flow_ids: list[str] = Field(default_factory=list)
+    port_mappings: dict[str, list[str]] = Field(default_factory=dict)
     positions: dict[str, dict[str, float]] = Field(default_factory=dict)
     collapsed_groups: list[str] = Field(default_factory=list)
     viewport: dict[str, float] = Field(default_factory=dict)

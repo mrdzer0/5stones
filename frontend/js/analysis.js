@@ -7,6 +7,10 @@ let currentReport = null;
 let currentProject = null;
 let diagramNetwork = null;   // vis-network instance
 let diagramResizeTimer = null;
+let canonicalLayoutSaveTimer = null;
+let canonicalUndoStack = [];
+let canonicalRedoStack = [];
+let canonicalFeatureViewId = null;
 let diagramViewMode = loadDiagramViewMode();
 let diagramLevel = loadDiagramLevel();
 let analysisIsRunning = false;
@@ -49,6 +53,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('btn-run-affected')?.addEventListener('click', () => {
     runAnalysis(pendingArtifactAnalysisTypes.length ? pendingArtifactAnalysisTypes : fullAnalysisTypes());
   });
+  document.getElementById('btn-apply-dfd-proposal')?.addEventListener('click', applyDfdProposal);
   document.getElementById('btn-upload-artifact')?.addEventListener('click', uploadArtifact);
   document.getElementById('artifact-type-select')?.addEventListener('change', (e) => updateArtifactFileAccept(e.target.value));
   document.getElementById('artifact-file-inline')?.addEventListener('change', (e) => updateArtifactSelection(e.target.files?.[0]));
@@ -64,8 +69,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Diagram toolbar
   document.getElementById('btn-diagram-fit')?.addEventListener('click', () => diagramNetwork?.fit());
+  document.getElementById('btn-dfd-undo')?.addEventListener('click', () => restoreCanonicalDfdHistory('undo'));
+  document.getElementById('btn-dfd-redo')?.addEventListener('click', () => restoreCanonicalDfdHistory('redo'));
   document.getElementById('btn-diagram-export')?.addEventListener('click', exportDiagramPng);
   document.getElementById('btn-diagram-export-svg')?.addEventListener('click', exportDiagramSvg);
+  document.getElementById('btn-diagram-export-json')?.addEventListener('click', exportDiagramJson);
+  document.getElementById('btn-diagram-import-json')?.addEventListener('click', () => document.getElementById('dfd-json-import')?.click());
+  document.getElementById('dfd-json-import')?.addEventListener('change', event => importDiagramJson(event.target.files?.[0]));
   setupDiagramModeSwitch();
   setupDiagramLevelSwitch();
   window.addEventListener('resize', () => {
@@ -338,13 +348,24 @@ function syncDiagramLevelUi() {
   shell?.classList.toggle('is-scenario', diagramLevel === 'scenarios');
   const modeSwitch = document.querySelector('.diagram-mode-switch');
   if (modeSwitch) modeSwitch.hidden = diagramLevel !== 'context';
+  const canonical = Boolean(currentReport?.dfd_model?.nodes?.length);
+  const levelLabels = canonical
+    ? { context: 'L0 Context', services: 'L1 System DFD', scenarios: 'L2 Feature DFD' }
+    : { context: 'L0 Context', services: 'L1 Services', scenarios: 'L2 Scenarios' };
+  document.querySelectorAll('[data-diagram-level]').forEach(button => {
+    if (levelLabels[button.dataset.diagramLevel]) button.textContent = levelLabels[button.dataset.diagramLevel];
+  });
   const trustLegend = document.getElementById('diagram-trust-legend');
   if (trustLegend) trustLegend.style.display = diagramLevel === 'context' && diagramViewMode === 'classic' ? '' : 'none';
   const mobileMap = document.getElementById('diagram-mobile-map');
   if (mobileMap) mobileMap.classList.toggle('is-level-hidden', diagramLevel !== 'context');
   const title = document.querySelector('.diagram-toolbar-title');
-  if (title) title.textContent = diagramLevel === 'context' ? 'Context Data Flow Diagram' : diagramLevel === 'services' ? 'Service-level Model' : 'Scenario Flows & API Operations';
-  ['btn-diagram-fit', 'btn-diagram-export', 'btn-diagram-export-svg'].forEach(id => {
+  if (title) title.textContent = canonical
+    ? (diagramLevel === 'context' ? 'Context DFD' : diagramLevel === 'services' ? 'System DFD' : 'Feature DFD')
+    : (diagramLevel === 'context' ? 'Context Data Flow Diagram' : diagramLevel === 'services' ? 'Service-level Model' : 'Scenario Flows & API Operations');
+  const featureSelect = document.getElementById('canonical-feature-select');
+  if (featureSelect) featureSelect.style.display = canonical && diagramLevel === 'scenarios' ? '' : 'none';
+  ['btn-diagram-fit', 'btn-diagram-export', 'btn-diagram-export-svg', 'btn-diagram-export-json', 'btn-diagram-import-json'].forEach(id => {
     const button = document.getElementById(id);
     if (button) button.hidden = diagramLevel === 'scenarios';
   });
@@ -372,6 +393,13 @@ function setupDiagramLevelSwitch() {
         renderDiagramTextAlternative(currentReport);
       }
     });
+  });
+  document.getElementById('canonical-feature-select')?.addEventListener('change', event => {
+    canonicalFeatureViewId = event.target.value || null;
+    if (currentReport) {
+      renderDiagram(currentReport);
+      renderDiagramTextAlternative(currentReport);
+    }
   });
 }
 
@@ -574,6 +602,8 @@ async function tryLoadExistingReport() {
   try {
     const report = await API.analysis.report(projectId);
     currentReport = report;
+    canonicalUndoStack = [];
+    canonicalRedoStack = [];
     document.body.classList.add('analysis-has-report');
     renderResults(report);
     document.getElementById('btn-view-report').style.display = '';
@@ -1189,6 +1219,7 @@ function renderResults(report) {
 
   renderTrustBoundaries(report.trust_boundaries || []);
   renderDiagram(report);                                // ← interactive diagram
+  renderDfdInventory(report);
   renderDiagramTextAlternative(report);
   renderThreats('stride-threats-list', 'st', stride);  // ← unique prefix 'st'
   renderThreats('linddun-threats-list', 'ln', linddun);// ← unique prefix 'ln'
@@ -1196,6 +1227,8 @@ function renderResults(report) {
   renderTests(visibility.tests);
   renderGaps(visibility.missingInfo, visibility.assumptions);
   syncAnalysisStaleness(report);
+  renderDfdProposal(report);
+  syncDfdHistoryButtons();
 
   // STRIDE filter
   const strideFilter = document.getElementById('stride-filter');
@@ -1299,6 +1332,87 @@ function renderAnalysisOverview(report, visibility = analysisVisibility(report))
   if (primary) {
     primary.dataset.overviewAction = action;
     primary.textContent = label;
+  }
+}
+
+function renderDfdProposal(report) {
+  const panel = document.getElementById('dfd-proposal-panel');
+  const summary = document.getElementById('dfd-proposal-summary');
+  const sectionList = document.getElementById('dfd-proposal-sections');
+  if (!panel) return;
+  const proposal = report?.dfd_proposal;
+  if (!proposal?.candidate_model) {
+    panel.style.display = 'none';
+    if (sectionList) sectionList.innerHTML = '';
+    return;
+  }
+  const labels = {
+    nodes: 'Nodes', data_objects: 'Data objects', flows: 'Flows',
+    zones: 'Zones', boundaries: 'Boundaries', questions: 'Questions',
+  };
+  const changedSections = Object.entries(proposal.sections || {})
+    .filter(([, section]) => (section.added || []).length || (section.removed || []).length || (section.changed || []).length)
+    .map(([name]) => name);
+  const sections = changedSections.map(name => proposal.sections[name]);
+  const changes = sections.reduce((total, section) => total
+    + (section.added || []).length
+    + (section.removed || []).length
+    + (section.changed || []).length, 0);
+  if (summary) {
+    summary.textContent = `${changes} semantic change${changes === 1 ? '' : 's'} are ready for explicit review. Human edits remain active until applied.`;
+  }
+  if (sectionList) {
+    sectionList.innerHTML = changedSections.map(name => `
+      <label class="text-xs" style="display:inline-flex;align-items:center;gap:4px;">
+        <input type="checkbox" value="${escHtml(name)}" checked /> ${escHtml(labels[name] || name)}
+      </label>`).join('');
+  }
+  panel.style.display = 'flex';
+}
+
+async function applyDfdProposal() {
+  if (!currentReport?.dfd_model?.revision || !currentReport?.dfd_proposal?.candidate_model) return;
+  const previous = cloneCanonicalDfdModel(currentReport.dfd_model);
+  const sections = [...document.querySelectorAll('#dfd-proposal-sections input[type="checkbox"]:checked')]
+    .map(input => input.value);
+  const availableSections = [...document.querySelectorAll('#dfd-proposal-sections input[type="checkbox"]')]
+    .map(input => input.value);
+  if (!sections.length) {
+    showToast('Select at least one proposal section to apply', 'error');
+    return;
+  }
+  const button = document.getElementById('btn-apply-dfd-proposal');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Applying…';
+  }
+  try {
+    const response = await API.dfd.applyProposal(projectId, {
+      expected_revision: currentReport.dfd_model.revision,
+      ...(sections.length === availableSections.length ? { accept_all: true } : { sections }),
+    });
+    currentReport.dfd_model = response.model;
+    currentReport.dfd_validation = response.validation;
+    currentReport.dfd_proposal = response.proposal || null;
+    canonicalUndoStack.push(previous);
+    canonicalRedoStack = [];
+    if (response.semantic_changed) {
+      currentReport.analysis_stale = {
+        stages: ['stride', 'linddun', 'controls', 'tests', 'missing_info', 'assumptions'],
+        reason: 'A reviewed DFD regeneration proposal changed the canonical semantic model. Refresh dependent analysis stages.',
+        changed_at: new Date().toISOString(),
+      };
+    }
+    renderResults(currentReport);
+    syncDfdHistoryButtons();
+    showToast('Reviewed DFD source changes applied. Refresh dependent analysis stages.', 'success');
+  } catch (err) {
+    showToast('Could not apply DFD proposal: ' + err.message, 'error');
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = 'Apply reviewed source changes';
+    }
   }
 }
 
@@ -1514,8 +1628,8 @@ function renderDiagram(report) {
   // The canonical semantic model is the source of truth for the context DFD.
   // Legacy trust-model projections remain available for service/scenario views
   // until their feature decomposition editor is migrated.
-  if (diagramLevel === 'context' && report?.dfd_model?.nodes?.length) {
-    renderCanonicalDiagram(report);
+  if (report?.dfd_model?.nodes?.length && ['context', 'services', 'scenarios'].includes(diagramLevel)) {
+    renderCanonicalDiagram(report, diagramLevel === 'scenarios' ? 'feature' : diagramLevel === 'services' ? 'system' : 'context');
     return;
   }
   if (diagramLevel === 'services') {
@@ -1619,10 +1733,19 @@ function renderDiagramMappingSummary(report) {
     services: ['process', 'data_store', 'external_system'],
     scenarios: ['scenario'],
   };
-  const levelMapped = threats.filter(item => targetRefs(item).some(ref =>
-    typeByLevel[diagramLevel].includes(ref.type) &&
-    (diagramLevel === 'context' ? ref.model_level === 'context' : ref.model_level === diagramLevel.slice(0, -1))
-  ));
+  const canonicalIds = report?.dfd_model?.nodes?.length && diagramLevel !== 'context'
+    ? new Set((report.dfd_model.views || []).find(view =>
+      diagramLevel === 'scenarios'
+        ? view.id === (canonicalFeatureViewId || (report.dfd_model.views || []).find(item => item.kind === 'feature')?.id)
+        : view.kind === 'system'
+    )?.element_refs || [])
+    : null;
+  const levelMapped = threats.filter(item => canonicalIds
+    ? targetRefs(item).some(ref => canonicalIds.has(String(ref.id)))
+    : targetRefs(item).some(ref =>
+      typeByLevel[diagramLevel].includes(ref.type) &&
+      (diagramLevel === 'context' ? ref.model_level === 'context' : ref.model_level === diagramLevel.slice(0, -1))
+    ));
   el.innerHTML = `
     <span class="diagram-mapping-label">Finding coverage</span>
     <span class="diagram-mapping-chip"><strong>${levelMapped.length}</strong> on this level</span>
@@ -1639,7 +1762,120 @@ function canonicalNodeVisualZone(node) {
   return 'internal';
 }
 
-function renderCanonicalDiagram(report) {
+function renderDfdInventory(report) {
+  const panel = document.getElementById('dfd-inventory-panel');
+  const container = document.getElementById('dfd-inventory');
+  const model = report?.dfd_model;
+  if (!panel || !container) return;
+  if (!model) {
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = '';
+  const nodeById = new Map((model.nodes || []).map(node => [String(node.id), node]));
+  const rows = [
+    ...(model.nodes || []).map(node => ({
+      type: 'node', id: node.id, displayId: node.display_id, name: node.name,
+      detail: `${node.type} · ${node.scope} · ${node.ownership} · ${node.exposure}`,
+    })),
+    ...(model.flows || []).map(flow => ({
+      type: 'flow', id: flow.id, displayId: flow.display_id, name: flow.name,
+      detail: `${nodeById.get(String(flow.source_id))?.name || flow.source_id} → ${nodeById.get(String(flow.target_id))?.name || flow.target_id}`,
+    })),
+    ...(model.boundaries || []).map(boundary => ({
+      type: 'boundary', id: boundary.id, displayId: boundary.display_id, name: boundary.name,
+      detail: `${boundary.status} · ${(boundary.types || []).join(', ') || 'type unknown'}`,
+    })),
+    ...(model.questions || []).map(question => ({
+      type: 'question', id: question.id, displayId: 'Q', name: question.question,
+      detail: `${question.status} · ${(question.affected_refs || []).length} affected ref${(question.affected_refs || []).length === 1 ? '' : 's'}`,
+    })),
+  ];
+  if (!rows.length) {
+    container.innerHTML = '<p class="text-sm text-muted">The canonical model has no inventory elements yet.</p>';
+    return;
+  }
+  container.innerHTML = `
+    <div class="table-wrap" style="overflow:auto;">
+      <table class="data-table" aria-label="Canonical DFD inventory">
+        <thead><tr><th scope="col">ID</th><th scope="col">Element</th><th scope="col">Detail</th></tr></thead>
+        <tbody>${rows.map(row => `
+          <tr>
+            <td><button type="button" class="btn btn-ghost btn-sm mono" data-dfd-select-type="${escHtml(row.type)}" data-dfd-select-id="${escHtml(row.id)}">${escHtml(row.displayId || row.id)}</button></td>
+            <td>${escHtml(row.name)}</td>
+            <td class="text-sm text-muted">${escHtml(row.detail)}</td>
+          </tr>`).join('')}</tbody>
+      </table>
+    </div>`;
+  container.querySelectorAll('[data-dfd-select-id]').forEach(button => {
+    button.addEventListener('click', () => focusDfdElement(button.dataset.dfdSelectType, button.dataset.dfdSelectId));
+  });
+}
+
+function focusDfdElement(type, id) {
+  const model = currentReport?.dfd_model;
+  if (!model) return;
+  switchTab('diagram');
+  window.setTimeout(() => {
+    if (type === 'node') {
+      const node = diagramNetwork?.body?.data?.nodes?.get(id);
+      if (node) {
+        diagramNetwork.selectNodes([id]);
+        showNodeInspector(node);
+      }
+      return;
+    }
+    if (type === 'flow') {
+      const edge = diagramNetwork?.body?.data?.edges?.get(id);
+      if (edge) {
+        diagramNetwork.selectEdges([id]);
+        showFlowInspector(edge);
+      }
+      return;
+    }
+    if (type === 'boundary') {
+      const boundary = (model.boundaries || []).find(item => String(item.id) === String(id));
+      if (boundary) showBoundaryInspector(boundary);
+      return;
+    }
+    const question = (model.questions || []).find(item => String(item.id) === String(id));
+    if (question) showDfdQuestionInspector(question);
+  }, 120);
+}
+
+function showBoundaryInspector(boundary) {
+  const inspector = document.getElementById('node-inspector');
+  const title = document.getElementById('inspector-title');
+  const body = document.getElementById('inspector-body');
+  if (!inspector || !title || !body) return;
+  const threats = uniqueThreats(analysisVisibility(currentReport).threats.filter(threat =>
+    targetMatches(threat, boundary.id, 'trust_boundary')
+  ));
+  title.textContent = `${boundary.display_id || boundary.id} ${boundary.name}`;
+  body.innerHTML = `
+    <div class="node-model-meta">${escHtml(boundary.status)} · ${(boundary.types || []).map(escHtml).join(', ') || 'boundary type unknown'} · ${escHtml(boundary.transition_scope || 'unknown')}</div>
+    <p class="text-sm text-muted">${escHtml(boundary.rationale || 'No rationale has been documented.')}</p>
+    <div class="inspector-findings"><strong>${threats.length} mapped finding${threats.length === 1 ? '' : 's'}</strong></div>`;
+  inspector.style.display = 'block';
+  inspector.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function showDfdQuestionInspector(question) {
+  const inspector = document.getElementById('node-inspector');
+  const title = document.getElementById('inspector-title');
+  const body = document.getElementById('inspector-body');
+  if (!inspector || !title || !body) return;
+  title.textContent = `Question ${question.id}`;
+  body.innerHTML = `
+    <div class="node-model-meta">${escHtml(question.status)} · affected: ${(question.affected_refs || []).join(', ') || 'none'}</div>
+    <p style="font-weight:600;">${escHtml(question.question)}</p>
+    <p class="text-sm text-muted">${escHtml(question.reason)}</p>
+    ${question.source_refs?.length ? `<div class="text-xs text-muted">Sources: ${question.source_refs.map(escHtml).join(', ')}</div>` : ''}`;
+  inspector.style.display = 'block';
+  inspector.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function renderCanonicalDiagram(report, viewKind = 'context') {
   const container = document.getElementById('threat-diagram-canvas');
   if (!container) return;
   if (diagramNetwork) { diagramNetwork.destroy(); diagramNetwork = null; }
@@ -1648,9 +1884,24 @@ function renderCanonicalDiagram(report) {
   const zones = new Map((model.zones || []).map(zone => [String(zone.id), zone]));
   const dataObjects = new Map((model.data_objects || []).map(item => [String(item.id), item]));
   const threats = analysisVisibility(report).threats;
+  const featureViews = (model.views || []).filter(view => view.kind === 'feature' && view.parent_process_id);
+  const featureSelect = document.getElementById('canonical-feature-select');
+  if (featureSelect) {
+    if (!featureViews.some(view => view.id === canonicalFeatureViewId)) canonicalFeatureViewId = featureViews[0]?.id || null;
+    featureSelect.innerHTML = featureViews.map(view => {
+      const parent = (model.nodes || []).find(node => node.id === view.parent_process_id);
+      return `<option value="${escHtml(view.id)}" ${view.id === canonicalFeatureViewId ? 'selected' : ''}>${escHtml(parent?.name || view.parent_process_id)}</option>`;
+    }).join('');
+  }
+  const selectedFeature = viewKind === 'feature'
+    ? featureViews.find(view => view.id === canonicalFeatureViewId) || featureViews[0]
+    : null;
+  const visibleRefs = selectedFeature ? new Set(selectedFeature.element_refs || []) : null;
+  const visibleNodes = visibleRefs ? (model.nodes || []).filter(node => visibleRefs.has(node.id)) : (model.nodes || []);
+  const visibleFlows = visibleRefs ? (model.flows || []).filter(flow => visibleRefs.has(flow.id)) : (model.flows || []);
   const zoneOrder = [...zones.keys()];
   const zoneCounts = new Map();
-  const nodeRows = (model.nodes || []).map((node, index) => {
+  const nodeRows = visibleNodes.map((node, index) => {
     const zoneId = String(node.zone_ids?.[0] || 'unknown');
     const ordinal = zoneCounts.get(zoneId) || 0;
     zoneCounts.set(zoneId, ordinal + 1);
@@ -1684,7 +1935,7 @@ function renderCanonicalDiagram(report) {
     };
   });
   const nodeById = new Map((model.nodes || []).map(node => [String(node.id), node]));
-  const edgeRows = (model.flows || []).map(flow => {
+  const edgeRows = visibleFlows.map(flow => {
     const source = nodeById.get(String(flow.source_id));
     const target = nodeById.get(String(flow.target_id));
     const mapped = uniqueThreats(threats.filter(threat =>
@@ -1731,8 +1982,10 @@ function renderCanonicalDiagram(report) {
   const data = { nodes: new vis.DataSet(nodeRows), edges: new vis.DataSet(edgeRows) };
   const toolbarTitle = document.querySelector('.diagram-toolbar-title');
   const toolbarSubtitle = document.querySelector('.diagram-toolbar-sub');
-  if (toolbarTitle) toolbarTitle.textContent = 'Canonical Context DFD';
-  if (toolbarSubtitle) toolbarSubtitle.textContent = `Revision ${model.revision} · ${model.nodes.length} nodes · ${model.flows.length} flows · unknown values remain reviewable`;
+  if (toolbarTitle) toolbarTitle.textContent = viewKind === 'feature'
+    ? `Feature DFD · ${selectedFeature?.parent_process_id || 'process'}`
+    : viewKind === 'system' ? 'Canonical System DFD' : 'Canonical Context DFD';
+  if (toolbarSubtitle) toolbarSubtitle.textContent = `Revision ${model.revision} · ${visibleNodes.length} nodes · ${visibleFlows.length} flows · unknown values remain reviewable`;
   diagramNetwork = new vis.Network(container, data, {
     physics: false,
     interaction: { hover: true, tooltipDelay: 180, zoomView: true, dragView: true, keyboard: { enabled: true, bindToWindow: false } },
@@ -1745,6 +1998,86 @@ function renderCanonicalDiagram(report) {
     else if (params.edges.length) showFlowInspector(data.edges.get(params.edges[0]));
     else document.getElementById('node-inspector').style.display = 'none';
   });
+  diagramNetwork.on('dragEnd', () => scheduleCanonicalLayoutSave());
+}
+
+function scheduleCanonicalLayoutSave() {
+  if (!currentReport?.dfd_model || !diagramNetwork) return;
+  window.clearTimeout(canonicalLayoutSaveTimer);
+  canonicalLayoutSaveTimer = window.setTimeout(async () => {
+    const model = JSON.parse(JSON.stringify(currentReport.dfd_model));
+    const contextView = (model.views || []).find(view => view.kind === 'context');
+    if (!contextView) return;
+    const positions = diagramNetwork.getPositions();
+    contextView.positions = Object.fromEntries(Object.entries(positions).map(([id, position]) => [id, {
+      x: Number(position.x.toFixed(2)),
+      y: Number(position.y.toFixed(2)),
+    }]));
+    await persistCanonicalDfdModel(model, { render: false, message: 'DFD layout saved' });
+  }, 450);
+}
+
+function cloneCanonicalDfdModel(model) {
+  return model ? JSON.parse(JSON.stringify(model)) : null;
+}
+
+function syncDfdHistoryButtons() {
+  const hasModel = Boolean(currentReport?.dfd_model);
+  const undo = document.getElementById('btn-dfd-undo');
+  const redo = document.getElementById('btn-dfd-redo');
+  if (undo) undo.disabled = !hasModel || canonicalUndoStack.length === 0;
+  if (redo) redo.disabled = !hasModel || canonicalRedoStack.length === 0;
+}
+
+async function persistCanonicalDfdModel(model, {
+  render = true,
+  message = 'Canonical DFD saved',
+  recordHistory = true,
+} = {}) {
+  const previous = cloneCanonicalDfdModel(currentReport?.dfd_model);
+  try {
+    const response = await API.dfd.save(projectId, model, currentReport.dfd_model.revision);
+    currentReport.dfd_model = response.model;
+    currentReport.dfd_validation = response.validation;
+    if (recordHistory && previous) {
+      canonicalUndoStack.push(previous);
+      canonicalRedoStack = [];
+    }
+    if (response.semantic_changed) {
+      currentReport.analysis_stale = {
+        stages: ['stride', 'linddun', 'controls', 'tests', 'missing_info', 'assumptions'],
+        reason: 'Canonical DFD semantic model edited. Refresh dependent analysis stages.',
+        changed_at: new Date().toISOString(),
+      };
+    }
+    if (render) renderResults(currentReport);
+    syncDfdHistoryButtons();
+    showToast(message, 'success');
+    return response;
+  } catch (err) {
+    showToast('Could not save canonical DFD: ' + err.message, 'error');
+    if (/409|conflict/i.test(err.message || '')) await tryLoadExistingReport();
+    return null;
+  }
+}
+
+async function restoreCanonicalDfdHistory(direction) {
+  if (!currentReport?.dfd_model) return;
+  const source = direction === 'undo' ? canonicalUndoStack : canonicalRedoStack;
+  const target = source.pop();
+  if (!target) return;
+  const current = cloneCanonicalDfdModel(currentReport.dfd_model);
+  const response = await persistCanonicalDfdModel(target, {
+    message: direction === 'undo' ? 'Canonical DFD change undone' : 'Canonical DFD change redone',
+    recordHistory: false,
+  });
+  if (!response) {
+    source.push(target);
+    syncDfdHistoryButtons();
+    return;
+  }
+  (direction === 'undo' ? canonicalRedoStack : canonicalUndoStack).push(current);
+  syncDfdHistoryButtons();
 }
 
 function renderDiagramTextAlternative(report) {
@@ -1753,6 +2086,21 @@ function renderDiagramTextAlternative(report) {
   if (!content) return;
   const views = modelViews(report);
   const threats = analysisVisibility(report).threats;
+  if (report?.dfd_model?.nodes?.length && diagramLevel !== 'context') {
+    const featureViews = (report.dfd_model.views || []).filter(view => view.kind === 'feature' && view.parent_process_id);
+    const selected = diagramLevel === 'scenarios'
+      ? featureViews.find(view => view.id === canonicalFeatureViewId) || featureViews[0]
+      : null;
+    const elementIds = selected ? new Set(selected.element_refs || []) : null;
+    const nodes = (report.dfd_model.nodes || []).filter(node => !elementIds || elementIds.has(node.id));
+    const flows = (report.dfd_model.flows || []).filter(flow => !elementIds || elementIds.has(flow.id));
+    const nodeById = new Map((report.dfd_model.nodes || []).map(node => [node.id, node]));
+    const nodeItems = nodes.map(node => `<li><strong>${escHtml(`${node.display_id} ${node.name}`)}</strong> — ${escHtml(`${node.type} · ${node.scope} · ${node.ownership} · ${node.exposure}`)}</li>`).join('');
+    const flowItems = flows.map(flow => `<li>${escHtml(`${flow.display_id} ${nodeById.get(flow.source_id)?.name || flow.source_id} → ${nodeById.get(flow.target_id)?.name || flow.target_id}: ${flow.name}`)}</li>`).join('');
+    content.innerHTML = `<p>${selected ? `Feature view for ${escHtml(selected.parent_process_id)}.` : 'System DFD projection.'} ${nodes.length} nodes and ${flows.length} flows are represented.</p><h3>Elements</h3><ul>${nodeItems || '<li>No elements are available.</li>'}</ul><h3>Data flows</h3><ul>${flowItems || '<li>No data flows are available.</li>'}</ul>`;
+    if (canvas) canvas.setAttribute('aria-label', `${diagramLevel === 'scenarios' ? 'Feature' : 'System'} DFD with ${nodes.length} nodes and ${flows.length} flows`);
+    return;
+  }
   if (diagramLevel === 'services') {
     const nodes = views.services?.nodes || [];
     const items = nodes.map(node => {
@@ -2301,6 +2649,49 @@ function renderImprovedDiagram(report) {
   });
 }
 
+function canonicalFlowEditorHtml(flow) {
+  const model = currentReport?.dfd_model;
+  if (!model) return '';
+  const selectedData = new Set(flow.data_object_ids || []);
+  const dataOptions = (model.data_objects || []).map(item =>
+    `<option value="${escHtml(item.id)}" ${selectedData.has(item.id) ? 'selected' : ''}>${escHtml(`${item.display_id} ${item.name}`)}</option>`
+  ).join('');
+  return `
+    <form class="dfd-node-editor" data-dfd-flow-editor>
+      <div class="node-model-meta">${escHtml(flow.display_id || flow.id)} · ${escHtml(flow.source_id)} → ${escHtml(flow.target_id)}</div>
+      <label class="form-label">Data flow name<input class="form-input" data-dfd-flow-field="name" value="${escHtml(flow.name)}" maxlength="240" required /></label>
+      <div class="dfd-editor-grid">
+        <label class="form-label">Interaction<select class="form-select" data-dfd-flow-field="interaction_kind">${['request', 'response', 'event', 'read', 'write', 'replication', 'unknown'].map(value => `<option value="${value}" ${flow.interaction_kind === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
+        <label class="form-label">Protocol<input class="form-input" data-dfd-flow-field="protocol" value="${escHtml(flow.protocol || '')}" maxlength="120" /></label>
+        <label class="form-label">AuthN<input class="form-input" data-dfd-flow-field="authn" value="${escHtml(flow.authn || '')}" maxlength="160" /></label>
+        <label class="form-label">AuthZ<input class="form-input" data-dfd-flow-field="authz" value="${escHtml(flow.authz || '')}" maxlength="160" /></label>
+      </div>
+      <label class="form-label">Data objects<select class="form-select" data-dfd-flow-field="data_object_ids" multiple size="${Math.min(5, Math.max(2, (model.data_objects || []).length))}">${dataOptions}</select></label>
+      <button type="button" class="btn btn-primary btn-sm" data-save-dfd-flow>Save flow metadata</button>
+    </form>`;
+}
+
+async function saveCanonicalFlow(flowId, body) {
+  const model = JSON.parse(JSON.stringify(currentReport.dfd_model));
+  const flow = (model.flows || []).find(item => String(item.id) === String(flowId));
+  if (!flow) return;
+  const read = field => body.querySelector(`[data-dfd-flow-field="${field}"]`);
+  const name = read('name')?.value.trim();
+  if (!name) {
+    showToast('Flow name is required', 'error');
+    return;
+  }
+  flow.name = name;
+  flow.interaction_kind = read('interaction_kind')?.value || 'unknown';
+  flow.protocol = read('protocol')?.value.trim() || null;
+  flow.authn = read('authn')?.value.trim() || null;
+  flow.authz = read('authz')?.value.trim() || null;
+  flow.data_object_ids = [...(read('data_object_ids')?.selectedOptions || [])].map(option => option.value);
+  const button = body.querySelector('[data-save-dfd-flow]');
+  if (button) button.disabled = true;
+  await persistCanonicalDfdModel(model, { message: 'DFD flow metadata saved' });
+}
+
 function showFlowInspector(edge) {
   const inspector = document.getElementById('node-inspector');
   const title = document.getElementById('inspector-title');
@@ -2318,7 +2709,13 @@ function showFlowInspector(edge) {
     ? `<div class="inspector-findings"><strong>${threats.length} mapped findings</strong>${threats.map(t => `
         <div class="inspector-finding-row">${badgeHtml(t.risk_level, 'risk')}${badgeHtml(t.framework, 'framework')}<span>${escHtml(t.threat_category || 'Finding')}</span></div>`).join('')}</div>`
     : '<div class="inspector-empty-note">No finding is directly targeted to this flow.</div>';
-  body.innerHTML = `${crossing}<ul class="flow-detail-list">${details}</ul>${findings}`;
+  const canonicalFlow = currentReport?.dfd_model?.flows?.find(item => String(item.id) === String(edge.id));
+  if (canonicalFlow) {
+    body.innerHTML = `${crossing}${canonicalFlowEditorHtml(canonicalFlow)}<ul class="flow-detail-list">${details}</ul>${findings}`;
+    body.querySelector('[data-save-dfd-flow]')?.addEventListener('click', () => saveCanonicalFlow(canonicalFlow.id, body));
+  } else {
+    body.innerHTML = `${crossing}<ul class="flow-detail-list">${details}</ul>${findings}`;
+  }
   inspector.style.display = 'block';
   inspector.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
@@ -2506,6 +2903,61 @@ function renderClassicDiagram(report) {
   diagramNetwork.on('dragStart', () => diagramNetwork.setOptions({ physics: { enabled: false } }));
 }
 
+function canonicalNodeEditorHtml(node) {
+  const model = currentReport?.dfd_model;
+  if (!model) return '';
+  const options = (name, values, selected) => values.map(value =>
+    `<option value="${escHtml(value)}" ${value === selected ? 'selected' : ''}>${escHtml(value)}</option>`
+  ).join('');
+  const selectedZones = new Set(node.zone_ids || []);
+  const zoneOptions = (model.zones || []).map(zone =>
+    `<option value="${escHtml(zone.id)}" ${selectedZones.has(zone.id) ? 'selected' : ''}>${escHtml(`${zone.display_id} ${zone.name}`)}</option>`
+  ).join('');
+  const purpose = node.process_metadata?.purpose || '';
+  return `
+    <form class="dfd-node-editor" data-dfd-node-editor>
+      <div class="node-model-meta">${escHtml(node.display_id || node.id)} · ${escHtml(node.type)} · semantic revision ${escHtml(model.revision)}</div>
+      <label class="form-label" for="dfd-node-name">Name</label>
+      <input class="form-input" id="dfd-node-name" data-dfd-field="name" value="${escHtml(node.name)}" maxlength="240" required />
+      <div class="dfd-editor-grid">
+        <label class="form-label">Scope<select class="form-select" data-dfd-field="scope">${options('scope', ['in_scope', 'external_dependency', 'unknown'], node.scope)}</select></label>
+        <label class="form-label">Ownership<select class="form-select" data-dfd-field="ownership">${options('ownership', ['organization', 'customer', 'vendor', 'shared', 'unknown'], node.ownership)}</select></label>
+        <label class="form-label">Exposure<select class="form-select" data-dfd-field="exposure">${options('exposure', ['internet_facing', 'private', 'local', 'unknown'], node.exposure)}</select></label>
+        <label class="form-label">Operator / control party<input class="form-input" data-dfd-field="operator_control_party" value="${escHtml(node.operator_control_party || '')}" maxlength="240" /></label>
+      </div>
+      <label class="form-label">Description<textarea class="form-input" data-dfd-field="description" rows="2" maxlength="1000">${escHtml(node.description || '')}</textarea></label>
+      <label class="form-label">Trust zones<select class="form-select" data-dfd-field="zone_ids" multiple size="${Math.min(4, Math.max(2, (model.zones || []).length))}">${zoneOptions}</select></label>
+      ${node.type === 'process' ? `<label class="form-label">Process purpose<input class="form-input" data-dfd-field="purpose" value="${escHtml(purpose)}" maxlength="500" /></label>` : ''}
+      <button type="button" class="btn btn-primary btn-sm" data-save-dfd-node>Save semantic metadata</button>
+    </form>`;
+}
+
+async function saveCanonicalNode(nodeId, body) {
+  const model = JSON.parse(JSON.stringify(currentReport.dfd_model));
+  const node = (model.nodes || []).find(item => String(item.id) === String(nodeId));
+  if (!node) return;
+  const read = field => body.querySelector(`[data-dfd-field="${field}"]`);
+  const name = read('name')?.value.trim();
+  if (!name) {
+    showToast('Node name is required', 'error');
+    return;
+  }
+  node.name = name;
+  node.scope = read('scope')?.value || 'unknown';
+  node.ownership = read('ownership')?.value || 'unknown';
+  node.exposure = read('exposure')?.value || 'unknown';
+  node.operator_control_party = read('operator_control_party')?.value.trim() || null;
+  node.description = read('description')?.value.trim() || null;
+  node.zone_ids = [...(read('zone_ids')?.selectedOptions || [])].map(option => option.value);
+  if (node.type === 'process') {
+    node.process_metadata = node.process_metadata || {};
+    node.process_metadata.purpose = read('purpose')?.value.trim() || null;
+  }
+  const button = body.querySelector('[data-save-dfd-node]');
+  if (button) button.disabled = true;
+  await persistCanonicalDfdModel(model, { message: 'DFD node metadata saved' });
+}
+
 function showNodeInspector(node) {
   const inspector = document.getElementById('node-inspector');
   const title = document.getElementById('inspector-title');
@@ -2520,6 +2972,20 @@ function showNodeInspector(node) {
     ? `<div class="node-trust-summary"><span class="legend-dot" style="background:${getTrustColor(zone.key).border};"></span>${escHtml(zone.label)} trust zone</div>`
     : '';
   const modelMeta = node._modelMeta ? `<div class="node-model-meta">${escHtml(node._modelMeta)}</div>` : '';
+
+  const canonicalNode = currentReport?.dfd_model?.nodes?.find(item => String(item.id) === String(node._elementId));
+  if (canonicalNode) {
+    body.innerHTML = `${zoneSummary}${canonicalNodeEditorHtml(canonicalNode)}`;
+    body.querySelector('[data-save-dfd-node]')?.addEventListener('click', () => saveCanonicalNode(canonicalNode.id, body));
+    if (threats.length) {
+      body.insertAdjacentHTML('beforeend', `<div class="inspector-findings"><strong>${threats.length} mapped finding${threats.length === 1 ? '' : 's'}</strong>${threats.map(t => `
+        <div class="inspector-finding-row">${badgeHtml(t.risk_level, 'risk')}${badgeHtml(t.framework, 'framework')}<span>${escHtml(t.threat_category || 'Finding')}</span></div>`).join('')}</div>`);
+    } else {
+      body.insertAdjacentHTML('beforeend', '<div class="inspector-empty-note">No finding is directly targeted to this node.</div>');
+    }
+    inspector.style.display = 'block';
+    return;
+  }
 
   if (!threats.length) {
     body.innerHTML = `${zoneSummary}${modelMeta}<div style="font-size:0.82rem;color:var(--text-muted);padding:var(--space-3) 0;">No threats mapped to this component.</div>`;
@@ -2568,6 +3034,55 @@ async function exportDiagramSvg() {
     showToast('Canonical DFD exported as SVG', 'success');
   } catch {
     showToast('Could not export canonical DFD', 'error');
+  }
+}
+
+async function exportDiagramJson() {
+  if (!projectId) return;
+  try {
+    const response = await API.dfd.exportJson(projectId);
+    if (!response.ok) throw new Error('JSON export failed');
+    const blob = await response.blob();
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `dfd-${projectId}.json`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    showToast('Canonical DFD exported as JSON', 'success');
+  } catch {
+    showToast('Could not export canonical DFD JSON', 'error');
+  }
+}
+
+async function importDiagramJson(file) {
+  if (!file || !currentReport?.dfd_model) return;
+  const previous = cloneCanonicalDfdModel(currentReport.dfd_model);
+  try {
+    const parsed = JSON.parse(await file.text());
+    const model = parsed?.model && typeof parsed.model === 'object' ? parsed.model : parsed;
+    const response = await API.dfd.importJson(projectId, {
+      model,
+      expected_revision: currentReport.dfd_model.revision,
+    });
+    currentReport.dfd_model = response.model;
+    currentReport.dfd_validation = response.validation;
+    canonicalUndoStack.push(previous);
+    canonicalRedoStack = [];
+    if (response.semantic_changed) {
+      currentReport.analysis_stale = {
+        stages: ['stride', 'linddun', 'controls', 'tests', 'missing_info', 'assumptions'],
+        reason: 'Canonical DFD JSON import changed the semantic model. Refresh dependent analysis stages.',
+        changed_at: new Date().toISOString(),
+      };
+    }
+    renderResults(currentReport);
+    syncDfdHistoryButtons();
+    showToast('Canonical DFD JSON imported and validated', 'success');
+  } catch (err) {
+    showToast('Could not import canonical DFD JSON: ' + err.message, 'error');
+  } finally {
+    const input = document.getElementById('dfd-json-import');
+    if (input) input.value = '';
   }
 }
 

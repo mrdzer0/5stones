@@ -76,15 +76,35 @@ def _source_refs(project: dict) -> list[str]:
     return _unique(refs)
 
 
-def _model_evidence(project: dict) -> list[DfdEvidenceRef]:
+def _model_evidence(project: dict, additional_refs: list[str] | None = None) -> list[DfdEvidenceRef]:
     sources = {
         str(source.get("filename") or source.get("artifact_type") or ""): source
         for source in project.get("artifact_sources", []) or []
         if isinstance(source, dict) and source.get("active", True)
     }
     result = []
+    for source_ref in _source_refs(project):
+        if source_ref.startswith("artifact:"):
+            artifact_id = source_ref.split(":", 1)[1]
+            source = next((item for item in project.get("artifact_sources", []) or []
+                           if isinstance(item, dict) and str(item.get("artifact_id")) == artifact_id), {})
+            result.append(DfdEvidenceRef(
+                id=source_ref,
+                document_id=artifact_id,
+                document_revision=source.get("revision"),
+                document_hash=source.get("content_hash"),
+                locator="Artifact source identity",
+            ))
+        elif source_ref == "manual:context":
+            result.append(DfdEvidenceRef(
+                id=source_ref,
+                document_id="manual-context",
+                locator="Project context",
+            ))
     for item in build_project_evidence_catalog(project)[:96]:
         source = sources.get(str(item.get("source") or ""))
+        if any(existing.id == str(item.get("evidence_id")) for existing in result):
+            continue
         result.append(DfdEvidenceRef(
             id=str(item.get("evidence_id")),
             document_id=str((source or {}).get("artifact_id") or "project-context"),
@@ -93,10 +113,24 @@ def _model_evidence(project: dict) -> list[DfdEvidenceRef]:
             locator=str(item.get("locator") or "Artifact content"),
             excerpt_redacted=str(item.get("snippet") or ""),
         ))
+    for evidence_id in _unique(additional_refs or []):
+        if any(existing.id == evidence_id for existing in result):
+            continue
+        prefix, _, locator = evidence_id.partition(":")
+        result.append(DfdEvidenceRef(
+            id=evidence_id,
+            document_id=prefix or "grounded-model",
+            locator=locator or "Grounded model reference",
+        ))
     return result
 
 
-def _unknown_assertions(nodes: list[DfdNode], flows: list[DfdFlow], stores: dict[str, DfdStoreMetadata]) -> list:
+def _unknown_assertions(
+    nodes: list[DfdNode],
+    data_objects: list[DfdDataObject],
+    flows: list[DfdFlow],
+    stores: dict[str, DfdStoreMetadata],
+) -> list:
     assertions = []
     for node in nodes:
         for field in ("scope", "ownership", "exposure"):
@@ -120,6 +154,18 @@ def _unknown_assertions(nodes: list[DfdNode], flows: list[DfdFlow], stores: dict
                 evidence_refs=flow.evidence_refs,
                 inference_reason="The source does not distinguish request, response, event, read, write, or replication.",
             ))
+    for data_object in data_objects:
+        for field in ("purpose", "recipients", "data_subjects", "identifiers", "sensitivity"):
+            value = getattr(data_object, field)
+            if value in (None, "", []):
+                assertions.append(DfdAssertion(
+                    object_id=data_object.id,
+                    field_path=field,
+                    value=None,
+                    status="unknown",
+                    evidence_refs=data_object.evidence_refs,
+                    inference_reason="Privacy metadata is not documented for this data object.",
+                ))
     for store_id, store in stores.items():
         for field in ("retention", "deletion", "backup"):
             if getattr(store, field) in (None, "unknown"):
@@ -311,6 +357,46 @@ def reconcile_generated_dfd(generated: DfdModel, previous: dict | None) -> tuple
     if generated.semantic_hash == source_baseline:
         return prior, None, False
     return prior, diff_dfd_models(prior, generated), True
+
+
+PROPOSAL_SECTIONS = ("nodes", "data_objects", "flows", "zones", "boundaries", "questions")
+
+
+def apply_dfd_proposal(current: DfdModel, candidate: DfdModel, sections: list[str] | None = None) -> DfdModel:
+    """Apply an explicitly reviewed regeneration proposal.
+
+    Candidate generation never mutates the saved model. This helper is only
+    called by the review endpoint after the caller has explicitly selected all
+    or a subset of semantic sections. Presentation state is always retained
+    from the current model so accepting source changes cannot reset a user's
+    layout or collapsed groups.
+    """
+    selected = set(sections or PROPOSAL_SECTIONS)
+    invalid = selected - set(PROPOSAL_SECTIONS)
+    if invalid:
+        raise ValueError(f"Unsupported proposal sections: {', '.join(sorted(invalid))}")
+
+    updated = current.model_copy(deep=True)
+    candidate_copy = candidate.model_copy(deep=True)
+    for section in selected:
+        setattr(updated, section, getattr(candidate_copy, section))
+
+    candidate_views = {view.id: view for view in candidate.views}
+    current_views = {view.id: view for view in current.views}
+    merged_views = []
+    for view_id, generated_view in candidate_views.items():
+        saved_view = current_views.get(view_id)
+        if saved_view:
+            merged_views.append(generated_view.model_copy(update={
+                "positions": saved_view.positions,
+                "collapsed_groups": saved_view.collapsed_groups,
+                "viewport": saved_view.viewport,
+            }))
+        else:
+            merged_views.append(generated_view)
+    updated.views = merged_views
+    recalculate_boundary_crossings(updated)
+    return updated
 
 
 def build_dfd_model(project: dict, trust_model: dict, previous: dict | None = None) -> DfdModel:
@@ -514,6 +600,12 @@ def build_dfd_model(project: dict, trust_model: dict, previous: dict | None = No
             parent_process_id=process.id,
             element_refs=feature_refs,
             projection_mappings={element_id: [element_id] for element_id in feature_refs},
+            input_flow_ids=sorted(flow.id for flow in related_flows if flow.target_id == process.id),
+            output_flow_ids=sorted(flow.id for flow in related_flows if flow.source_id == process.id),
+            port_mappings={
+                "input": sorted(flow.id for flow in related_flows if flow.target_id == process.id),
+                "output": sorted(flow.id for flow in related_flows if flow.source_id == process.id),
+            },
         ))
 
     questions = []
@@ -563,15 +655,32 @@ def build_dfd_model(project: dict, trust_model: dict, previous: dict | None = No
             reason="Data-store lifecycle metadata is unknown and must not be treated as safe or compliant.",
             source_refs=_source_refs(project),
         ))
+    privacy_metadata_unknown = any(
+        getattr(data_object, field) in (None, "", [])
+        for data_object in data_objects
+        for field in ("purpose", "recipients", "data_subjects", "identifiers", "sensitivity")
+    )
+    if data_objects and privacy_metadata_unknown:
+        questions.append(DfdQuestion(
+            id="question-data-privacy-context",
+            affected_refs=[data_object.id for data_object in data_objects],
+            question="What are the purpose, data subjects, identifiers, recipients, sensitivity, and individual-control expectations for these data objects?",
+            reason="LINDDUN analysis needs documented privacy context and must not treat missing metadata as safe or compliant.",
+            source_refs=_source_refs(project),
+        ))
     model_assertions = [
-        *_unknown_assertions(nodes, dfd_flows, stores),
+        *_unknown_assertions(nodes, data_objects, dfd_flows, stores),
         *_conflict_assertions(project),
     ]
     assertions_by_object: dict[str, list[DfdAssertion]] = defaultdict(list)
     for assertion in model_assertions:
         assertions_by_object[assertion.object_id].append(assertion)
     nodes = [node.model_copy(update={"assertions": assertions_by_object.get(node.id, [])}) for node in nodes]
-    model_evidence = _model_evidence(project)
+    model_evidence = _model_evidence(project, [
+        *(ref for node in nodes for ref in node.evidence_refs),
+        *(ref for flow in dfd_flows for ref in flow.evidence_refs),
+        *(ref for boundary in dfd_boundaries for ref in boundary.evidence_refs),
+    ])
     if any(assertion.status == "conflicting" for assertion in model_assertions):
         questions.append(DfdQuestion(
             id="question-conflicting-sources",
@@ -643,6 +752,27 @@ def validate_dfd_model(model: DfdModel) -> dict:
     zone_set = set(zone_ids)
     boundary_set = set(boundary_ids)
     flow_set = set(flow_ids)
+    evidence_set = {item.id for item in model.evidence}
+
+    def validate_evidence_refs(owner: str, refs: list[str]):
+        for evidence_id in refs:
+            if evidence_id not in evidence_set:
+                errors.append(f"{owner} references missing evidence {evidence_id}")
+
+    for node in model.nodes:
+        validate_evidence_refs(f"Node {node.id}", node.evidence_refs)
+        for assertion in node.assertions:
+            validate_evidence_refs(f"Assertion {assertion.object_id}.{assertion.field_path}", assertion.evidence_refs)
+    for data_object in model.data_objects:
+        validate_evidence_refs(f"Data object {data_object.id}", data_object.evidence_refs)
+    for flow in model.flows:
+        validate_evidence_refs(f"Flow {flow.id}", flow.evidence_refs)
+    for boundary in model.boundaries:
+        validate_evidence_refs(f"Boundary {boundary.id}", boundary.evidence_refs)
+        for assertion in boundary.assertions:
+            validate_evidence_refs(f"Assertion {assertion.object_id}.{assertion.field_path}", assertion.evidence_refs)
+    for assertion in model.assertions:
+        validate_evidence_refs(f"Assertion {assertion.object_id}.{assertion.field_path}", assertion.evidence_refs)
 
     for zone in model.zones:
         if zone.parent_zone_id and zone.parent_zone_id not in zone_set:
@@ -728,6 +858,32 @@ def validate_dfd_model(model: DfdModel) -> dict:
             for mapped_id in mapped_ids:
                 if mapped_id not in set(all_ids):
                     errors.append(f"View {view.id} projection maps to missing element {mapped_id}")
+        if view.kind == "feature":
+            if not view.parent_process_id or view.parent_process_id not in node_by_id:
+                errors.append(f"Feature view {view.id} requires a valid parent process")
+            elif node_by_id[view.parent_process_id].type != "process":
+                errors.append(f"Feature view {view.id} parent {view.parent_process_id} is not a process")
+            if view.parent_process_id and view.parent_process_id not in view.element_refs:
+                errors.append(f"Feature view {view.id} must include its parent process in element_refs")
+            for port_name, flow_ids in {
+                "input": view.input_flow_ids,
+                "output": view.output_flow_ids,
+            }.items():
+                for flow_id in flow_ids:
+                    flow = next((item for item in model.flows if item.id == flow_id), None)
+                    if not flow:
+                        errors.append(f"Feature view {view.id} {port_name} port references missing flow {flow_id}")
+                    elif (
+                        (port_name == "input" and flow.target_id != view.parent_process_id)
+                        or (port_name == "output" and flow.source_id != view.parent_process_id)
+                    ):
+                        errors.append(f"Feature view {view.id} {port_name} port flow {flow_id} does not connect to its parent")
+                    elif flow_id not in view.element_refs:
+                        errors.append(f"Feature view {view.id} port flow {flow_id} is missing from element_refs")
+            if view.port_mappings.get("input", []) != view.input_flow_ids:
+                errors.append(f"Feature view {view.id} input port mapping is inconsistent")
+            if view.port_mappings.get("output", []) != view.output_flow_ids:
+                errors.append(f"Feature view {view.id} output port mapping is inconsistent")
 
     for question in model.questions:
         for affected_id in question.affected_refs:

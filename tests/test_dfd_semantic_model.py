@@ -6,7 +6,7 @@ from unittest.mock import patch
 from fastapi import HTTPException
 
 from backend.models.dfd import DfdBoundary
-from backend.routers.dfd import export_dfd, save_dfd
+from backend.routers.dfd import apply_dfd_regeneration_proposal, export_dfd, import_dfd, save_dfd
 from backend.services.dfd_model_service import (
     build_dfd_model,
     recalculate_boundary_crossings,
@@ -76,8 +76,15 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertTrue(all(flow.source_id in {node.id for node in model.nodes} for flow in model.flows))
         self.assertTrue(all(flow.target_id in {node.id for node in model.nodes} for flow in model.flows))
         self.assertTrue(model.source_refs)
+        evidence_ids = {item.id for item in model.evidence}
+        self.assertTrue(all(ref in evidence_ids for node in model.nodes for ref in node.evidence_refs))
+        self.assertTrue(all(ref in evidence_ids for flow in model.flows for ref in flow.evidence_refs))
         self.assertTrue(model.questions)
-        self.assertTrue(any(view.kind == "feature" and view.parent_process_id for view in model.views))
+        feature_views = [view for view in model.views if view.kind == "feature" and view.parent_process_id]
+        self.assertTrue(feature_views)
+        self.assertTrue(all(view.port_mappings.get("input") == view.input_flow_ids for view in feature_views))
+        self.assertTrue(all(view.port_mappings.get("output") == view.output_flow_ids for view in feature_views))
+        self.assertTrue(any(question.id == "question-data-privacy-context" for question in model.questions))
 
     def test_canonical_operations_split_request_and_response_flows(self):
         project = {
@@ -249,6 +256,26 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertEqual(next(flow for flow in model.flows if flow.id == "F4").crossing_status, "unresolved")
         self.assertTrue(any("unresolved zone membership" in warning for warning in validation["warnings"]))
 
+    def test_feature_port_mapping_mismatch_is_blocking(self):
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        feature = next(view for view in model.views if view.kind == "feature")
+        feature.input_flow_ids = ["F2"]
+        feature.port_mappings["input"] = ["F2"]
+        validation = validate_dfd_model(model)
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(any("input port flow F2" in error for error in validation["errors"]))
+
+    def test_missing_canonical_evidence_reference_is_blocking(self):
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        model.flows[0].evidence_refs = ["EV-MISSING"]
+        validation = validate_dfd_model(model)
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(any("missing evidence EV-MISSING" in error for error in validation["errors"]))
+
     def test_layout_only_save_does_not_increment_semantic_revision(self):
         from backend.models.dfd import DfdModel
         fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
@@ -344,6 +371,39 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertIn("nodes", proposal["sections"])
         self.assertIn(previous.nodes[0].id, proposal["sections"]["nodes"]["changed"])
 
+    def test_reviewed_regeneration_proposal_can_be_applied_without_resetting_layout(self):
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        current = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        recalculate_boundary_crossings(current)
+        context_view = next(view for view in current.views if view.kind == "context")
+        context_view.positions = {"P1": {"x": 240, "y": 180}}
+        candidate = current.model_copy(deep=True)
+        candidate.nodes[0].name = "Registered customer"
+        recalculate_boundary_crossings(candidate)
+        report = {
+            "dfd_model": current.model_dump(),
+            "dfd_validation": validate_dfd_model(current),
+            "dfd_proposal": {"candidate_model": candidate.model_dump()},
+        }
+
+        with (
+            patch("backend.routers.dfd.get_project", return_value={"project_id": "fixture-customer-registration"}),
+            patch("backend.routers.dfd.get_report", return_value=report),
+            patch("backend.routers.dfd.save_report"),
+            patch("backend.routers.dfd.log_event"),
+        ):
+            response = __import__("asyncio").run(apply_dfd_regeneration_proposal(
+                "fixture-customer-registration",
+                {"expected_revision": current.revision, "accept_all": True},
+            ))
+
+        self.assertTrue(response["success"])
+        self.assertEqual(response["model"]["nodes"][0]["name"], "Registered customer")
+        self.assertEqual(response["model"]["views"][0]["positions"]["P1"], {"x": 240, "y": 180})
+        self.assertIsNone(response["proposal"])
+        self.assertEqual(response["model"]["revision"], current.revision + 1)
+        self.assertTrue(report["analysis_stale"]["stages"])
+
     def test_svg_export_is_escaped_and_contains_canonical_elements(self):
         from backend.models.dfd import DfdModel
         fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
@@ -362,6 +422,31 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertIn("F1", content)
         self.assertIn("P1 Memproses registrasi", content)
         self.assertNotIn("<script", content.lower())
+
+    def test_json_export_and_import_round_trip_preserve_canonical_contract(self):
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        recalculate_boundary_crossings(model)
+        report = {"dfd_model": model.model_dump(), "dfd_validation": validate_dfd_model(model)}
+
+        with (
+            patch("backend.routers.dfd.get_project", return_value={"project_id": "fixture-customer-registration"}),
+            patch("backend.routers.dfd.get_report", return_value=report),
+            patch("backend.routers.dfd.save_report"),
+            patch("backend.routers.dfd.log_event"),
+        ):
+            exported = __import__("asyncio").run(export_dfd("fixture-customer-registration", "json"))
+            exported_model = json.loads(exported.body)
+            self.assertEqual(exported_model["schema_version"], "dfd-v1")
+            exported_model["nodes"][0]["description"] = "Reviewed in JSON round trip"
+            imported = __import__("asyncio").run(import_dfd(
+                "fixture-customer-registration",
+                {"model": exported_model, "expected_revision": model.revision},
+            ))
+
+        self.assertTrue(imported["success"])
+        self.assertEqual(imported["model"]["nodes"][0]["description"], "Reviewed in JSON round trip")
+        self.assertEqual(imported["model"]["schema_version"], "dfd-v1")
 
 
 if __name__ == "__main__":
