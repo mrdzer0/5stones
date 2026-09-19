@@ -5,7 +5,7 @@
 - Acuan: `DFD_Feature_AI_Agent_Prompt.md`
 - Status project saat ini: **grounded threat-modeling MVP dengan DFD visualization**.
 - Target akhir: **semantic DFD modeling feature** yang menjadi source of truth untuk canvas, inventory, export, STRIDE, dan LINDDUN.
-- Verifikasi branch saat ini: 103 test Python lulus, 1 regression test JavaScript lulus, syntax/diff checks lulus, dan Playwright smoke-test UI/API lulus.
+- Verifikasi branch saat ini: 109 test Python lulus, 1 regression test JavaScript lulus, syntax/diff checks lulus, dan Playwright smoke-test UI/API lulus.
 - Branch enhanced/revamp: `codex/dfd-threat-model-alignment`.
 - Checkpoint fondasi: `77db35f Add canonical DFD semantic model foundation`.
 - Audit core terbaru: **2026-09-19**, terhadap commit `d6b8111` dan report demo revision 5. Gunakan bagian **Audit core function dan optimasi** serta milestone **C0–C6** sebagai urutan pekerjaan berikutnya; M0–M9 tetap menjadi peta alignment historis.
@@ -504,7 +504,7 @@ M6 verification / definition of done:
 
 ### M7 — Threat traceability, controls, dan stale analysis
 
-Status: **Partial — perlu diperkuat, prioritas P1**
+Status: **Core remediation complete — traceability/stale contract aligned; external execution workflow remains M9**
 
 Progress:
 
@@ -530,8 +530,28 @@ Deliverables:
 
 Catatan status: target focus dan process/question/data-object review sudah diverifikasi
 melalui Playwright pada demo report; privacy assessment dan evidence-reference inspector
-juga ter-render. Controls typed ke location/evidence dan full projection coverage masih
-perlu ditutup.
+juga ter-render. Controls/tests sekarang menampilkan implementation/execution state,
+threat/control/DFD links, dan evidence handoff pada UI.
+
+M7 remediation:
+
+- Control AI menerima daftar valid canonical DFD IDs; output malformed/non-array dikategorikan sebagai stage warning dan masuk fallback terlabel.
+- Fallback control melakukan matching per-threat berbasis kategori/keyword, menggunakan stable catalog IDs, dan tidak lagi menghubungkan control ke `threats[:3]` atau memilih tiga control generik tanpa basis.
+- Control mapping menyimpan `mapping_status`, `mapping_basis`, `control_origin`, `recommendation_status`, `location_ref`, `target_refs`, `analysis_revision`, dan `dfd_revision`.
+- Status `Implemented`, `Partial`, atau `Missing` tidak dianggap fakta implementasi tanpa `verification_evidence_refs`/implementation evidence; status dikembalikan ke `Unknown` dengan alasan review.
+- Test generator memproses seluruh active threat set, memakai safe access untuk legacy records, memiliki template LINDDUN, dan memvalidasi FK `threat_id`, `related_control_id`, DFD refs, serta execution evidence refs.
+- Test scenario menyimpan `execution_status`, `actual_result`, `execution_evidence_refs`, `verification_status`, stable fingerprint/`test_id`, dan active DFD revision.
+- Rerun controls/tests mempertahankan stable control/test identity, review fields, implementation evidence, dan execution result jika semantic fingerprint tetap sama.
+- Propagasi target refs sekarang menambahkan target threat tanpa menghapus explicit control/test location refs.
+- Stale stages hanya dibersihkan setelah stage menghasilkan current validated result; fallback atau invalid output tetap mempertahankan stale warning.
+
+M7 verification / definition of done:
+
+- Tidak ada control fallback fan-out lintas threat yang tidak punya basis mapping.
+- Tidak ada test scenario aktif tanpa threat FK; seluruh test aktif membawa DFD target refs dan status `Not Run` sampai ada execution evidence.
+- Existing/recommended status terpisah, dan implementation status tanpa evidence tidak dipresentasikan sebagai implemented/missing fact.
+- Rerun mempertahankan reviewer/execution state, sementara fallback tidak meng-clear stale.
+- Verification: 109 Python tests, JavaScript syntax/regression, `git diff --check`, dan Playwright pada Controls/Tests (HTTP 200, stable cache `analysis.js?v=20260919i`, evidence/traceability fields ter-render, 0 console error).
 
 ### M8 — Persistence, authorization, export, dan failure states
 

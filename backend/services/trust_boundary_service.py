@@ -1038,24 +1038,25 @@ def propagate_target_refs(report: dict) -> dict:
     """Copy threat targets to controls, tests, and assumptions through threat IDs."""
     threat_by_id = {str(item.get("threat_id")): item for item in (report.get("threats") or []) if item.get("threat_id")}
 
-    def merged_refs(threat_ids) -> list[dict]:
+    def merged_refs(threat_ids, existing=None) -> list[dict]:
         refs = []
         seen = set()
-        for threat_id in threat_ids or []:
-            for item in threat_by_id.get(str(threat_id), {}).get("target_refs") or []:
-                key = (item.get("type"), item.get("id"))
-                if key in seen:
-                    continue
-                seen.add(key)
-                refs.append(item)
+        for item in [*(existing or []), *[ref for threat_id in (threat_ids or []) for ref in threat_by_id.get(str(threat_id), {}).get("target_refs") or []]]:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            key = (item.get("type"), item.get("id"))
+            if key in seen:
+                continue
+            seen.add(key)
+            refs.append(item)
         return refs
 
     for control in report.get("controls") or []:
-        control["target_refs"] = merged_refs(control.get("threat_ids") or [])
+        control["target_refs"] = merged_refs(control.get("threat_ids") or [], control.get("target_refs"))
     for scenario in report.get("test_scenarios") or []:
-        scenario["target_refs"] = merged_refs([scenario.get("threat_id")])
+        scenario["target_refs"] = merged_refs([scenario.get("threat_id")], scenario.get("target_refs"))
     for assumption in report.get("assumptions") or []:
-        assumption["target_refs"] = merged_refs([assumption.get("related_threat_id")])
+        assumption["target_refs"] = merged_refs([assumption.get("related_threat_id")], assumption.get("target_refs"))
     return report
 
 

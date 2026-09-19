@@ -37,6 +37,8 @@ from backend.services.posture_service import (
     enrich_threats,
     merge_deduped_threats,
     replace_framework_threats,
+    reconcile_controls,
+    reconcile_test_scenarios,
     threat_fingerprint,
     normalize_report_evidence,
     build_project_evidence_catalog,
@@ -92,6 +94,29 @@ def _clear_review_visibility_stale(report: dict):
     stale = report.get("analysis_stale")
     if isinstance(stale, dict) and str(stale.get("reason") or "").startswith("A trust-boundary review decision changed"):
         report.pop("analysis_stale", None)
+
+
+def _valid_completed_stages(report: dict, requested: list[str]) -> list[str]:
+    """Return only stages that produced current, validated results."""
+    statuses = report.get("ai_status") if isinstance(report.get("ai_status"), dict) else {}
+    completed = []
+    for stage in requested:
+        if stage == "trust_boundary":
+            dfd_status = statuses.get("dfd_model") or {}
+            boundary_status = statuses.get("trust_boundary") or {}
+            if dfd_status.get("ok") and boundary_status.get("ok"):
+                completed.append(stage)
+            continue
+        if stage == "assumptions":
+            # Assumptions are deterministic, but only count as complete after
+            # the pipeline has materialized the stage output.
+            if isinstance(report.get("assumptions"), list):
+                completed.append(stage)
+            continue
+        status = statuses.get(stage)
+        if isinstance(status, dict) and status.get("ok") is True:
+            completed.append(stage)
+    return completed
 
 
 def _append_analysis_quarantine(report: dict, records: list[dict]):
@@ -562,6 +587,7 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
                 report["threats"],
                 force_fallback=False,
                 data_policy=project.get("data_policy"),
+                dfd_model=report.get("dfd_model"),
             )
             report["ai_status"]["controls"] = {"ok": True, "engine": "AI"}
         except Exception as exc:
@@ -569,25 +595,49 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
                 report["threats"],
                 force_fallback=True,
                 data_policy=project.get("data_policy"),
+                dfd_model=report.get("dfd_model"),
             )
             report["ai_status"]["controls"] = {"ok": False, "error": str(exc), "engine": "fallback"}
-        report["controls"] = enrich_controls(
+        mapped_controls = enrich_controls(
             controls,
             report["threats"],
             project,
             dfd_model=report.get("dfd_model"),
             evidence_ids=evidence_ids,
         )
+        report["controls"] = reconcile_controls(
+            report.get("controls", []),
+            mapped_controls,
+            (report.get("dfd_model") or {}).get("revision"),
+        )
 
     # 5. Test Scenarios
     if "tests" in types and report.get("threats"):
         try:
-            tests = await generate_test_scenarios(report["threats"], project, force_fallback=False)
+            tests = await generate_test_scenarios(
+                report["threats"],
+                project,
+                force_fallback=False,
+                controls=report.get("controls", []),
+                dfd_model=report.get("dfd_model"),
+                evidence_ids=evidence_ids,
+            )
             report["ai_status"]["tests"] = {"ok": True, "engine": "AI"}
         except Exception as exc:
-            tests = await generate_test_scenarios(report["threats"], project, force_fallback=True)
+            tests = await generate_test_scenarios(
+                report["threats"],
+                project,
+                force_fallback=True,
+                controls=report.get("controls", []),
+                dfd_model=report.get("dfd_model"),
+                evidence_ids=evidence_ids,
+            )
             report["ai_status"]["tests"] = {"ok": False, "error": str(exc), "engine": "fallback"}
-        report["test_scenarios"] = tests
+        report["test_scenarios"] = reconcile_test_scenarios(
+            report.get("test_scenarios", []),
+            tests,
+            (report.get("dfd_model") or {}).get("revision"),
+        )
 
     # 6. Missing Info
     if "missing_info" in types:
@@ -628,7 +678,7 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
     # downstream stages stale until the reviewer applies or resolves it.
     _clear_completed_stale_stages(
         report,
-        [] if report.get("dfd_proposal") else types,
+        [] if report.get("dfd_proposal") else _valid_completed_stages(report, types),
     )
 
     stage_duration = round(time.perf_counter() - stage_started_at, 2)

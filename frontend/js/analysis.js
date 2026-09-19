@@ -4299,16 +4299,24 @@ function renderControls(controls) {
       <div style="border:1px solid var(--border);border-radius:var(--r-md);padding:var(--space-4) var(--space-5);background:var(--surface);">
         <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-4);margin-bottom:var(--space-2);">
           <div style="font-weight:600;font-size:0.875rem;">${escHtml(c.name)}</div>
-          <span class="badge ${statusColor[c.status] || 'badge-neutral'}">${escHtml(c.review_status || c.status)}</span>
+          <div style="display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap;justify-content:flex-end;">
+            <span class="badge badge-neutral">${escHtml(c.control_origin === 'existing' ? 'Existing control' : 'Recommendation')}</span>
+            <span class="badge ${statusColor[c.implementation_status] || 'badge-neutral'}">Implementation: ${escHtml(c.implementation_status || 'Unknown')}</span>
+            <span class="badge badge-neutral">Review: ${escHtml(c.review_status || 'Open')}</span>
+          </div>
         </div>
         ${c.implementation_guidance ? `<div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:var(--space-2);">${escHtml(c.implementation_guidance)}</div>` : ''}
         ${c.checklist_items?.length ? `<ul style="margin:var(--space-3) 0;padding-left:18px;font-size:0.8rem;color:var(--text-2);">${c.checklist_items.map(item => `<li style="margin-bottom:4px;">${escHtml(item)}</li>`).join('')}</ul>` : ''}
         ${c.verification_method ? `<div style="font-size:0.78rem;color:var(--green);margin-bottom:var(--space-2);"><strong>Verify:</strong> ${escHtml(c.verification_method)}</div>` : ''}
-        <div style="display:flex;gap:var(--space-4);font-size:0.75rem;color:var(--text-faint);">
+        ${c.implementation_status_reason ? `<div style="font-size:0.75rem;color:var(--orange);margin-bottom:var(--space-2);">${escHtml(c.implementation_status_reason)}</div>` : ''}
+        <div style="display:flex;gap:var(--space-4);font-size:0.75rem;color:var(--text-faint);flex-wrap:wrap;">
           <span>Owner: <strong>${escHtml(c.owner || '—')}</strong></span>
           <span>Priority: <strong>${escHtml(c.priority || 'Medium')}</strong></span>
-          ${c.evidence ? `<span>Evidence: ${escHtml(c.evidence)}</span>` : ''}
+          <span>Threat links: <strong>${escHtml(String((c.threat_ids || []).length))}</strong></span>
+          <span>DFD targets: <strong>${escHtml(String((c.target_refs || []).length))}</strong></span>
+          <span>Verification: <strong>${escHtml(c.verification_status || 'unverified')}</strong></span>
         </div>
+        ${c.evidence ? `<div style="font-size:0.75rem;color:var(--text-muted);margin-top:var(--space-2);">Evidence request: ${escHtml(c.evidence)}</div>` : ''}
       </div>
     `).join('')}
   </div>`;
@@ -4336,7 +4344,14 @@ function renderTests(tests) {
         <div style="margin-bottom:var(--space-3);"><div class="threat-meta-label">Preconditions</div><div style="font-size:0.82rem;color:var(--text-2);margin-top:2px;">${escHtml(t.preconditions || '—')}</div></div>
         ${t.steps?.length ? `<div style="margin-bottom:var(--space-3);"><div class="threat-meta-label">Steps</div><ol style="margin-top:var(--space-2);padding-left:var(--space-5);font-size:0.82rem;color:var(--text-2);">${t.steps.map(s => `<li style="margin-bottom:4px;">${escHtml(s)}</li>`).join('')}</ol></div>` : ''}
         <div><div class="threat-meta-label">Expected Result</div><div style="font-size:0.82rem;color:var(--text-2);margin-top:2px;">${escHtml(t.expected_result || '—')}</div></div>
-        ${t.related_control ? `<div style="margin-top:var(--space-3);font-size:0.78rem;color:var(--green);"><strong>Tests control:</strong> ${escHtml(t.related_control)}</div>` : ''}
+        <div style="display:flex;gap:var(--space-4);flex-wrap:wrap;margin-top:var(--space-3);font-size:0.78rem;color:var(--text-muted);">
+          <span>Execution: <strong>${escHtml(t.execution_status || 'Not Run')}</strong></span>
+          <span>Threat: <strong class="mono">${escHtml(t.threat_id || '—')}</strong></span>
+          ${t.related_control ? `<span style="color:var(--green);"><strong>Control:</strong> ${escHtml(t.related_control)}${t.related_control_id ? ` <span class="mono">(${escHtml(t.related_control_id)})</span>` : ''}</span>` : '<span>Control: <strong>Unassigned</strong></span>'}
+          <span>DFD targets: <strong>${escHtml(String((t.target_refs || []).length))}</strong></span>
+        </div>
+        ${t.evidence_needed?.length ? `<div style="margin-top:var(--space-3);font-size:0.78rem;color:var(--text-muted);"><strong>Evidence needed:</strong> ${escHtml(t.evidence_needed.join(', '))}</div>` : ''}
+        ${t.actual_result ? `<div style="margin-top:var(--space-2);font-size:0.78rem;color:var(--text-muted);"><strong>Actual result:</strong> ${escHtml(t.actual_result)}</div>` : ''}
       </div>
     </div>`;
   }).join('');

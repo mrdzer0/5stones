@@ -1,6 +1,7 @@
 """Control mapping service — maps threats to recommended controls from catalog."""
 from __future__ import annotations
 import uuid
+import re
 from typing import List
 from backend.utils.storage import get_controls_catalog
 from backend.services.ai_service import chat_complete_json, get_active_provider_config
@@ -19,6 +20,7 @@ async def map_controls(
     threats: List[dict],
     force_fallback: bool = False,
     data_policy: str | None = None,
+    dfd_model: dict | None = None,
 ) -> List[dict]:
     """Map recommended controls from catalog or generate them using AI."""
     if not threats:
@@ -38,6 +40,12 @@ async def map_controls(
         f"- Threat: {t.get('threat_category')} - {t.get('threat_description')} (Component: {t.get('component')}) (ID: {t.get('threat_id')}) (DFD targets: {t.get('target_refs') or t.get('affected_refs') or []})"
         for t in threats
     ])
+    valid_dfd_ids = [
+        str(item.get("id"))
+        for collection in ("nodes", "data_objects", "flows", "boundaries")
+        for item in ((dfd_model or {}).get(collection) or [])
+        if isinstance(item, dict) and item.get("id")
+    ]
 
     system_prompt = """You are a senior security engineer mapping threat mitigations (controls).
 Map controls to specific threat IDs. Return one strict JSON object."""
@@ -49,6 +57,9 @@ CONTROL CATALOG:
 
 THREATS:
 {threats_summary}
+
+VALID CANONICAL DFD IDS (use only these in target_refs/location_ref):
+{valid_dfd_ids}
 
 Return one JSON object with a "controls" array:
 {{
@@ -80,56 +91,88 @@ Deduplicate: one control can address multiple threats."""
         max_tokens=3000,
     )
     controls = result if isinstance(result, list) else result.get("controls", [])
-    
+    if not isinstance(controls, list):
+        raise ValueError("Analysis engine returned a controls field that is not an array")
+
+    controls = [
+        item for item in controls
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    ]
     if not controls:
         raise ValueError("Analysis engine returned an empty or invalid controls list")
 
     for c in controls:
         c["control_id"] = c.get("control_id") or str(uuid.uuid4())
+        c["control_origin"] = c.get("control_origin") or "recommended"
+        c["recommendation_status"] = c.get("recommendation_status") or "recommended"
 
     return controls
 
 
 def _catalog_fallback(threats: list, catalog: list) -> list:
-    """Simple keyword-based control matching."""
-    threat_text = " ".join([
-        f"{t.get('threat_category','')} {' '.join(CONTROL_CATEGORY_ALIASES.get(t.get('threat_category'), []))} {t.get('threat_description','')}"
-        for t in threats
-    ]).lower()
+    """Match catalog controls per threat without fan-out or generic guessing."""
+    grouped: dict[str, dict] = {}
 
-    matched = []
-    used_ids = set()
+    def tokens(value: object) -> set[str]:
+        stopwords = {
+            "the", "and", "for", "with", "may", "can", "from", "this", "that",
+            "before", "after", "into", "when", "where", "user", "data", "system",
+            "critical", "endpoint", "request", "response",
+        }
+        return {
+            token for token in re.findall(r"[a-z0-9-]+", str(value or "").lower())
+            if len(token) >= 3 and token not in stopwords
+        }
 
-    for ctrl in catalog:
-        keywords = ctrl.get("tags", []) + [m.lower() for m in ctrl.get("mitigates", [])]
-        if any(k in threat_text for k in keywords):
-            if ctrl["id"] not in used_ids:
-                used_ids.add(ctrl["id"])
-                matched.append({
-                    "control_id": str(uuid.uuid4()),
-                    "name": ctrl["name"],
-                    "description": ctrl["description"],
-                    "implementation_guidance": ctrl.get("implementation_guidance", ""),
-                    "status": "Unknown",
-                    "implementation_status": "Unknown",
-                    "evidence": "Need code review to confirm status",
-                    "owner": ctrl.get("owner", "Backend"),
-                    "threat_ids": [t.get("threat_id", "") for t in threats[:3]],
-                })
-
-    if not matched:
-        # Return first 3 controls as generic fallback
-        for ctrl in catalog[:3]:
-            matched.append({
-                "control_id": str(uuid.uuid4()),
+    for threat in threats or []:
+        if not isinstance(threat, dict) or not threat.get("threat_id"):
+            continue
+        category = str(threat.get("threat_category") or "")
+        aliases = [category, *CONTROL_CATEGORY_ALIASES.get(category, [])]
+        threat_tokens = tokens(" ".join([
+            category,
+            *aliases,
+            str(threat.get("threat_description") or ""),
+            str(threat.get("recommended_control") or ""),
+        ]))
+        ranked = []
+        for ctrl in catalog or []:
+            ctrl_tokens = tokens(" ".join([
+                str(ctrl.get("name") or ""),
+                str(ctrl.get("description") or ""),
+                " ".join(str(value) for value in (ctrl.get("tags") or [])),
+                " ".join(str(value) for value in (ctrl.get("mitigates") or [])),
+            ]))
+            score = len(threat_tokens.intersection(ctrl_tokens))
+            category_match = any(
+                str(value).strip().casefold() in {
+                    str(item).strip().casefold() for item in (ctrl.get("mitigates") or [])
+                }
+                for value in aliases
+                if str(value).strip()
+            )
+            if category_match:
+                score += 5
+            if score:
+                ranked.append((score, ctrl))
+        for _, ctrl in sorted(ranked, key=lambda pair: (-pair[0], str(pair[1].get("id"))))[:3]:
+            key = str(ctrl.get("id") or ctrl.get("name"))
+            item = grouped.setdefault(key, {
+                "control_id": f"CAT-{key}",
+                "catalog_id": key,
                 "name": ctrl["name"],
                 "description": ctrl["description"],
                 "implementation_guidance": ctrl.get("implementation_guidance", ""),
                 "status": "Unknown",
                 "implementation_status": "Unknown",
-                "evidence": "Confirm via code review",
+                "evidence": "Implementation evidence is required before status can be confirmed.",
                 "owner": ctrl.get("owner", "Backend"),
                 "threat_ids": [],
+                "control_origin": "recommended",
+                "recommendation_status": "recommended",
+                "mapping_basis": "catalog_category_and_keyword_match",
             })
+            if threat["threat_id"] not in item["threat_ids"]:
+                item["threat_ids"].append(threat["threat_id"])
 
-    return matched
+    return list(grouped.values())

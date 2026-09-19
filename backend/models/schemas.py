@@ -182,6 +182,15 @@ class Control(BaseModel):
     threat_ids: List[str] = Field(default_factory=list)
     target_refs: List[dict] = Field(default_factory=list)
     location_ref: Optional[dict] = None
+    control_origin: Literal["recommended", "existing", "inferred"] = "recommended"
+    recommendation_status: str = "recommended"
+    mapping_status: Literal["mapped", "unassigned"] = "unassigned"
+    mapping_basis: Optional[str] = None
+    verification_status: Literal["unverified", "evidenced"] = "unverified"
+    implementation_status_reason: Optional[str] = None
+    reported_implementation_status: Optional[str] = None
+    analysis_revision: Optional[int] = None
+    dfd_revision: Optional[int] = None
 
 
 # ── Test Scenario ─────────────────────────────────────────────────────────────
@@ -194,10 +203,18 @@ class TestScenario(BaseModel):
     expected_result: str
     evidence_needed: List[str] = Field(default_factory=list)
     related_control: Optional[str] = None
+    related_control_id: Optional[str] = None
     priority: TestPriority = "Medium"
     owner: Optional[str] = None
     threat_id: Optional[str] = None
     target_refs: List[dict] = Field(default_factory=list)
+    execution_status: Literal["Not Run", "Passed", "Failed", "Blocked"] = "Not Run"
+    actual_result: Optional[str] = None
+    execution_evidence_refs: List[str] = Field(default_factory=list)
+    verification_status: Literal["not_executed", "executed"] = "not_executed"
+    test_fingerprint: Optional[str] = None
+    analysis_revision: Optional[int] = None
+    dfd_revision: Optional[int] = None
 
 
 # ── Assumption ────────────────────────────────────────────────────────────────

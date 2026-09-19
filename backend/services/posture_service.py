@@ -473,6 +473,76 @@ def replace_framework_threats(
     return other_frameworks + replaced, deduped
 
 
+def _stable_item_key(item: dict, fields: tuple[str, ...]) -> str:
+    values = []
+    for field in fields:
+        value = item.get(field)
+        if isinstance(value, list):
+            value = sorted(str(entry) for entry in value)
+        values.append(str(value or ""))
+    refs = item.get("target_refs") or []
+    ref_key = sorted(
+        f"{ref.get('type')}:{ref.get('id')}"
+        for ref in refs
+        if isinstance(ref, dict) and ref.get("id")
+    )
+    raw = "|".join(values + [";".join(ref_key)])
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def reconcile_controls(existing: list, incoming: list, dfd_revision: object = None) -> list:
+    """Keep stable control identity and review/evidence fields across reruns."""
+    old_by_key = {
+        _stable_item_key(item, ("name", "threat_ids")): item
+        for item in (existing or [])
+        if isinstance(item, dict)
+    }
+    result = []
+    for raw in incoming or []:
+        item = dict(raw)
+        key = _stable_item_key(item, ("name", "threat_ids"))
+        old = old_by_key.get(key)
+        if old:
+            for field in (
+                "control_id", "review_status", "review_notes", "reviewed_at",
+                "implementation_status", "status", "verification_evidence_refs",
+                "implementation_evidence_refs", "evidence",
+            ):
+                if field in old and old.get(field) not in (None, [], ""):
+                    item[field] = old[field]
+        if dfd_revision is not None:
+            item["analysis_revision"] = dfd_revision
+            item["dfd_revision"] = dfd_revision
+        result.append(item)
+    return result
+
+
+def reconcile_test_scenarios(existing: list, incoming: list, dfd_revision: object = None) -> list:
+    """Keep stable test identity and execution/review fields across reruns."""
+    old_by_key = {
+        _stable_item_key(item, ("scenario_name", "threat_id", "related_control_id", "related_control")): item
+        for item in (existing or [])
+        if isinstance(item, dict)
+    }
+    result = []
+    for raw in incoming or []:
+        item = dict(raw)
+        key = _stable_item_key(item, ("scenario_name", "threat_id", "related_control_id", "related_control"))
+        old = old_by_key.get(key)
+        if old:
+            for field in (
+                "test_id", "execution_status", "actual_result", "execution_evidence_refs",
+                "review_status", "review_notes", "reviewed_at",
+            ):
+                if field in old and old.get(field) not in (None, [], ""):
+                    item[field] = old[field]
+        if dfd_revision is not None:
+            item["analysis_revision"] = dfd_revision
+            item["dfd_revision"] = dfd_revision
+        result.append(item)
+    return result
+
+
 def enrich_controls(
     controls: Iterable[dict],
     threats: list,
@@ -491,13 +561,19 @@ def enrich_controls(
 
     for control in controls:
         c = dict(control)
+        raw_threat_ids = [str(tid) for tid in (c.get("threat_ids") or [])]
         c["threat_ids"] = [
             str(tid) for tid in (c.get("threat_ids") or [])
             if str(tid) in threat_by_id
         ]
         related = [threat_by_id[tid] for tid in c["threat_ids"]]
-        if not related:
+        if not related and not raw_threat_ids:
             related = _related_threats_by_text(c, threats)
+            c["mapping_basis"] = "semantic_text_inference" if related else "unassigned"
+        elif related:
+            c["mapping_basis"] = "explicit_threat_ids"
+        else:
+            c["mapping_basis"] = "unassigned_invalid_threat_ids"
 
         raw_refs = c.get("target_refs") if isinstance(c.get("target_refs"), list) else []
         target_refs = []
@@ -536,18 +612,37 @@ def enrich_controls(
             location = None
         c["location_ref"] = location or (target_refs[0] if target_refs else None)
         c["priority"] = c.get("priority") or _highest_priority(priorities)
-        c["implementation_status"] = c.get("implementation_status") or c.get("status") or "Unknown"
-        c["status"] = c.get("status") or c["implementation_status"]
         verification_refs = c.get("verification_evidence_refs") if isinstance(c.get("verification_evidence_refs"), list) else []
         c["verification_evidence_refs"] = [
             str(ref) for ref in verification_refs
             if evidence_ids is None or str(ref) in evidence_ids
         ]
+        implementation_refs = c.get("implementation_evidence_refs") if isinstance(c.get("implementation_evidence_refs"), list) else []
+        c["implementation_evidence_refs"] = [
+            str(ref) for ref in implementation_refs
+            if evidence_ids is None or str(ref) in evidence_ids
+        ]
+        implementation_evidence = [*c["verification_evidence_refs"], *c["implementation_evidence_refs"]]
+        reported_status = c.get("implementation_status") or c.get("status") or "Unknown"
+        c["reported_implementation_status"] = reported_status
+        if reported_status != "Unknown" and not implementation_evidence:
+            c["implementation_status"] = "Unknown"
+            c["status"] = "Unknown"
+            c["implementation_status_reason"] = "No implementation evidence reference was supplied; status requires review."
+        else:
+            c["implementation_status"] = reported_status
+            c["status"] = c.get("status") or reported_status
+        c["verification_status"] = "evidenced" if implementation_evidence else "unverified"
         c["control_origin"] = c.get("control_origin") or "recommended"
+        c["recommendation_status"] = c.get("recommendation_status") or "recommended"
+        c["mapping_status"] = "mapped" if c["threat_ids"] else "unassigned"
         c["review_status"] = c.get("review_status") or "Open"
         c["checklist_items"] = c.get("checklist_items") or _control_checklist(c, related, project)
         c["verification_method"] = c.get("verification_method") or _verification_method(c)
         c["control_id"] = c.get("control_id") or str(uuid.uuid4())
+        if isinstance(dfd_model, dict):
+            c["analysis_revision"] = dfd_model.get("revision")
+            c["dfd_revision"] = dfd_model.get("revision")
         enriched.append(c)
 
     return enriched
@@ -838,7 +933,15 @@ def _needs_review(threat: dict) -> bool:
 
 def _related_threats_by_text(control: dict, threats: list) -> list:
     text = _normalize(" ".join([control.get("name", ""), control.get("description", ""), control.get("implementation_guidance", "")]))
-    return [t for t in threats if _normalize(t.get("threat_category", "")) in text or _normalize(t.get("recommended_control", "")) in text][:5]
+    if not text:
+        return []
+    related = []
+    for threat in threats:
+        category = _normalize(threat.get("threat_category", ""))
+        recommendation = _normalize(threat.get("recommended_control", ""))
+        if (category and category in text) or (recommendation and recommendation in text):
+            related.append(threat)
+    return related[:5]
 
 
 def _highest_priority(levels: Iterable[str]) -> str:

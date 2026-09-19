@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from backend.routers.analysis import run_full_analysis
+from backend.routers.analysis import _valid_completed_stages, run_full_analysis
 
 
 class AnalysisRunStateTests(unittest.TestCase):
@@ -68,6 +68,27 @@ class AnalysisRunStateTests(unittest.TestCase):
         self.assertEqual(completed["analysis_run"]["status"], "completed_with_warnings")
         self.assertEqual(completed["analysis_run"]["warning_stages"], ["stride"])
         self.assertTrue(completed["analysis_run"]["retryable"])
+
+    def test_stale_stages_clear_only_after_current_valid_results(self):
+        report = {
+            "dfd_model": {"revision": 9},
+            "assumptions": [],
+            "ai_status": {
+                "trust_boundary": {"ok": True},
+                "dfd_model": {"ok": True},
+                "stride": {"ok": True, "assessment_status": "complete"},
+                "controls": {"ok": False, "engine": "fallback"},
+                "tests": {"ok": False, "engine": "fallback"},
+                "missing_info": {"ok": True},
+            },
+        }
+
+        completed = _valid_completed_stages(
+            report,
+            ["trust_boundary", "stride", "controls", "tests", "missing_info", "assumptions"],
+        )
+
+        self.assertEqual(completed, ["trust_boundary", "stride", "missing_info", "assumptions"])
 
 
 if __name__ == "__main__":

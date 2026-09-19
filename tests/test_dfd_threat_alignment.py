@@ -3,6 +3,8 @@ import unittest
 from backend.services.dfd_model_service import build_dfd_model
 from backend.services.linddun_service import _fallback_linddun
 from backend.services.stride_service import _fallback_stride
+from backend.services.control_service import _catalog_fallback
+from backend.services.test_service import _fallback_scenarios, normalize_test_scenarios
 from backend.services.threat_validation_service import (
     complete_graph_coverage,
     parse_generation_payload,
@@ -10,8 +12,13 @@ from backend.services.threat_validation_service import (
     validate_coverage,
     validate_generated_threats,
 )
-from backend.services.trust_boundary_service import attach_target_refs, build_trust_model
-from backend.services.posture_service import enrich_controls, replace_framework_threats
+from backend.services.trust_boundary_service import attach_target_refs, build_trust_model, propagate_target_refs
+from backend.services.posture_service import (
+    enrich_controls,
+    reconcile_controls,
+    reconcile_test_scenarios,
+    replace_framework_threats,
+)
 from backend.utils.redaction import redact_text
 
 
@@ -255,6 +262,126 @@ class DfdThreatAlignmentTests(unittest.TestCase):
         self.assertEqual(controls[0]["target_refs"], [{"type": "data_flow", "id": flow_id}])
         self.assertEqual(controls[0]["location_ref"]["id"], flow_id)
         self.assertEqual(controls[0]["verification_evidence_refs"], [])
+
+    def test_control_status_cannot_claim_implementation_without_evidence(self):
+        flow_id = self.dfd_model["flows"][0]["id"]
+        threat = {
+            "threat_id": "threat-status-1",
+            "framework": "STRIDE",
+            "threat_category": "Tampering",
+            "threat_description": "Input can be altered.",
+            "target_refs": [{"type": "data_flow", "id": flow_id}],
+            "risk_level": "High",
+        }
+        controls = enrich_controls([{
+            "control_id": "control-status-1",
+            "name": "Input validation",
+            "threat_ids": ["threat-status-1"],
+            "status": "Implemented",
+            "implementation_status": "Implemented",
+            "target_refs": [{"type": "data_flow", "id": flow_id}],
+        }], [threat], self.project, dfd_model=self.dfd_model, evidence_ids=set())
+
+        self.assertEqual(controls[0]["implementation_status"], "Unknown")
+        self.assertEqual(controls[0]["verification_status"], "unverified")
+        self.assertEqual(controls[0]["mapping_status"], "mapped")
+        self.assertEqual(controls[0]["analysis_revision"], self.dfd_model["revision"])
+
+    def test_fallback_controls_map_per_threat_without_first_three_fanout(self):
+        threats = [
+            {"threat_id": "t1", "threat_category": "Denial of Service", "threat_description": "The endpoint can be flooded."},
+            {"threat_id": "t2", "threat_category": "Tampering", "threat_description": "A critical value can be changed."},
+            {"threat_id": "t3", "threat_category": "Repudiation", "threat_description": "Critical actions may lack audit records."},
+            {"threat_id": "t4", "framework": "LINDDUN", "threat_category": "Data Disclosure", "threat_description": "The response may disclose unnecessary personal data."},
+        ]
+        controls = _catalog_fallback(threats, __import__("backend.utils.storage", fromlist=["get_controls_catalog"]).get_controls_catalog())
+
+        self.assertTrue(controls)
+        self.assertTrue(all(set(control["threat_ids"]).issubset({"t1", "t2", "t3", "t4"}) for control in controls))
+        self.assertFalse(any(set(control["threat_ids"]).issuperset({"t1", "t2", "t3"}) for control in controls))
+        self.assertTrue(all(control["control_id"].startswith("CAT-") for control in controls))
+
+    def test_test_scenarios_cover_all_frameworks_and_validate_foreign_keys(self):
+        flow_id = self.dfd_model["flows"][0]["id"]
+        threats = [
+            {
+                "threat_id": f"threat-{index}",
+                "framework": "STRIDE" if index % 2 else "LINDDUN",
+                "threat_category": "Tampering" if index % 2 else "Data Disclosure",
+                "threat_description": "A scenario requiring verification.",
+                "target_refs": [{"type": "data_flow", "id": flow_id}],
+            }
+            for index in range(16)
+        ]
+        controls = [{"control_id": "control-1", "name": "PII Data Minimization and Masking"}]
+        raw = _fallback_scenarios(threats, controls)
+        raw.append({"scenario_name": "dangling", "threat_id": "missing", "preconditions": "x", "steps": ["x"], "expected_result": "x"})
+        scenarios = normalize_test_scenarios(raw, threats, controls, self.dfd_model)
+
+        self.assertEqual(len(scenarios), 16)
+        self.assertTrue(any(item["threat_id"] == "threat-0" for item in scenarios))
+        self.assertTrue(all(item["target_refs"] for item in scenarios))
+        self.assertTrue(all(item["execution_status"] == "Not Run" for item in scenarios))
+        self.assertEqual(len({item["test_id"] for item in scenarios}), 16)
+
+    def test_control_and_test_reruns_preserve_stable_review_and_execution_state(self):
+        old_control = {
+            "control_id": "control-stable",
+            "name": "Server-side validation",
+            "threat_ids": ["threat-stable"],
+            "review_status": "Verified",
+            "implementation_status": "Implemented",
+            "verification_evidence_refs": ["EV-1"],
+        }
+        new_control = {**old_control, "control_id": "provider-control", "review_status": "Open", "implementation_status": "Unknown"}
+        controls = reconcile_controls([old_control], [new_control], self.dfd_model["revision"])
+        old_test = {
+            "test_id": "test-stable",
+            "scenario_name": "Validate input",
+            "threat_id": "threat-stable",
+            "related_control_id": "control-stable",
+            "preconditions": "setup",
+            "steps": ["run"],
+            "expected_result": "blocked",
+            "execution_status": "Passed",
+            "actual_result": "blocked",
+        }
+        new_test = {**old_test, "test_id": "provider-test", "execution_status": "Not Run"}
+        tests = reconcile_test_scenarios([old_test], [new_test], self.dfd_model["revision"])
+
+        self.assertEqual(controls[0]["control_id"], "control-stable")
+        self.assertEqual(controls[0]["review_status"], "Verified")
+        self.assertEqual(tests[0]["test_id"], "test-stable")
+        self.assertEqual(tests[0]["execution_status"], "Passed")
+
+    def test_projection_preserves_explicit_control_and_test_targets(self):
+        flow_id = self.dfd_model["flows"][0]["id"]
+        node_id = self.dfd_model["flows"][0]["target_id"]
+        report = {
+            "threats": [{
+                "threat_id": "threat-projection",
+                "target_refs": [{"type": "data_flow", "id": flow_id}],
+            }],
+            "controls": [{
+                "threat_ids": ["threat-projection"],
+                "target_refs": [{"type": "process", "id": node_id}],
+            }],
+            "test_scenarios": [{
+                "threat_id": "threat-projection",
+                "target_refs": [{"type": "process", "id": node_id}],
+            }],
+        }
+
+        propagate_target_refs(report)
+
+        self.assertEqual(
+            {(ref["type"], ref["id"]) for ref in report["controls"][0]["target_refs"]},
+            {("process", node_id), ("data_flow", flow_id)},
+        )
+        self.assertEqual(
+            {(ref["type"], ref["id"]) for ref in report["test_scenarios"][0]["target_refs"]},
+            {("process", node_id), ("data_flow", flow_id)},
+        )
 
     def test_redaction_protects_structured_and_plain_text_secrets(self):
         content = '{"api_key":"secret-value","raw":"{\\"password\\":\\"pw\\"}","name":"safe"}'
