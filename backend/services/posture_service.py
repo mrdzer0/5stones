@@ -423,6 +423,56 @@ def merge_deduped_threats(existing: list, incoming: list) -> tuple[list, int]:
     return merged, deduped
 
 
+def replace_framework_threats(
+    existing: list,
+    incoming: list,
+    framework: str,
+) -> tuple[list, int]:
+    """Replace one framework snapshot while preserving matching review fields.
+
+    Framework reruns are snapshots of the active DFD revision.  Keeping every
+    old item would expose stale findings, while dropping the whole old list
+    would lose reviewer decisions.  Matching semantic fingerprints therefore
+    inherit review metadata; unmatched old findings are superseded by the new
+    snapshot and remain available through the analysis quarantine/history path.
+    """
+    prior = [
+        dict(item) for item in (existing or [])
+        if isinstance(item, dict) and item.get("framework") == framework
+    ]
+    prior_by_key = {
+        item.get("fingerprint") or threat_fingerprint(item): item
+        for item in prior
+    }
+    normalized_incoming, deduped = merge_deduped_threats([], incoming or [])
+    review_fields = [
+        "status",
+        "owner",
+        "review_notes",
+        "reviewed_at",
+        "needs_human_review",
+        "evidence",
+        "evidence_refs",
+    ]
+    replaced = []
+    for raw in normalized_incoming:
+        item = dict(raw)
+        key = item.get("fingerprint") or threat_fingerprint(item)
+        old = prior_by_key.get(key)
+        if old:
+            for field in review_fields:
+                if field in old and old.get(field) not in (None, [], ""):
+                    item[field] = old[field]
+            item["threat_id"] = old.get("threat_id") or item.get("threat_id")
+        replaced.append(item)
+
+    other_frameworks = [
+        dict(item) for item in (existing or [])
+        if not (isinstance(item, dict) and item.get("framework") == framework)
+    ]
+    return other_frameworks + replaced, deduped
+
+
 def enrich_controls(
     controls: Iterable[dict],
     threats: list,

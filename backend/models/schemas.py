@@ -10,7 +10,9 @@ import uuid
 ConfidenceLevel = Literal["High", "Medium", "Low"]
 RiskLevel = Literal["Critical", "High", "Medium", "Low"]
 ThreatStatus = Literal["Open", "Needs Info", "Reviewed", "Accepted", "Mitigation Planned", "Mitigated", "Verified"]
-DataClassification = Literal["Public", "Internal", "PII", "Financial", "Secret"]
+# Unknown is explicit uncertainty; it must not be coerced into PII or another
+# sensitive class merely because a privacy engine omitted the field.
+DataClassification = Literal["Public", "Internal", "PII", "Financial", "Secret", "Unknown"]
 Framework = Literal["STRIDE", "LINDDUN"]
 StrideCategory = Literal["Spoofing", "Tampering", "Repudiation", "Information Disclosure", "Denial of Service", "Elevation of Privilege"]
 # Canonical labels follow the feature specification. Legacy labels remain

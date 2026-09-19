@@ -5,11 +5,13 @@ from backend.services.linddun_service import _fallback_linddun
 from backend.services.stride_service import _fallback_stride
 from backend.services.threat_validation_service import (
     complete_graph_coverage,
+    parse_generation_payload,
+    quarantine_report_threats,
     validate_coverage,
     validate_generated_threats,
 )
 from backend.services.trust_boundary_service import attach_target_refs, build_trust_model
-from backend.services.posture_service import enrich_controls
+from backend.services.posture_service import enrich_controls, replace_framework_threats
 from backend.utils.redaction import redact_text
 
 
@@ -67,6 +69,7 @@ class DfdThreatAlignmentTests(unittest.TestCase):
         threats, warnings = validate_generated_threats([{
             "threat_category": "Non-compliance",
             "threat_description": "Retention obligation cannot be assessed from the available model.",
+            "affected_refs": [self.dfd_model["flows"][0]["id"]],
             "evidence_refs": [],
         }], "LINDDUN", self.dfd_model, set())
 
@@ -75,6 +78,83 @@ class DfdThreatAlignmentTests(unittest.TestCase):
         self.assertEqual(threats[0]["finding_status"], "needs_context")
         self.assertEqual(threats[0]["status"], "Needs Info")
         self.assertTrue(any("non-compliance requires" in warning for warning in warnings))
+
+    def test_empty_provider_assessment_is_valid_and_does_not_become_fallback(self):
+        result = parse_generation_payload({"threats": [], "coverage": []}, "STRIDE")
+
+        self.assertEqual(list(result), [])
+        self.assertEqual(result.assessment_status, "valid_empty")
+        self.assertEqual(result.response_shape, "object")
+
+    def test_linddun_non_compliance_requires_each_claim_side_independently(self):
+        base = {
+            "threat_category": "Non-compliance",
+            "threat_description": "A retention obligation may not be met.",
+            "affected_refs": [self.dfd_model["flows"][0]["id"]],
+        }
+        with_obligation, warnings = validate_generated_threats(
+            [{**base, "obligation": "Documented retention policy", "evidence_refs": []}],
+            "LINDDUN",
+            self.dfd_model,
+            set(),
+        )
+        with_evidence, _ = validate_generated_threats(
+            [{**base, "obligation": "", "evidence_refs": ["EV-1"]}],
+            "LINDDUN",
+            self.dfd_model,
+            {"EV-1"},
+        )
+
+        self.assertEqual(with_obligation[0]["status"], "Needs Info")
+        self.assertEqual(with_obligation[0]["finding_status"], "needs_context")
+        self.assertEqual(with_evidence[0]["status"], "Needs Info")
+        self.assertTrue(any("both an obligation" in warning for warning in warnings))
+
+    def test_linddun_missing_classification_is_unknown_not_pii(self):
+        threats, _ = validate_generated_threats([{
+            "threat_category": "Data Disclosure",
+            "threat_description": "The recipient may receive excessive data.",
+            "affected_refs": [self.dfd_model["flows"][0]["id"]],
+        }], "LINDDUN", self.dfd_model)
+
+        self.assertEqual(threats[0]["data_classification"], "Unknown")
+
+    def test_stale_or_unpinned_report_threats_are_quarantined(self):
+        flow_id = self.dfd_model["flows"][0]["id"]
+        current = {
+            "threat_id": "current",
+            "framework": "STRIDE",
+            "threat_category": "Tampering",
+            "threat_description": "Current finding.",
+            "affected_refs": [flow_id],
+            "analysis_revision": self.dfd_model["revision"],
+        }
+        stale = {**current, "threat_id": "stale", "analysis_revision": "old-revision"}
+        active, quarantined = quarantine_report_threats([current, stale], self.dfd_model)
+
+        self.assertEqual([item["threat_id"] for item in active], ["current"])
+        self.assertEqual(quarantined[0]["item"]["threat_id"], "stale")
+        self.assertIn("stale_analysis_revision", quarantined[0]["reasons"])
+
+    def test_framework_rerun_preserves_matching_reviewer_decision(self):
+        flow_id = self.dfd_model["flows"][0]["id"]
+        old = {
+            "threat_id": "reviewed-threat",
+            "framework": "STRIDE",
+            "threat_category": "Tampering",
+            "threat_description": "Input can be altered.",
+            "affected_refs": [flow_id],
+            "status": "Confirmed",
+            "review_notes": "Keep this risk visible.",
+            "reviewed_at": "2026-09-19T00:00:00Z",
+        }
+        new = {**old, "threat_id": "new-provider-id", "status": "Open", "review_notes": ""}
+        merged, _ = replace_framework_threats([old], [new], "STRIDE")
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["threat_id"], "reviewed-threat")
+        self.assertEqual(merged[0]["status"], "Confirmed")
+        self.assertEqual(merged[0]["review_notes"], "Keep this risk visible.")
 
     def test_affected_refs_become_semantic_target_refs(self):
         flow_id = self.dfd_model["flows"][0]["id"]

@@ -7,7 +7,7 @@ from backend.services.ai_service import chat_complete_json, get_active_provider_
 from backend.services.posture_service import build_evidence_context
 from backend.services.dfd_model_service import format_dfd_analysis_context
 from backend.services.privacy_service import assess_privacy_metadata
-from backend.services.threat_validation_service import ThreatGenerationResult
+from backend.services.threat_validation_service import parse_generation_payload, ThreatGenerationResult
 
 LINDDUN_SYSTEM_PROMPT = """You are a privacy engineer performing LINDDUN privacy threat modeling.
 Evaluate direct PII and indirect privacy signals such as identifiers, geolocation, images,
@@ -37,7 +37,12 @@ async def generate_linddun_threats(
 ) -> List[dict]:
     """Generate LINDDUN privacy threats from project context."""
     if force_fallback:
-        return ThreatGenerationResult(_fallback_linddun(project, dfd_model), [])
+        return ThreatGenerationResult(
+            _fallback_linddun(project, dfd_model),
+            [],
+            assessment_status="fallback",
+            response_shape="deterministic_fallback",
+        )
 
     cfg = get_active_provider_config(project.get("data_policy"))
 
@@ -78,7 +83,7 @@ evidence of legal non-compliance. A documented lawful basis does not remove othe
 risks such as excessive disclosure, linking, or unawareness.
     Return one JSON object with a "threats" array and a separate "coverage" array:
 {{
-  "coverage": [{{"element_ref": "valid DFD id", "category": "LINDDUN category", "status": "reviewed_no_candidate|candidate_identified|insufficient_information", "reason": "..."}}],
+  "coverage": [{{"element_ref": "valid DFD id", "category": "LINDDUN category", "status": "reviewed_no_candidate|candidate_identified|insufficient_information", "reason": "...", "applicability": "applicable|not_applicable|unknown", "applicability_rationale": "...", "mapping_refs": ["related DFD/data lifecycle IDs"]}}],
   "threats": [
     {{
     "framework": "LINDDUN",
@@ -92,7 +97,7 @@ risks such as excessive disclosure, linking, or unawareness.
     "trust_boundary": "boundary crossed",
     "affected_refs": ["valid DFD node/flow/boundary/data-object IDs only"],
     "asset": "personal data at risk",
-    "data_classification": "PII",
+    "data_classification": "PII|Public|Internal|Financial|Secret|Unknown",
     "threat_description": "specific privacy threat description",
     "abuse_case": "how this privacy risk materializes",
     "recommended_control": "privacy control recommendation",
@@ -120,18 +125,23 @@ risks such as excessive disclosure, linking, or unawareness.
         model=cfg.get("model"),
         max_tokens=3000,
     )
-    coverage = [] if isinstance(result, list) else result.get("coverage", [])
-    threats = result if isinstance(result, list) else result.get("threats", [])
-    if not threats:
-        raise ValueError("Analysis engine returned an empty or invalid LINDDUN threat list")
+    parsed = parse_generation_payload(result, "LINDDUN")
+    threats = list(parsed)
 
     for t in threats:
         t["threat_id"] = t.get("threat_id") or str(uuid.uuid4())
         t["framework"] = "LINDDUN"
         t.setdefault("status", "Open")
-        t.setdefault("data_classification", "PII")
+        # Do not turn an omitted privacy classification into a PII assertion.
+        t.setdefault("data_classification", "Unknown")
 
-    return ThreatGenerationResult(threats, coverage)
+    return ThreatGenerationResult(
+        threats,
+        parsed.coverage,
+        assessment_status=parsed.assessment_status,
+        response_shape=parsed.response_shape,
+        warnings=parsed.generation_warnings,
+    )
 
 
 def _build_privacy_context(project: dict) -> str:

@@ -5,7 +5,7 @@ from typing import List
 from backend.services.ai_service import chat_complete_json, get_active_provider_config
 from backend.services.posture_service import build_evidence_context
 from backend.services.dfd_model_service import format_dfd_analysis_context
-from backend.services.threat_validation_service import ThreatGenerationResult
+from backend.services.threat_validation_service import parse_generation_payload, ThreatGenerationResult
 
 STRIDE_SYSTEM_PROMPT = """You are a senior AppSec engineer performing STRIDE threat modeling.
 Generate realistic, specific threats based on the context. Each threat must be actionable and evidence-based.
@@ -31,7 +31,12 @@ async def generate_stride_threats(
 ) -> List[dict]:
     """Generate STRIDE threats from project context and trust boundaries."""
     if force_fallback:
-        return ThreatGenerationResult(_fallback_stride(project, trust_boundaries, dfd_model), [])
+        return ThreatGenerationResult(
+            _fallback_stride(project, trust_boundaries, dfd_model),
+            [],
+            assessment_status="fallback",
+            response_shape="deterministic_fallback",
+        )
 
     cfg = get_active_provider_config(project.get("data_policy"))
 
@@ -61,7 +66,7 @@ EVIDENCE CATALOG:
     finding for every STRIDE category or every element. Return one JSON object with a
     "threats" array and a separate "coverage" array:
 {{
-  "coverage": [{{"element_ref": "valid DFD id", "category": "STRIDE category", "status": "reviewed_no_candidate|candidate_identified|insufficient_information", "reason": "..."}}],
+  "coverage": [{{"element_ref": "valid DFD id", "category": "STRIDE category", "status": "reviewed_no_candidate|candidate_identified|insufficient_information", "reason": "...", "applicability": "applicable|not_applicable|unknown", "applicability_rationale": "...", "mapping_refs": ["related DFD/process/control IDs"]}}],
   "threats": [
     {{
     "framework": "STRIDE",
@@ -75,7 +80,7 @@ EVIDENCE CATALOG:
     "trust_boundary": "boundary name if applicable",
     "affected_refs": ["valid DFD node/flow/boundary/data-object IDs only"],
     "asset": "what asset is at risk",
-    "data_classification": "Public|Internal|PII|Financial|Secret",
+    "data_classification": "Public|Internal|PII|Financial|Secret|Unknown",
     "threat_description": "specific threat description",
     "abuse_case": "how an attacker would execute this",
     "recommended_control": "primary recommended control",
@@ -102,17 +107,21 @@ EVIDENCE CATALOG:
         model=cfg.get("model"),
         max_tokens=4000,
     )
-    coverage = [] if isinstance(result, list) else result.get("coverage", [])
-    threats = result if isinstance(result, list) else result.get("threats", [])
-    if not threats:
-        raise ValueError("Analysis engine returned an empty or invalid STRIDE threat list")
+    parsed = parse_generation_payload(result, "STRIDE")
+    threats = list(parsed)
 
     for t in threats:
         t["threat_id"] = t.get("threat_id") or str(uuid.uuid4())
         t["framework"] = "STRIDE"
         t.setdefault("status", "Open")
 
-    return ThreatGenerationResult(threats, coverage)
+    return ThreatGenerationResult(
+        threats,
+        parsed.coverage,
+        assessment_status=parsed.assessment_status,
+        response_shape=parsed.response_shape,
+        warnings=parsed.generation_warnings,
+    )
 
 
 def _build_context(project: dict) -> str:

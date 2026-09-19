@@ -97,6 +97,70 @@ class DfdPipelineAcceptanceTests(unittest.TestCase):
         self.assertEqual(saved_reports[-1]["analysis_run"]["status"], "completed")
         self.assertEqual(saved_projects[-1]["analysis_status"], "completed")
 
+    def test_valid_empty_assessment_is_persisted_without_fallback(self):
+        empty_stride = ThreatGenerationResult([], [])
+        empty_linddun = ThreatGenerationResult([], [])
+        saved_reports = []
+        saved_projects = []
+
+        async def assumptions(project, threats):
+            return []
+
+        with (
+            patch("backend.routers.analysis.get_project", return_value=copy.deepcopy(self.project)),
+            patch("backend.routers.analysis.get_report", return_value=None),
+            patch("backend.routers.analysis.save_report", side_effect=lambda project_id, report: saved_reports.append(copy.deepcopy(report))),
+            patch("backend.routers.analysis.save_project", side_effect=lambda project: saved_projects.append(copy.deepcopy(project))),
+            patch("backend.routers.analysis.generate_stride_threats", new=AsyncMock(return_value=empty_stride)),
+            patch("backend.routers.analysis.generate_linddun_threats", new=AsyncMock(return_value=empty_linddun)),
+            patch("backend.routers.analysis.generate_assumptions", new=assumptions),
+        ):
+            result = asyncio.run(run_full_analysis(self.project["project_id"], {
+                "analysis_types": ["trust_boundary", "stride", "linddun", "assumptions"],
+            }))
+
+        self.assertEqual(result["analysis_run"]["status"], "completed")
+        self.assertTrue(result["ai_status"]["stride"]["ok"])
+        self.assertEqual(result["ai_status"]["stride"]["assessment_status"], "valid_empty")
+        self.assertTrue(result["ai_status"]["linddun"]["ok"])
+        self.assertEqual(result["ai_status"]["linddun"]["assessment_status"], "valid_empty")
+        self.assertEqual(result["threats"], [])
+        self.assertFalse(any(item.get("is_fallback") for item in result["threats"]))
+
+    def test_malformed_candidate_is_quarantined_and_not_sent_downstream(self):
+        malformed = ThreatGenerationResult([{
+            "threat_id": "malformed-stride",
+            "framework": "STRIDE",
+            "threat_category": "Tampering",
+            "threat_description": "The provider referenced a non-canonical element.",
+            "affected_refs": ["not-a-dfd-id"],
+        }], [])
+        empty_linddun = ThreatGenerationResult([], [])
+        saved_reports = []
+        saved_projects = []
+
+        async def assumptions(project, threats):
+            return []
+
+        with (
+            patch("backend.routers.analysis.get_project", return_value=copy.deepcopy(self.project)),
+            patch("backend.routers.analysis.get_report", return_value=None),
+            patch("backend.routers.analysis.save_report", side_effect=lambda project_id, report: saved_reports.append(copy.deepcopy(report))),
+            patch("backend.routers.analysis.save_project", side_effect=lambda project: saved_projects.append(copy.deepcopy(project))),
+            patch("backend.routers.analysis.generate_stride_threats", new=AsyncMock(return_value=malformed)),
+            patch("backend.routers.analysis.generate_linddun_threats", new=AsyncMock(return_value=empty_linddun)),
+            patch("backend.routers.analysis.generate_assumptions", new=assumptions),
+        ):
+            result = asyncio.run(run_full_analysis(self.project["project_id"], {
+                "analysis_types": ["trust_boundary", "stride", "linddun", "assumptions"],
+            }))
+
+        self.assertEqual(result["analysis_run"]["status"], "completed_with_warnings")
+        self.assertFalse(result["ai_status"]["stride"]["ok"])
+        self.assertEqual(result["ai_status"]["stride"]["assessment_status"], "invalid")
+        self.assertEqual(result["threats"], [])
+        self.assertTrue(any("invalid_generated_output" in item.get("reasons", []) for item in result["analysis_quarantine"]))
+
 
 if __name__ == "__main__":
     unittest.main()

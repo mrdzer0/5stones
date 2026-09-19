@@ -5,7 +5,7 @@
 - Acuan: `DFD_Feature_AI_Agent_Prompt.md`
 - Status project saat ini: **grounded threat-modeling MVP dengan DFD visualization**.
 - Target akhir: **semantic DFD modeling feature** yang menjadi source of truth untuk canvas, inventory, export, STRIDE, dan LINDDUN.
-- Verifikasi branch saat ini: 96 test Python lulus, 1 regression test JavaScript lulus, syntax/diff checks lulus, dan Playwright smoke-test UI/API lulus.
+- Verifikasi branch saat ini: 103 test Python lulus, 1 regression test JavaScript lulus, syntax/diff checks lulus, dan Playwright smoke-test UI/API lulus.
 - Branch enhanced/revamp: `codex/dfd-threat-model-alignment`.
 - Checkpoint fondasi: `77db35f Add canonical DFD semantic model foundation`.
 - Audit core terbaru: **2026-09-19**, terhadap commit `d6b8111` dan report demo revision 5. Gunakan bagian **Audit core function dan optimasi** serta milestone **C0–C6** sebagai urutan pekerjaan berikutnya; M0–M9 tetap menjadi peta alignment historis.
@@ -445,7 +445,7 @@ Definition of done:
 
 ### M6 — Graph-driven STRIDE dan LINDDUN
 
-Status: **Partial tetapi belum aligned — prioritas P0/P1**
+Status: **Core remediation complete — graph/assessment contract aligned; downstream control/test hardening remains in M7/M9**
 
 Progress:
 
@@ -461,7 +461,14 @@ Progress:
 - Privacy readiness dipersist sebagai `privacy_assessment`; setiap threat LINDDUN diberi privacy context status/missing fields dan metadata yang belum ada menghasilkan `needs_context`, bukan klaim aman atau non-compliance.
 - Prompt LINDDUN menerima lifecycle/privacy assessment dan secara eksplisit membedakan missing information dari legal conclusion.
 - Validasi AI menolak shape list yang salah, memfilter evidence/DFD IDs dangling, menambahkan title/scenario/controls/mitigations, serta menandai `analyzed_revision`.
-- Non-compliance saat obligation dan evidence sama-sama kosong diturunkan menjadi `needs_context`/`Needs Info`. Audit F11 menemukan guard belum mencakup kasus hanya salah satunya hilang; acceptance belum selesai.
+- Provider envelope sekarang membedakan `complete`, `valid_empty`, `partial`, `invalid`, dan `fallback`; `threats=[]` dengan envelope valid tidak lagi berubah menjadi fallback.
+- Candidate tanpa canonical DFD target, candidate dengan seluruh refs dangling, dan mapping refs yang tidak dikenal ditolak serta dicatat pada `analysis_quarantine` dengan summary aman dan alasan.
+- Legacy/stale report threats divalidasi sebelum controls/tests; item tanpa revision aktif, revision berbeda, framework/category/description invalid, atau target DFD hilang dipindahkan ke quarantine tanpa meng-upgrade diam-diam ke revision baru.
+- Rerun mengganti snapshot per framework dan mempertahankan `status`, owner, review notes/time, evidence, dan stable threat ID untuk fingerprint yang sama; framework lain tidak ikut terhapus.
+- Status stage ditulis setelah validasi. Output partial/invalid atau fallback menjadi warning dan tidak dapat meng-clear stale secara implisit; hasil valid empty menjadi assessment yang berhasil tetapi tidak dipromosikan sebagai bukti aman.
+- Coverage sekarang menyimpan `applicability`, rationale untuk `not_applicable`, dan `mapping_refs`; summary memisahkan applicable/not-applicable/unknown applicability.
+- Guard LINDDUN `Non-compliance` membutuhkan obligation **dan** evidence yang valid; salah satu hilang tetap `needs_context`/`Needs Info` dengan assertion `unsubstantiated`.
+- Classification LINDDUN yang tidak disediakan engine dipertahankan sebagai `Unknown`, bukan default `PII`; schema canonical menerima uncertainty tersebut secara eksplisit.
 
 Deliverables STRIDE:
 
@@ -485,6 +492,15 @@ Critical fix pada fallback:
 
 - Fallback STRIDE/LINDDUN tidak boleh menghasilkan generic finding yang terlihat seperti temuan sistem aktual.
 - Jika AI tidak tersedia, hasil minimum harus berupa coverage, assumption, question, atau candidate yang benar-benar tertaut ke model.
+
+M6 verification / definition of done:
+
+- Valid empty STRIDE/LINDDUN tidak memicu fallback dan tetap menghasilkan graph coverage yang terlihat sebagai `insufficient_information` bila coverage belum lengkap.
+- Malformed/stale candidate tidak masuk ke controls, tests, risk summary, atau active threat list; alasan dan item recovery tersimpan di `analysis_quarantine`.
+- Candidate aktif selalu pinned ke canonical DFD revision dan memiliki minimal satu canonical `affected_ref` yang tervalidasi.
+- LINDDUN tidak mengeluarkan klaim non-compliance tanpa dua sisi pembuktian, dan missing classification tidak dipromosikan menjadi PII.
+- Rerun framework tidak kehilangan keputusan reviewer untuk finding semantik yang sama.
+- Verification: 103 Python tests, JavaScript syntax/regression, `git diff --check`, dan Playwright UI/API smoke pada report demo (HTTP 200, DFD/coverage/threat sections ter-render, 0 console error pada sesi baru).
 
 ### M7 — Threat traceability, controls, dan stale analysis
 
@@ -633,6 +649,7 @@ database atas perbaikan data/hasil yang sudah terbukti salah.
 - 2026-09-19: Completed M3 core ownership/scope/exposure remediation: explicit entity/zone/boundary metadata inputs, unknown-preserving classification, nested zone projection, evidence-backed boundary types/rationale, same-ownership-group separation, and word-boundary-safe threat mapping. Verification: 89 Python tests, JavaScript regression, Playwright GET `/dfd` status 200 with `valid=true`, and zero console errors.
 - 2026-09-19: Remediated M4 evidence/assertion/ingestion findings: structured evidence provenance (type/source/topics/document identity/revision/hash), per-source conflicting assertions, multi-conflict preservation during assertion refresh, semantic assertion/question provenance validation, Postman unresolved-variable and saved-response shape metadata, and explicit non-execution warnings for pre-request/test scripts. Verification: 94 Python tests, Python compilation, JavaScript regression, and Playwright API/UI smoke passed with HTTP 200, `dfd-v1`, `valid=true`, and zero console errors.
 - 2026-09-19: Remediated M5 view/layout lifecycle findings: backend projection synchronization for Context/System/Feature views, feature port rebuilding after import/edit/proposal, viewport validation and persistence, restoration of saved System/Feature layouts, layout-only acceptance coverage, and persisted zone collapse/expand projection with flow aggregation. Verification: 96 Python tests, JavaScript regression, syntax/diff checks, and Playwright smoke passed with HTTP 200, `valid=true`, all three DFD levels visible, 13 valid feature views, collapse/expand round-trip restored, and zero console errors.
+- 2026-09-19: Remediated M6 graph-driven STRIDE/LINDDUN findings: valid-empty assessment contract, explicit partial/invalid/fallback stage status, revision-pinned threat quarantine, per-framework snapshot reconciliation with reviewer preservation, strict canonical DFD target validation, LINDDUN applicability/mapping metadata, complete obligation+evidence non-compliance guard, and explicit `Unknown` privacy classification. Verification: 103 Python tests, JavaScript syntax/regression, diff checks, and fresh Playwright smoke passed with HTTP 200, DFD/coverage/threat UI rendered, and zero console errors.
 - 2026-09-19: Created branch `codex/dfd-threat-model-alignment` for rollback-safe enhanced/revamp work.
 - 2026-09-19: Added canonical DFD contract, deterministic model adapter, graph validator, DFD persistence in analysis report, DFD context in STRIDE/LINDDUN prompts, semantic stale detection, and multi-boundary threat mapping regression fix.
 - 2026-09-19: Added secret redaction, AI threat/coverage validation, canonical LINDDUN labels with legacy aliases, direct `affected_refs` mapping, and reviewable DFD-tied fallbacks.

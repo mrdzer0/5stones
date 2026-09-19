@@ -1,6 +1,7 @@
 """Validation and normalization for AI-generated threat candidates."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Iterable
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -23,9 +24,29 @@ class _ThreatEnvelope(BaseModel):
 class ThreatGenerationResult(list):
     """List-compatible AI result that preserves the separate coverage array."""
 
-    def __init__(self, threats=None, coverage=None):
+    def __init__(
+        self,
+        threats=None,
+        coverage=None,
+        *,
+        assessment_status: str | None = None,
+        response_shape: str = "object",
+        warnings: list[str] | None = None,
+    ):
         super().__init__(threats or [])
         self.coverage = coverage if isinstance(coverage, list) else []
+        self.assessment_status = assessment_status or ("valid_empty" if not self else "complete")
+        self.response_shape = response_shape
+        self.generation_warnings = list(warnings or [])
+
+
+VALID_ASSESSMENT_STATUSES = {
+    "complete",
+    "valid_empty",
+    "partial",
+    "fallback",
+    "invalid",
+}
 
 
 STRIDE_CATEGORIES = {
@@ -70,6 +91,37 @@ def _unique(values: Iterable[str]) -> list[str]:
             seen.add(text.casefold())
             result.append(text)
     return result
+
+
+def parse_generation_payload(payload: object, framework: str) -> ThreatGenerationResult:
+    """Validate the provider envelope without treating a valid empty review as failure.
+
+    A provider may return the legacy array shape for compatibility, but new
+    assessments should use the object envelope so coverage remains explicit.
+    Missing or incorrectly typed envelope fields are provider-contract errors;
+    an explicitly empty ``threats`` array is a valid assessment outcome.
+    """
+    if isinstance(payload, list):
+        threats = payload
+        coverage = []
+        response_shape = "legacy_list"
+    elif isinstance(payload, dict) and "threats" in payload:
+        threats = payload.get("threats")
+        coverage = payload.get("coverage", [])
+        response_shape = "object"
+        if not isinstance(threats, list):
+            raise ValueError(f"{framework} response field 'threats' must be an array")
+        if not isinstance(coverage, list):
+            raise ValueError(f"{framework} response field 'coverage' must be an array")
+    else:
+        raise ValueError(f"{framework} response must contain a threats array")
+
+    return ThreatGenerationResult(
+        threats,
+        coverage,
+        assessment_status="valid_empty" if not threats else "complete",
+        response_shape=response_shape,
+    )
 
 
 def _model_ids(dfd_model: dict | None, *, include_review_elements: bool = False) -> set[str]:
@@ -140,6 +192,19 @@ def validate_generated_threats(
                     f"{framework} candidate {index} referenced unknown DFD IDs: {', '.join(invalid_refs)}"
                 )
                 item["affected_refs"] = [ref for ref in item["affected_refs"] if ref in valid_ids]
+            if not item["affected_refs"]:
+                warnings.append(
+                    f"Dropped {framework} candidate {index}: no valid canonical DFD target remained"
+                )
+                continue
+        item["mapping_refs"] = _unique(item.get("mapping_refs") or item.get("interaction_refs") or [])
+        if valid_ids and item["mapping_refs"]:
+            invalid_mapping = [ref for ref in item["mapping_refs"] if ref not in valid_ids]
+            if invalid_mapping:
+                warnings.append(
+                    f"{framework} candidate {index} referenced unknown mapping IDs: {', '.join(invalid_mapping)}"
+                )
+                item["mapping_refs"] = [ref for ref in item["mapping_refs"] if ref in valid_ids]
         item["evidence_refs"] = _unique(item.get("evidence_refs") or [])
         if evidence_ids is not None:
             invalid_evidence = [ref for ref in item["evidence_refs"] if ref not in evidence_ids]
@@ -149,12 +214,22 @@ def validate_generated_threats(
                 )
                 item["evidence_refs"] = [ref for ref in item["evidence_refs"] if ref in evidence_ids]
         if framework == "LINDDUN" and item["threat_category"] == "Non-compliance":
-            if not item.get("obligation") and not item["evidence_refs"]:
+            # Both an explicit obligation and relevant evidence are required
+            # before a non-compliance claim can be treated as a finding.  If
+            # either side is missing, the item is still useful as review
+            # context, but must not read as a legal conclusion.
+            if not str(item.get("obligation") or "").strip() or not item["evidence_refs"]:
                 warnings.append(
-                    f"LINDDUN candidate {index}: non-compliance requires an obligation and relevant evidence"
+                    f"LINDDUN candidate {index}: non-compliance requires both an obligation and relevant evidence"
                 )
                 item["finding_status"] = "needs_context"
                 item["status"] = "Needs Info"
+                item["non_compliance_assertion"] = "unsubstantiated"
+        if framework == "LINDDUN":
+            # Missing classification is uncertainty, not proof that the data
+            # is PII. Keep an explicit value for downstream consumers without
+            # promoting a privacy/security assumption to fact.
+            item["data_classification"] = str(item.get("data_classification") or "Unknown").strip() or "Unknown"
         item["preconditions"] = item.get("preconditions") or []
         item["validation_steps"] = item.get("validation_steps") or []
         if isinstance(dfd_model, dict):
@@ -193,11 +268,28 @@ def validate_coverage(
             continue
         if framework == "LINDDUN":
             category = LINDDUN_CATEGORY_ALIASES.get(category, category)
+        applicability = str(raw.get("applicability") or "unknown").strip().lower()
+        if applicability not in {"applicable", "not_applicable", "unknown"}:
+            warnings.append(f"Dropped coverage item {index}: unsupported applicability {applicability}")
+            continue
+        rationale = str(raw.get("applicability_rationale") or raw.get("rationale") or "").strip()
+        if applicability == "not_applicable" and not rationale:
+            warnings.append(f"Dropped coverage item {index}: not_applicable requires a rationale")
+            continue
+        mapping_refs = _unique(raw.get("mapping_refs") or raw.get("interaction_refs") or [])
+        if valid_ids and mapping_refs:
+            invalid_mapping = [ref for ref in mapping_refs if ref not in valid_ids]
+            if invalid_mapping:
+                warnings.append(f"Dropped unknown mapping IDs from coverage item {index}: {', '.join(invalid_mapping)}")
+                mapping_refs = [ref for ref in mapping_refs if ref in valid_ids]
         accepted.append({
             "element_ref": element_ref,
             "category": category,
             "status": status,
             "reason": str(raw.get("reason") or "").strip(),
+            "applicability": applicability,
+            "applicability_rationale": rationale,
+            "mapping_refs": mapping_refs,
         })
     return accepted, warnings
 
@@ -254,6 +346,9 @@ def complete_graph_coverage(
                 "status": item.get("status") or "insufficient_information",
                 "reason": str(item.get("reason") or "").strip(),
                 "coverage_origin": "analysis_engine",
+                "applicability": item.get("applicability") or "unknown",
+                "applicability_rationale": item.get("applicability_rationale") or "",
+                "mapping_refs": _unique(item.get("mapping_refs") or item.get("interaction_refs") or []),
             }
 
     for element_ref, element_type in element_items:
@@ -269,6 +364,9 @@ def complete_graph_coverage(
                     "status": "candidate_identified",
                     "reason": (current or {}).get("reason") or "A validated threat candidate references this canonical element.",
                     "coverage_origin": "validated_threat_reference",
+                    "applicability": (current or {}).get("applicability") or "applicable",
+                    "applicability_rationale": (current or {}).get("applicability_rationale") or "A validated candidate demonstrates applicability to this element.",
+                    "mapping_refs": (current or {}).get("mapping_refs") or [],
                 }
             elif current:
                 current["coverage_origin"] = current.get("coverage_origin") or "analysis_engine"
@@ -279,6 +377,9 @@ def complete_graph_coverage(
                     "status": "insufficient_information",
                     "reason": "No validated coverage entry was returned for this canonical element/category; absence is not evidence of no threat.",
                     "coverage_origin": "graph_completeness_gap",
+                    "applicability": (current or {}).get("applicability") or "unknown",
+                    "applicability_rationale": (current or {}).get("applicability_rationale") or "Applicability was not established by the analysis engine.",
+                    "mapping_refs": (current or {}).get("mapping_refs") or [],
                 }
 
     items = sorted(accepted.values(), key=lambda item: (item["element_ref"], categories.index(item["category"])))
@@ -289,7 +390,64 @@ def complete_graph_coverage(
         "reviewed_no_candidate": sum(item["status"] == "reviewed_no_candidate" for item in items),
         "candidate_identified": sum(item["status"] == "candidate_identified" for item in items),
         "insufficient_information": sum(item["status"] == "insufficient_information" for item in items),
+        "applicable": sum(item.get("applicability") == "applicable" for item in items),
+        "not_applicable": sum(item.get("applicability") == "not_applicable" for item in items),
+        "unknown_applicability": sum(item.get("applicability") == "unknown" for item in items),
         "complete": bool(items) and all(item["status"] != "insufficient_information" for item in items),
         "element_types": {element_id: element_type for element_id, element_type in element_items},
     }
     return items, summary
+
+
+def quarantine_report_threats(
+    threats: Iterable[dict],
+    dfd_model: dict | None,
+) -> tuple[list[dict], list[dict]]:
+    """Separate legacy, malformed, and stale findings before downstream use.
+
+    The quarantined copy is intentionally retained for reviewer/audit recovery,
+    while only current, revision-pinned findings remain active.  A missing
+    revision is not silently upgraded to the current DFD revision.
+    """
+    model_revision = (dfd_model or {}).get("revision") if isinstance(dfd_model, dict) else None
+    valid_ids = _model_ids(dfd_model)
+    active: list[dict] = []
+    quarantined: list[dict] = []
+    allowed_frameworks = {"STRIDE", "LINDDUN"}
+
+    for index, raw in enumerate(threats or []):
+        reasons: list[str] = []
+        item = dict(raw) if isinstance(raw, dict) else {"raw_type": type(raw).__name__}
+        framework = str(item.get("framework") or "").strip()
+        if framework not in allowed_frameworks:
+            reasons.append("unsupported_framework")
+        if not str(item.get("threat_category") or "").strip():
+            reasons.append("missing_threat_category")
+        if not str(item.get("threat_description") or "").strip():
+            reasons.append("missing_threat_description")
+        revision = item.get("analysis_revision") or item.get("analyzed_revision")
+        if model_revision and revision != model_revision:
+            reasons.append("missing_or_stale_analysis_revision" if not revision else "stale_analysis_revision")
+        refs = item.get("affected_refs") or []
+        typed_refs = item.get("target_refs") or []
+        ref_ids = {
+            str(ref.get("id")) for ref in typed_refs
+            if isinstance(ref, dict) and ref.get("id")
+        }
+        ref_ids.update(str(ref) for ref in refs if ref)
+        if valid_ids and not ref_ids:
+            reasons.append("missing_dfd_refs")
+        elif valid_ids and any(ref_id not in valid_ids for ref_id in ref_ids):
+            reasons.append("dangling_dfd_refs")
+        if reasons:
+            quarantined.append({
+                "quarantine_id": f"threat-{index}-{str(item.get('threat_id') or 'unknown')}",
+                "captured_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "framework": framework or "unknown",
+                "model_revision": model_revision,
+                "reasons": reasons,
+                "item": item,
+            })
+        else:
+            active.append(item)
+    return active, quarantined

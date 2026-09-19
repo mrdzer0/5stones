@@ -19,6 +19,7 @@ from backend.services.linddun_service import generate_linddun_threats
 from backend.services.privacy_service import assess_privacy_metadata, annotate_privacy_threats
 from backend.services.threat_validation_service import (
     complete_graph_coverage,
+    quarantine_report_threats,
     validate_coverage,
     validate_generated_threats,
 )
@@ -35,6 +36,8 @@ from backend.services.posture_service import (
     enrich_assumptions,
     enrich_threats,
     merge_deduped_threats,
+    replace_framework_threats,
+    threat_fingerprint,
     normalize_report_evidence,
     build_project_evidence_catalog,
     update_item_by_id,
@@ -89,6 +92,75 @@ def _clear_review_visibility_stale(report: dict):
     stale = report.get("analysis_stale")
     if isinstance(stale, dict) and str(stale.get("reason") or "").startswith("A trust-boundary review decision changed"):
         report.pop("analysis_stale", None)
+
+
+def _append_analysis_quarantine(report: dict, records: list[dict]):
+    """Persist safe recovery metadata for invalid/stale analysis output."""
+    if not records:
+        return
+    bucket = report.setdefault("analysis_quarantine", [])
+    existing_keys = {
+        (item.get("framework"), tuple(item.get("reasons") or []), item.get("item", {}).get("threat_id"))
+        for item in bucket
+        if isinstance(item, dict)
+    }
+    for record in records:
+        key = (record.get("framework"), tuple(record.get("reasons") or []), record.get("item", {}).get("threat_id"))
+        if key not in existing_keys:
+            bucket.append(record)
+            existing_keys.add(key)
+    report["analysis_quarantine"] = bucket[-100:]
+
+
+def _append_invalid_generation_quarantine(report: dict, framework: str, revision: str | None, raw_items: list):
+    records = []
+    for index, item in enumerate(raw_items):
+        summary = {}
+        if isinstance(item, dict):
+            for key in ("threat_id", "threat_category", "title", "threat_description"):
+                if item.get(key):
+                    summary[key] = str(item[key])[:240]
+        else:
+            summary["raw_type"] = type(item).__name__
+        records.append({
+            "quarantine_id": f"generated-{framework.lower()}-{index}-{uuid.uuid4().hex[:8]}",
+            "captured_at": _utc_now(),
+            "framework": framework,
+            "model_revision": revision,
+            "reasons": ["invalid_generated_output"],
+            "item": summary,
+        })
+    _append_analysis_quarantine(report, records)
+
+
+def _quarantine_superseded_framework_items(
+    report: dict,
+    incoming: list[dict],
+    framework: str,
+    revision: str | None,
+):
+    """Keep omitted prior findings recoverable when a framework snapshot reruns."""
+    incoming_keys = {
+        item.get("fingerprint") or threat_fingerprint(item)
+        for item in incoming or []
+        if isinstance(item, dict)
+    }
+    records = []
+    for item in report.get("threats", []) or []:
+        if not isinstance(item, dict) or item.get("framework") != framework:
+            continue
+        key = item.get("fingerprint") or threat_fingerprint(item)
+        if key in incoming_keys:
+            continue
+        records.append({
+            "quarantine_id": f"superseded-{framework.lower()}-{item.get('threat_id') or uuid.uuid4().hex[:8]}",
+            "captured_at": _utc_now(),
+            "framework": framework,
+            "model_revision": revision,
+            "reasons": ["superseded_by_new_framework_snapshot"],
+            "item": dict(item),
+        })
+    _append_analysis_quarantine(report, records)
 
 
 def _empty_report(project: dict) -> dict:
@@ -315,11 +387,19 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
     # never becomes a safe default or a legal conclusion.
     report["privacy_assessment"] = assess_privacy_metadata(report.get("dfd_model"))
 
+    # Never send legacy or stale findings to controls/tests. Keep a recoverable
+    # copy with explicit reasons instead of silently promoting it to the active
+    # revision.
+    active_threats, quarantined_threats = quarantine_report_threats(
+        report.get("threats", []), report.get("dfd_model")
+    )
+    report["threats"] = active_threats
+    _append_analysis_quarantine(report, quarantined_threats)
+
     # 2. STRIDE
     stride_threats = []
     if "stride" in types:
-        # Clear existing fallback STRIDE threats to avoid duplicates
-        report["threats"] = [t for t in report.get("threats", []) if not (t.get("framework") == "STRIDE" and t.get("is_fallback"))]
+        stride_generation_status = "complete"
         try:
             stride_threats = await generate_stride_threats(
                 project,
@@ -327,7 +407,7 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
                 force_fallback=False,
                 dfd_model=report.get("dfd_model"),
             )
-            report["ai_status"]["stride"] = {"ok": True, "engine": "AI"}
+            stride_engine = "AI"
         except Exception as exc:
             stride_threats = await generate_stride_threats(
                 project,
@@ -335,7 +415,12 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
                 force_fallback=True,
                 dfd_model=report.get("dfd_model"),
             )
-            report["ai_status"]["stride"] = {"ok": False, "error": str(exc), "engine": "fallback"}
+            stride_engine = "fallback"
+            stride_generation_error = str(exc)
+        raw_stride_threats = list(stride_threats or [])
+        stride_generation_status = getattr(stride_threats, "assessment_status", "complete")
+        stride_generation_warnings = list(getattr(stride_threats, "generation_warnings", []))
+        stride_response_shape = getattr(stride_threats, "response_shape", "unknown")
         stride_coverage = getattr(stride_threats, "coverage", [])
         valid_stride_coverage, coverage_warnings = validate_coverage(
             stride_coverage, report.get("dfd_model"), "STRIDE"
@@ -343,7 +428,22 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
         stride_threats, stride_warnings = validate_generated_threats(
             stride_threats, "STRIDE", report.get("dfd_model"), evidence_ids
         )
-        report["ai_status"].setdefault("stride", {})["validation_warnings"] = [*coverage_warnings, *stride_warnings]
+        if raw_stride_threats and not stride_threats:
+            stride_generation_status = "invalid"
+            _append_invalid_generation_quarantine(
+                report, "STRIDE", (report.get("dfd_model") or {}).get("revision"), raw_stride_threats
+            )
+        elif len(stride_threats) < len(raw_stride_threats) and stride_generation_status == "complete":
+            stride_generation_status = "partial"
+        stride_warnings = [*stride_generation_warnings, *stride_warnings]
+        report["ai_status"]["stride"] = {
+            "ok": stride_engine == "AI" and stride_generation_status in {"complete", "valid_empty"} and not stride_warnings,
+            "engine": stride_engine,
+            "assessment_status": stride_generation_status,
+            "response_shape": stride_response_shape,
+            "validation_warnings": [*coverage_warnings, *stride_warnings],
+            **({"error": stride_generation_error} if stride_engine == "fallback" else {}),
+        }
         stride_threats = enrich_threats(stride_threats, project, "STRIDE")
         attach_target_refs(
             stride_threats,
@@ -359,14 +459,23 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
         )
         report.setdefault("analysis_coverage", {})["STRIDE"] = completed_coverage
         report.setdefault("analysis_coverage_summary", {})["STRIDE"] = coverage_summary
+        if stride_generation_status != "invalid":
+            _quarantine_superseded_framework_items(
+                report,
+                stride_threats,
+                "STRIDE",
+                (report.get("dfd_model") or {}).get("revision"),
+            )
+            report["threats"], stride_deduped = replace_framework_threats(
+                report.get("threats", []), stride_threats, "STRIDE"
+            )
+        else:
+            stride_deduped = 0
 
     # 3. LINDDUN
     linddun_threats = []
     if "linddun" in types:
-        # A privacy review is relevant beyond direct PII (for example location,
-        # identifiers, images, inference, and third-party data processing).
-        # Replace the framework results so a rerun cannot leave stale findings.
-        report["threats"] = [t for t in report.get("threats", []) if t.get("framework") != "LINDDUN"]
+        linddun_generation_status = "complete"
         try:
             linddun_threats = await generate_linddun_threats(
                 project,
@@ -374,7 +483,7 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
                 force_fallback=False,
                 dfd_model=report.get("dfd_model"),
             )
-            report["ai_status"]["linddun"] = {"ok": True, "engine": "AI"}
+            linddun_engine = "AI"
         except Exception as exc:
             linddun_threats = await generate_linddun_threats(
                 project,
@@ -382,7 +491,12 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
                 force_fallback=True,
                 dfd_model=report.get("dfd_model"),
             )
-            report["ai_status"]["linddun"] = {"ok": False, "error": str(exc), "engine": "fallback"}
+            linddun_engine = "fallback"
+            linddun_generation_error = str(exc)
+        raw_linddun_threats = list(linddun_threats or [])
+        linddun_generation_status = getattr(linddun_threats, "assessment_status", "complete")
+        linddun_generation_warnings = list(getattr(linddun_threats, "generation_warnings", []))
+        linddun_response_shape = getattr(linddun_threats, "response_shape", "unknown")
         linddun_coverage = getattr(linddun_threats, "coverage", [])
         valid_linddun_coverage, coverage_warnings = validate_coverage(
             linddun_coverage, report.get("dfd_model"), "LINDDUN"
@@ -390,7 +504,22 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
         linddun_threats, linddun_warnings = validate_generated_threats(
             linddun_threats, "LINDDUN", report.get("dfd_model"), evidence_ids
         )
-        report["ai_status"].setdefault("linddun", {})["validation_warnings"] = [*coverage_warnings, *linddun_warnings]
+        if raw_linddun_threats and not linddun_threats:
+            linddun_generation_status = "invalid"
+            _append_invalid_generation_quarantine(
+                report, "LINDDUN", (report.get("dfd_model") or {}).get("revision"), raw_linddun_threats
+            )
+        elif len(linddun_threats) < len(raw_linddun_threats) and linddun_generation_status == "complete":
+            linddun_generation_status = "partial"
+        linddun_warnings = [*linddun_generation_warnings, *linddun_warnings]
+        report["ai_status"]["linddun"] = {
+            "ok": linddun_engine == "AI" and linddun_generation_status in {"complete", "valid_empty"} and not linddun_warnings,
+            "engine": linddun_engine,
+            "assessment_status": linddun_generation_status,
+            "response_shape": linddun_response_shape,
+            "validation_warnings": [*coverage_warnings, *linddun_warnings],
+            **({"error": linddun_generation_error} if linddun_engine == "fallback" else {}),
+        }
         linddun_threats = enrich_threats(linddun_threats, project, "LINDDUN")
         attach_target_refs(
             linddun_threats,
@@ -407,12 +536,24 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
         )
         report.setdefault("analysis_coverage", {})["LINDDUN"] = completed_coverage
         report.setdefault("analysis_coverage_summary", {})["LINDDUN"] = coverage_summary
+        if linddun_generation_status != "invalid":
+            _quarantine_superseded_framework_items(
+                report,
+                linddun_threats,
+                "LINDDUN",
+                (report.get("dfd_model") or {}).get("revision"),
+            )
+            report["threats"], linddun_deduped = replace_framework_threats(
+                report.get("threats", []), linddun_threats, "LINDDUN"
+            )
+        else:
+            linddun_deduped = 0
 
-    all_threats = stride_threats + linddun_threats
-    if all_threats:
-        report["threats"], deduped_count = merge_deduped_threats(report.get("threats", []), all_threats)
-    else:
-        deduped_count = 0
+    # Framework replacement above already reconciles each active snapshot. A
+    # final empty-seed merge only removes duplicate records from legacy reports
+    # without reintroducing stale framework findings.
+    report["threats"], final_deduped = merge_deduped_threats([], report.get("threats", []))
+    deduped_count = final_deduped + locals().get("stride_deduped", 0) + locals().get("linddun_deduped", 0)
 
     # 4. Controls
     if "controls" in types and report.get("threats"):
