@@ -362,6 +362,109 @@ def reconcile_generated_dfd(generated: DfdModel, previous: dict | None) -> tuple
 PROPOSAL_SECTIONS = ("nodes", "data_objects", "flows", "zones", "boundaries", "questions")
 
 
+def preview_dfd_delete_impact(
+    model: DfdModel,
+    element_type: str,
+    element_id: str,
+    threats: list[dict] | None = None,
+) -> dict:
+    """Describe semantic dependencies before a caller attempts deletion."""
+    collections = {
+        "node": model.nodes,
+        "data_object": model.data_objects,
+        "flow": model.flows,
+        "zone": model.zones,
+        "boundary": model.boundaries,
+        "question": model.questions,
+    }
+    items = collections.get(element_type)
+    if items is None:
+        raise ValueError(f"Unsupported DFD element type: {element_type}")
+    element = next((item for item in items if item.id == element_id), None)
+    if element is None:
+        raise KeyError(element_id)
+
+    dependent_flows = []
+    dependent_nodes = []
+    dependent_views = []
+    dependent_boundaries = []
+    dependent_zones = []
+    dependent_questions = []
+    dependent_threats = []
+    for flow in model.flows:
+        if element_type == "node" and (flow.source_id == element_id or flow.target_id == element_id):
+            dependent_flows.append(flow.id)
+        elif element_type == "data_object" and element_id in flow.data_object_ids:
+            dependent_flows.append(flow.id)
+        elif element_type == "boundary" and element_id in flow.boundary_crossings:
+            dependent_flows.append(flow.id)
+    if element_type == "zone":
+        parent_by_zone = {zone.id: zone.parent_zone_id for zone in model.zones}
+
+        def node_in_zone(node: DfdNode) -> bool:
+            for zone_id in node.zone_ids:
+                current = zone_id
+                visited = set()
+                while current and current not in visited:
+                    if current == element_id:
+                        return True
+                    visited.add(current)
+                    current = parent_by_zone.get(current)
+            return False
+
+        dependent_nodes = [node.id for node in model.nodes if node_in_zone(node)]
+        dependent_zones = [zone.id for zone in model.zones if zone.parent_zone_id == element_id]
+        dependent_flows = [
+            flow.id for flow in model.flows
+            if any(node_in_zone(node) for node in model.nodes if node.id in {flow.source_id, flow.target_id})
+        ]
+        dependent_boundaries = [
+            boundary.id for boundary in model.boundaries
+            if element_id in [*boundary.source_zone_ids, *boundary.target_zone_ids]
+        ]
+    if element_type == "boundary":
+        dependent_boundaries = [element_id]
+    if element_type in {"node", "data_object", "flow", "boundary", "zone"}:
+        dependent_views = [
+            view.id for view in model.views
+            if element_id in view.element_refs
+            or element_id in view.projection_mappings
+            or any(element_id in mapped for mapped in view.projection_mappings.values())
+        ]
+        dependent_questions = [
+            question.id for question in model.questions if element_id in question.affected_refs
+        ]
+        dependent_threats = [
+            str(threat.get("threat_id")) for threat in (threats or [])
+            if isinstance(threat, dict)
+            and any(str(ref.get("id")) == element_id for ref in (threat.get("target_refs") or []) if isinstance(ref, dict))
+        ]
+
+    dependencies = (
+        dependent_nodes
+        + dependent_flows
+        + dependent_views
+        + dependent_boundaries
+        + dependent_zones
+        + dependent_questions
+        + dependent_threats
+    )
+    return {
+        "element_type": element_type,
+        "element_id": element_id,
+        "label": getattr(element, "name", getattr(element, "question", element_id)),
+        "safe_to_delete": not dependencies,
+        "dependent_nodes": sorted(set(dependent_nodes)),
+        "dependent_flows": sorted(set(dependent_flows)),
+        "dependent_views": sorted(set(dependent_views)),
+        "dependent_boundaries": sorted(set(dependent_boundaries)),
+        "dependent_zones": sorted(set(dependent_zones)),
+        "dependent_questions": sorted(set(dependent_questions)),
+        "dependent_threats": sorted(set(dependent_threats)),
+        "requires_review": bool(dependent_questions or dependent_threats),
+    }
+
+
 def apply_dfd_proposal(current: DfdModel, candidate: DfdModel, sections: list[str] | None = None) -> DfdModel:
     """Apply an explicitly reviewed regeneration proposal.
 

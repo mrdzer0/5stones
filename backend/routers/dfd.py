@@ -13,6 +13,7 @@ from backend.services.dfd_model_service import (
     PROPOSAL_SECTIONS,
     apply_dfd_proposal,
     diff_dfd_models,
+    preview_dfd_delete_impact,
     recalculate_boundary_crossings,
     validate_dfd_model,
 )
@@ -288,3 +289,24 @@ async def import_dfd(project_id: str, body: dict):
     if not isinstance(body, dict) or not isinstance(body.get("model"), dict):
         raise HTTPException(status_code=422, detail="Request must contain an exported model object")
     return await save_dfd(project_id, body)
+
+
+@router.post("/{project_id}/dfd/impact-preview")
+async def dfd_impact_preview(project_id: str, body: dict):
+    """Return deletion dependencies without mutating the canonical model."""
+    if not get_project(project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    report, model = _load_model(project_id)
+    if not isinstance(body, dict) or not body.get("element_type") or not body.get("element_id"):
+        raise HTTPException(status_code=422, detail="element_type and element_id are required")
+    try:
+        return preview_dfd_delete_impact(
+            model,
+            str(body["element_type"]),
+            str(body["element_id"]),
+            report.get("threats") or [],
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="DFD element not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc

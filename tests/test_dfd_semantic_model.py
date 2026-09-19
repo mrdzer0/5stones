@@ -9,6 +9,7 @@ from backend.models.dfd import DfdBoundary
 from backend.routers.dfd import apply_dfd_regeneration_proposal, export_dfd, import_dfd, save_dfd
 from backend.services.dfd_model_service import (
     build_dfd_model,
+    preview_dfd_delete_impact,
     recalculate_boundary_crossings,
     reconcile_generated_dfd,
     validate_dfd_model,
@@ -447,6 +448,26 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertTrue(imported["success"])
         self.assertEqual(imported["model"]["nodes"][0]["description"], "Reviewed in JSON round trip")
         self.assertEqual(imported["model"]["schema_version"], "dfd-v1")
+
+    def test_delete_impact_preview_surfaces_semantic_dependents(self):
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        recalculate_boundary_crossings(model)
+        threats = [{
+            "threat_id": "threat-node-p1",
+            "target_refs": [{"type": "process", "id": "P1"}],
+        }]
+
+        node_impact = preview_dfd_delete_impact(model, "node", "P1", threats)
+        self.assertFalse(node_impact["safe_to_delete"])
+        self.assertIn("F1", node_impact["dependent_flows"])
+        self.assertIn("view-system", node_impact["dependent_views"])
+        self.assertIn("threat-node-p1", node_impact["dependent_threats"])
+
+        zone_impact = preview_dfd_delete_impact(model, "zone", "zone-organization", threats)
+        self.assertFalse(zone_impact["safe_to_delete"])
+        self.assertEqual(set(zone_impact["dependent_nodes"]), {"P1", "P2", "D1"})
+        self.assertIn("zone-restricted-data", zone_impact["dependent_zones"])
 
 
 if __name__ == "__main__":

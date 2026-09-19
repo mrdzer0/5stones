@@ -1782,6 +1782,10 @@ function renderDfdInventory(report) {
       type: 'flow', id: flow.id, displayId: flow.display_id, name: flow.name,
       detail: `${nodeById.get(String(flow.source_id))?.name || flow.source_id} → ${nodeById.get(String(flow.target_id))?.name || flow.target_id}`,
     })),
+    ...(model.zones || []).map(zone => ({
+      type: 'zone', id: zone.id, displayId: zone.display_id, name: zone.name,
+      detail: `${zone.parent_zone_id ? `child of ${zone.parent_zone_id}` : 'top-level'} · ${zone.knowledge_status}`,
+    })),
     ...(model.boundaries || []).map(boundary => ({
       type: 'boundary', id: boundary.id, displayId: boundary.display_id, name: boundary.name,
       detail: `${boundary.status} · ${(boundary.types || []).join(', ') || 'type unknown'}`,
@@ -1838,6 +1842,11 @@ function focusDfdElement(type, id) {
       if (boundary) showBoundaryInspector(boundary);
       return;
     }
+    if (type === 'zone') {
+      const zone = (model.zones || []).find(item => String(item.id) === String(id));
+      if (zone) showZoneInspector(zone);
+      return;
+    }
     const question = (model.questions || []).find(item => String(item.id) === String(id));
     if (question) showDfdQuestionInspector(question);
   }, 120);
@@ -1852,12 +1861,76 @@ function showBoundaryInspector(boundary) {
     targetMatches(threat, boundary.id, 'trust_boundary')
   ));
   title.textContent = `${boundary.display_id || boundary.id} ${boundary.name}`;
+  const types = ['network', 'identity', 'privilege', 'tenant', 'organization', 'unknown'];
   body.innerHTML = `
-    <div class="node-model-meta">${escHtml(boundary.status)} · ${(boundary.types || []).map(escHtml).join(', ') || 'boundary type unknown'} · ${escHtml(boundary.transition_scope || 'unknown')}</div>
-    <p class="text-sm text-muted">${escHtml(boundary.rationale || 'No rationale has been documented.')}</p>
+    <form class="dfd-node-editor" data-dfd-boundary-editor>
+      <div class="node-model-meta">${escHtml(boundary.display_id || boundary.id)} · ${escHtml(boundary.source_zone_ids.join(' → ') || 'zone transition unknown')}</div>
+      <label class="form-label">Boundary name<input class="form-input" data-dfd-boundary-field="name" value="${escHtml(boundary.name)}" maxlength="180" required /></label>
+      <div class="dfd-editor-grid">
+        <label class="form-label">Status<select class="form-select" data-dfd-boundary-field="status">${['candidate', 'confirmed', 'rejected', 'unresolved'].map(value => `<option value="${value}" ${boundary.status === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
+        <label class="form-label">Transition<select class="form-select" data-dfd-boundary-field="transition_scope">${['zone', 'logical', 'mixed', 'unknown'].map(value => `<option value="${value}" ${boundary.transition_scope === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
+      </div>
+      <label class="form-label">Boundary types<select class="form-select" data-dfd-boundary-field="types" multiple size="4">${types.map(value => `<option value="${value}" ${(boundary.types || []).includes(value) ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
+      <label class="form-label">Rationale<textarea class="form-input" data-dfd-boundary-field="rationale" rows="3" maxlength="1000">${escHtml(boundary.rationale || '')}</textarea></label>
+      <button type="button" class="btn btn-primary btn-sm" data-save-dfd-boundary>Save boundary metadata</button>
+    </form>
     <div class="inspector-findings"><strong>${threats.length} mapped finding${threats.length === 1 ? '' : 's'}</strong></div>`;
+  body.querySelector('[data-save-dfd-boundary]')?.addEventListener('click', () => saveCanonicalBoundary(boundary.id, body));
   inspector.style.display = 'block';
   inspector.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+async function saveCanonicalBoundary(boundaryId, body) {
+  const model = cloneCanonicalDfdModel(currentReport.dfd_model);
+  const boundary = (model.boundaries || []).find(item => String(item.id) === String(boundaryId));
+  if (!boundary) return;
+  const read = field => body.querySelector(`[data-dfd-boundary-field="${field}"]`);
+  boundary.name = read('name')?.value.trim();
+  boundary.status = read('status')?.value || 'unresolved';
+  boundary.transition_scope = read('transition_scope')?.value || 'unknown';
+  boundary.types = [...(read('types')?.selectedOptions || [])].map(option => option.value);
+  boundary.rationale = read('rationale')?.value.trim() || null;
+  const button = body.querySelector('[data-save-dfd-boundary]');
+  if (button) button.disabled = true;
+  await persistCanonicalDfdModel(model, { message: 'DFD boundary metadata saved' });
+}
+
+function showZoneInspector(zone) {
+  const inspector = document.getElementById('node-inspector');
+  const title = document.getElementById('inspector-title');
+  const body = document.getElementById('inspector-body');
+  if (!inspector || !title || !body) return;
+  const model = currentReport?.dfd_model;
+  const parentOptions = (model?.zones || []).filter(item => item.id !== zone.id).map(item =>
+    `<option value="${escHtml(item.id)}" ${item.id === zone.parent_zone_id ? 'selected' : ''}>${escHtml(`${item.display_id} ${item.name}`)}</option>`
+  ).join('');
+  title.textContent = `${zone.display_id || zone.id} ${zone.name}`;
+  body.innerHTML = `
+    <form class="dfd-node-editor" data-dfd-zone-editor>
+      <div class="node-model-meta">${escHtml(zone.id)} · ${zone.parent_zone_id ? `parent ${escHtml(zone.parent_zone_id)}` : 'top-level zone'}</div>
+      <label class="form-label">Zone name<input class="form-input" data-dfd-zone-field="name" value="${escHtml(zone.name)}" maxlength="180" required /></label>
+      <label class="form-label">Parent zone<select class="form-select" data-dfd-zone-field="parent_zone_id"><option value="">Top-level</option>${parentOptions}</select></label>
+      <label class="form-label">Description<textarea class="form-input" data-dfd-zone-field="description" rows="2" maxlength="1000">${escHtml(zone.description || '')}</textarea></label>
+      <label class="form-label">Trust assumptions<textarea class="form-input" data-dfd-zone-field="trust_assumptions" rows="2" placeholder="One assumption per line">${escHtml((zone.trust_assumptions || []).join('\n'))}</textarea></label>
+      <button type="button" class="btn btn-primary btn-sm" data-save-dfd-zone>Save zone metadata</button>
+    </form>`;
+  body.querySelector('[data-save-dfd-zone]')?.addEventListener('click', () => saveCanonicalZone(zone.id, body));
+  inspector.style.display = 'block';
+  inspector.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+async function saveCanonicalZone(zoneId, body) {
+  const model = cloneCanonicalDfdModel(currentReport.dfd_model);
+  const zone = (model.zones || []).find(item => String(item.id) === String(zoneId));
+  if (!zone) return;
+  const read = field => body.querySelector(`[data-dfd-zone-field="${field}"]`);
+  zone.name = read('name')?.value.trim();
+  zone.parent_zone_id = read('parent_zone_id')?.value || null;
+  zone.description = read('description')?.value.trim() || null;
+  zone.trust_assumptions = (read('trust_assumptions')?.value || '').split('\n').map(value => value.trim()).filter(Boolean);
+  const button = body.querySelector('[data-save-dfd-zone]');
+  if (button) button.disabled = true;
+  await persistCanonicalDfdModel(model, { message: 'DFD zone metadata saved' });
 }
 
 function showDfdQuestionInspector(question) {
@@ -1873,6 +1946,44 @@ function showDfdQuestionInspector(question) {
     ${question.source_refs?.length ? `<div class="text-xs text-muted">Sources: ${question.source_refs.map(escHtml).join(', ')}</div>` : ''}`;
   inspector.style.display = 'block';
   inspector.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function focusThreatTargets(threatId) {
+  const threat = (currentReport?.threats || []).find(item => String(item.threat_id) === String(threatId));
+  const model = currentReport?.dfd_model;
+  if (!threat || !model) return;
+  const refs = targetRefs(threat);
+  const nodeIds = new Set();
+  const flowIds = new Set();
+  const dataObjectIds = new Set();
+  const boundaryIds = new Set();
+  refs.forEach(ref => {
+    if (['entity', 'process', 'data_store'].includes(ref.type)) nodeIds.add(String(ref.id));
+    if (ref.type === 'data_flow') flowIds.add(String(ref.id));
+    if (ref.type === 'data_object') dataObjectIds.add(String(ref.id));
+    if (ref.type === 'trust_boundary') boundaryIds.add(String(ref.id));
+  });
+  (model.flows || []).forEach(flow => {
+    if ((flow.data_object_ids || []).some(id => dataObjectIds.has(String(id)))
+      || (flow.boundary_crossings || []).some(id => boundaryIds.has(String(id)))) {
+      flowIds.add(String(flow.id));
+    }
+  });
+  switchTab('diagram');
+  window.setTimeout(() => {
+    if (!diagramNetwork) return;
+    const visibleNodeIds = [...nodeIds].filter(id => diagramNetwork.body.data.nodes.get(id));
+    const visibleFlowIds = [...flowIds].filter(id => diagramNetwork.body.data.edges.get(id));
+    diagramNetwork.selectNodes(visibleNodeIds);
+    diagramNetwork.selectEdges(visibleFlowIds);
+    const firstNode = visibleNodeIds.length ? diagramNetwork.body.data.nodes.get(visibleNodeIds[0]) : null;
+    const firstFlow = visibleFlowIds.length ? diagramNetwork.body.data.edges.get(visibleFlowIds[0]) : null;
+    if (firstNode) showNodeInspector(firstNode);
+    else if (firstFlow) showFlowInspector(firstFlow);
+    if (!visibleNodeIds.length && !visibleFlowIds.length) {
+      showToast('This threat has no visible canonical target references', 'warn');
+    }
+  }, 120);
 }
 
 function renderCanonicalDiagram(report, viewKind = 'context') {
@@ -3130,6 +3241,7 @@ function renderThreats(containerId, prefix, threats) {
           <div class="threat-meta-item"><div class="threat-meta-label">Review Status</div><div class="threat-meta-value">${statusSelectHtml(t)}</div></div>
         </div>
         ${evidenceCardHtml(t)}
+        ${targetRefs(t).length ? `<button type="button" class="btn btn-secondary btn-sm" data-focus-threat="${escHtml(t.threat_id || '')}" style="margin-top:var(--space-3);">Focus affected DFD elements (${targetRefs(t).length})</button>` : '<div class="text-xs text-muted" style="margin-top:var(--space-3);">No canonical DFD target reference is available for this candidate.</div>'}
         ${t.confidence_reason ? `<div style="margin-top:var(--space-2);font-size:0.78rem;color:var(--text-muted);"><strong>Confidence reason:</strong> ${escHtml(t.confidence_reason)}</div>` : ''}
         ${t.abuse_case ? `<div style="margin-top:var(--space-4);padding:var(--space-3) var(--space-4);background:var(--accent-light);border:1px solid var(--accent-border);border-radius:var(--r-md);"><div class="threat-meta-label" style="color:var(--accent);">Abuse Case</div><div style="font-size:0.82rem;color:var(--text-2);margin-top:2px;">${escHtml(t.abuse_case)}</div></div>` : ''}
         ${t.recommended_control ? `<div style="margin-top:var(--space-3);padding:var(--space-3) var(--space-4);background:var(--green-light);border:1px solid var(--green-border);border-radius:var(--r-md);"><div class="threat-meta-label" style="color:var(--green);">Recommended Control</div><div style="font-size:0.82rem;color:var(--text-2);margin-top:2px;">${escHtml(t.recommended_control)}</div></div>` : ''}
@@ -3138,6 +3250,12 @@ function renderThreats(containerId, prefix, threats) {
       </div>
     </div>`;
   }).join('');
+  el.querySelectorAll('[data-focus-threat]').forEach(button => {
+    button.addEventListener('click', event => {
+      event.stopPropagation();
+      focusThreatTargets(button.dataset.focusThreat);
+    });
+  });
 }
 
 function statusSelectHtml(t) {
