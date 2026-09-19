@@ -14,6 +14,7 @@ from backend.services.trust_boundary_service import (
 from backend.services.dfd_model_service import build_dfd_model, validate_dfd_model
 from backend.services.stride_service import generate_stride_threats
 from backend.services.linddun_service import generate_linddun_threats
+from backend.services.threat_validation_service import validate_coverage, validate_generated_threats
 from backend.services.control_service import map_controls
 from backend.services.test_service import (
     generate_test_scenarios,
@@ -149,7 +150,7 @@ async def run_full_analysis(project_id: str, body: dict = None):
                 "warnings": [*trust_model["warnings"], *review_warnings],
             }
             report["trust_boundaries"] = reviewed_boundaries
-            attach_target_refs(report.get("threats"), reviewed_boundaries, trust_model["views"])
+            attach_target_refs(report.get("threats"), reviewed_boundaries, trust_model["views"], report.get("dfd_model"))
             current_signature = _active_topology_signature(reviewed_boundaries)
             if previous_signature and current_signature != previous_signature:
                 _mark_analysis_stale(
@@ -203,8 +204,20 @@ async def run_full_analysis(project_id: str, body: dict = None):
                 dfd_model=report.get("dfd_model"),
             )
             report["ai_status"]["stride"] = {"ok": False, "error": str(exc), "engine": "fallback"}
+        stride_coverage = getattr(stride_threats, "coverage", [])
+        valid_stride_coverage, coverage_warnings = validate_coverage(stride_coverage, report.get("dfd_model"))
+        stride_threats, stride_warnings = validate_generated_threats(
+            stride_threats, "STRIDE", report.get("dfd_model")
+        )
+        report.setdefault("analysis_coverage", {})["STRIDE"] = valid_stride_coverage
+        report["ai_status"].setdefault("stride", {})["validation_warnings"] = [*coverage_warnings, *stride_warnings]
         stride_threats = enrich_threats(stride_threats, project, "STRIDE")
-        attach_target_refs(stride_threats, report.get("trust_boundaries", trust_boundaries), report.get("trust_model", {}).get("views"))
+        attach_target_refs(
+            stride_threats,
+            report.get("trust_boundaries", trust_boundaries),
+            report.get("trust_model", {}).get("views"),
+            report.get("dfd_model"),
+        )
 
     # 3. LINDDUN
     linddun_threats = []
@@ -229,8 +242,20 @@ async def run_full_analysis(project_id: str, body: dict = None):
                 dfd_model=report.get("dfd_model"),
             )
             report["ai_status"]["linddun"] = {"ok": False, "error": str(exc), "engine": "fallback"}
+        linddun_coverage = getattr(linddun_threats, "coverage", [])
+        valid_linddun_coverage, coverage_warnings = validate_coverage(linddun_coverage, report.get("dfd_model"))
+        linddun_threats, linddun_warnings = validate_generated_threats(
+            linddun_threats, "LINDDUN", report.get("dfd_model")
+        )
+        report.setdefault("analysis_coverage", {})["LINDDUN"] = valid_linddun_coverage
+        report["ai_status"].setdefault("linddun", {})["validation_warnings"] = [*coverage_warnings, *linddun_warnings]
         linddun_threats = enrich_threats(linddun_threats, project, "LINDDUN")
-        attach_target_refs(linddun_threats, report.get("trust_boundaries", trust_boundaries), report.get("trust_model", {}).get("views"))
+        attach_target_refs(
+            linddun_threats,
+            report.get("trust_boundaries", trust_boundaries),
+            report.get("trust_model", {}).get("views"),
+            report.get("dfd_model"),
+        )
 
     all_threats = stride_threats + linddun_threats
     if all_threats:

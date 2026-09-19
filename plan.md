@@ -6,7 +6,8 @@
 - Status project saat ini: **grounded threat-modeling MVP dengan DFD visualization**.
 - Target akhir: **semantic DFD modeling feature** yang menjadi source of truth untuk canvas, inventory, export, STRIDE, dan LINDDUN.
 - Test baseline saat analisis dibuat: 24 test Python lulus dan 1 regression test JavaScript lulus.
-- Belum ada perubahan implementasi pada baseline ini; file ini menjadi rencana kerja dan checklist progress.
+- Branch enhanced/revamp: `codex/dfd-threat-model-alignment`.
+- Checkpoint fondasi: `77db35f Add canonical DFD semantic model foundation`.
 
 ## Goal
 
@@ -52,6 +53,7 @@ Progress pada branch `codex/dfd-threat-model-alignment`:
 - `backend/models/dfd.py` menambahkan canonical typed DFD contract.
 - `backend/services/dfd_model_service.py` menambahkan deterministic adapter dan semantic hash/revision.
 - Analysis report menyimpan `dfd_model` dan `dfd_validation`.
+- Model DFD menjadi input prompt STRIDE/LINDDUN dan membawa revision/hash untuk stale detection.
 
 Deliverables:
 
@@ -154,6 +156,8 @@ Sudah ada:
 - Artifact hash/revision.
 - Verifikasi snippet evidence terhadap source content.
 - Reconciliation dan conflict record sederhana.
+- Redaction secret diterapkan pada structured parser, generic AI parser, dan evidence/use-case verification.
+- Fallback parser juga memakai konten redacted ketika provider AI gagal.
 
 Yang perlu ditambahkan:
 
@@ -205,7 +209,10 @@ Progress:
 
 - Prompt STRIDE/LINDDUN sekarang menerima canonical DFD node, data object, flow, boundary, revision, dan open questions.
 - Prompt meminta affected refs berbasis stable DFD IDs serta coverage terpisah.
-- Output schema validation, taxonomy migration, dan fallback semantics masih harus dikerjakan.
+- Output candidate divalidasi terhadap taxonomy dan current DFD IDs; dangling refs dihapus dengan warning.
+- Coverage AI disimpan terpisah pada `analysis_coverage` setelah validasi.
+- Taxonomy LINDDUN canonical digunakan untuk output baru dengan alias legacy untuk kompatibilitas report lama.
+- Fallback sekarang menghasilkan satu candidate yang `Needs Info`, `candidate_only`, dan tertaut ke flow DFD pertama bila tersedia.
 
 Deliverables STRIDE:
 
@@ -238,6 +245,7 @@ Progress:
 
 - Perubahan semantic DFD hash/revision sekarang menandai dependent analysis stages stale.
 - Mapping threat yang tidak terbukti tetap `unmapped`.
+- `affected_refs` dari AI dipetakan langsung ke typed semantic `target_refs` sebelum heuristic matching.
 
 Deliverables:
 
@@ -306,20 +314,20 @@ Acceptance test groups:
 |---|---|
 | Artifact ingestion dan basic evidence | Partial / cukup baik |
 | Postman nested/inherited auth | Partial / sudah ada |
-| Canonical semantic DFD | Belum ada |
-| Stable typed node/flow model | Belum ada |
-| Ownership/scope/exposure separation | Belum ada |
+| Canonical semantic DFD | Partial: contract, adapter, persistence, hash/revision, validator |
+| Stable typed node/flow model | Partial: typed node/flow/data/boundary refs tersedia; editor belum ada |
+| Ownership/scope/exposure separation | Partial: field dan unknown/question tersedia; review/edit semantics belum ada |
 | Nested and logical boundary | Belum ada |
 | Same-zone analysis | Belum terpenuhi |
-| Threat traceability | Partial, ada bug multi-boundary |
-| STRIDE coverage model | Belum ada |
-| LINDDUN PRO-aligned model | Belum ada |
+| Threat traceability | Partial: explicit DFD refs, unmapped state, cross-boundary fan-out fixed |
+| STRIDE coverage model | Partial: prompt, coverage persistence, output validation; deterministic full coverage belum ada |
+| LINDDUN PRO-aligned model | Partial: canonical labels/aliases, sender-flow-receiver prompt; lifecycle metadata belum ada |
 | Editable DFD dan layout persistence | Belum ada |
 | Regenerate diff/revision conflict | Belum ada |
 | JSON round-trip/SVG export | Belum ada |
 | Authentication/project isolation | Belum ada |
 | Synthetic DFD fixture | Belum ada |
-| Automated verification sesuai AC01–AC20 | Belum lengkap |
+| Automated verification sesuai AC01–AC20 | Partial: 32 Python tests + JS regression; AC fixture belum lengkap |
 
 ## Prioritas implementasi
 
@@ -336,7 +344,8 @@ Acceptance test groups:
 
 - 2026-09-19: Created branch `codex/dfd-threat-model-alignment` for rollback-safe enhanced/revamp work.
 - 2026-09-19: Added canonical DFD contract, deterministic model adapter, graph validator, DFD persistence in analysis report, DFD context in STRIDE/LINDDUN prompts, semantic stale detection, and multi-boundary threat mapping regression fix.
-- 2026-09-19: Verification: 27 Python unit tests and JavaScript analysis visibility regression passed.
+- 2026-09-19: Added secret redaction, AI threat/coverage validation, canonical LINDDUN labels with legacy aliases, direct `affected_refs` mapping, and reviewable DFD-tied fallbacks.
+- 2026-09-19: Verification: 32 Python unit tests and JavaScript analysis visibility regression passed.
 
 ## Progress rule
 

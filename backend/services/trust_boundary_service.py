@@ -622,6 +622,7 @@ def attach_target_refs(
     threats: list[dict] | None,
     boundaries: list[dict] | None,
     views: dict | None,
+    dfd_model: dict | None = None,
 ) -> list[dict]:
     """Attach typed model targets to findings using IDs and deterministic labels."""
     candidates = [item for item in (boundaries or []) if isinstance(item, dict) and item.get("boundary_id")]
@@ -638,6 +639,30 @@ def attach_target_refs(
     ]
     scenarios = scenarios_view.get("items") or []
     data_assets = assets_view.get("items") or []
+
+    # AI output may point directly at stable canonical DFD IDs. Resolve these
+    # before heuristic label matching so a precise reference is not diluted by
+    # a broad narrative match. Unknown IDs are expected to be removed by the
+    # threat-output validator; this second check keeps the mapper defensive.
+    canonical_targets = {}
+    if isinstance(dfd_model, dict):
+        collections = (
+            ("nodes", None),
+            ("data_objects", "data_object"),
+            ("flows", "data_flow"),
+            ("boundaries", "trust_boundary"),
+            ("zones", "zone"),
+            ("questions", "question"),
+        )
+        for collection, fixed_type in collections:
+            for item in dfd_model.get(collection, []) or []:
+                if not isinstance(item, dict) or not item.get("id"):
+                    continue
+                target_type = item.get("type") if collection == "nodes" else fixed_type
+                if collection == "nodes" and target_type not in {"entity", "process", "data_store"}:
+                    target_type = None
+                if target_type:
+                    canonical_targets[str(item["id"])] = (target_type, item)
 
     def relation_text(item: dict) -> str:
         values = [item.get(field) for field in (
@@ -680,8 +705,16 @@ def attach_target_refs(
         known_ids = {
             str(value) for value in (threat.get("trust_boundary_ids") or []) if value
         }
+        explicit_refs = {
+            str(value) for value in (threat.get("affected_refs") or []) if value
+        }
         available_ids = {str(item["boundary_id"]) for item in candidates}
         retained = sorted(known_ids.intersection(available_ids))
+        retained.extend(sorted(
+            ref_id for ref_id in explicit_refs
+            if ref_id in canonical_targets and canonical_targets[ref_id][0] == "trust_boundary"
+            and ref_id not in retained
+        ))
         text = relation_text(threat)
         explicit_node_text = node_text(threat)
         explicit_scenario_text = scenario_text(threat)
@@ -698,6 +731,18 @@ def attach_target_refs(
             # finding when one of several boundaries is rejected.
             retained = sorted(matched)
         threat["trust_boundary_ids"] = retained
+        for ref_id in sorted(explicit_refs):
+            target = canonical_targets.get(ref_id)
+            if not target:
+                continue
+            element_type, element = target
+            target_refs.append({
+                "type": element_type,
+                "id": ref_id,
+                "label": element.get("name") or element.get("id"),
+                "model_level": "semantic",
+                "match_basis": "AI-provided DFD reference",
+            })
         for boundary in candidates:
             if str(boundary["boundary_id"]) not in retained:
                 continue

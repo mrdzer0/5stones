@@ -13,6 +13,7 @@ from backend.services.artifact_reconciliation_service import (
     rebuild_project_from_artifacts,
 )
 from backend.services.posture_service import compute_completeness
+from backend.utils.redaction import redact_text
 from backend.utils.audit import log_event
 
 router = APIRouter(prefix="/api/projects", tags=["artifacts"])
@@ -189,12 +190,15 @@ async def upload_artifact(project_id: str, data: ArtifactUpload, upload_meta: di
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     parsed["artifact_type"] = data.artifact_type
     parsed["filename"] = filename
+    # Verify excerpts against the same redacted representation that was parsed
+    # and may be sent to an AI provider. The original content hash remains the
+    # source identity, but secrets never become evidence excerpts.
     verified_evidence = _verified_evidence_items(
-        parsed.get("evidence_items", []), data.content, filename, data.artifact_type
+        parsed.get("evidence_items", []), redact_text(data.content), filename, data.artifact_type
     )
     parsed["evidence_items"] = verified_evidence
     parsed["use_cases"] = _verified_use_cases(
-        parsed.get("use_cases", []), data.content, filename, data.artifact_type
+        parsed.get("use_cases", []), redact_text(data.content), filename, data.artifact_type
     )
 
     artifact_id = f"artifact-{content_hash[:16]}"

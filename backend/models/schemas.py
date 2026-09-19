@@ -13,7 +13,13 @@ ThreatStatus = Literal["Open", "Needs Info", "Reviewed", "Accepted", "Mitigation
 DataClassification = Literal["Public", "Internal", "PII", "Financial", "Secret"]
 Framework = Literal["STRIDE", "LINDDUN"]
 StrideCategory = Literal["Spoofing", "Tampering", "Repudiation", "Information Disclosure", "Denial of Service", "Elevation of Privilege"]
-LinddunCategory = Literal["Linkability", "Identifiability", "Non-repudiation", "Detectability", "Disclosure of Information", "Unawareness", "Non-compliance"]
+# Canonical labels follow the feature specification. Legacy labels remain
+# accepted for loading older reports and are normalized for new AI output.
+LinddunCategory = Literal[
+    "Linking", "Identifying", "Non-repudiation", "Detecting", "Data Disclosure",
+    "Unawareness & Unintervenability", "Non-compliance",
+    "Linkability", "Identifiability", "Detectability", "Disclosure of Information", "Unawareness",
+]
 DataPolicy = Literal["local_only", "byok_allowed", "cloud_allowed"]
 ControlStatus = Literal["Implemented", "Partial", "Missing", "Unknown"]
 TestPriority = Literal["Critical", "High", "Medium", "Low"]

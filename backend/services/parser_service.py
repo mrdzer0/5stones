@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from backend.services.ai_service import chat_complete_json, get_active_provider_config
+from backend.utils.redaction import redact_text
 
 
 SYSTEM_PROMPT = """You are a security analyst specialized in extracting threat modeling context from technical documents.
@@ -23,18 +24,19 @@ SENSITIVE_FIELD_TOKENS = {
 
 async def parse_artifact(artifact_type: str, content: str) -> dict:
     """Parse an artifact without using AI for schema-defined API formats."""
+    safe_content = redact_text(content)
     if artifact_type == "openapi":
-        document = _load_structured_document(content, allow_yaml=True)
+        document = _load_structured_document(safe_content, allow_yaml=True)
         return parse_openapi_document(document)
     if artifact_type == "postman":
-        document = _load_structured_document(content, allow_yaml=False)
+        document = _load_structured_document(safe_content, allow_yaml=False)
         return parse_postman_document(document)
 
     cfg = get_active_provider_config()
     user_prompt = f"""Analyze this {artifact_type} artifact and extract security-relevant information.
 
 ARTIFACT CONTENT:
-{content[:8000]}
+{safe_content[:8000]}
 
 Return a JSON object with these exact keys:
 {{
@@ -87,7 +89,10 @@ must be understandable on its own, and must be no longer than 320 characters."""
     except Exception:
         pass
 
-    return _basic_extract(content)
+    # Keep the deterministic fallback on the same redacted representation as
+    # the AI path. Otherwise a provider outage could leak secrets into the
+    # reconciled project context even though the normal path is protected.
+    return _basic_extract(safe_content)
 
 
 def _load_structured_document(content: str, *, allow_yaml: bool) -> dict:
