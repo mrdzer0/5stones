@@ -11,6 +11,7 @@ from backend.services.dfd_model_service import (
     apply_dfd_proposal,
     build_dfd_model,
     diff_dfd_models,
+    format_dfd_analysis_context,
     preview_dfd_delete_impact,
     recalculate_boundary_crossings,
     reconcile_generated_dfd,
@@ -377,6 +378,69 @@ class DfdSemanticModelTests(unittest.TestCase):
         ))
         recalculate_boundary_crossings(model)
         self.assertNotIn("TB-COMMON", flows["F4"].boundary_crossings)
+
+    def test_nested_parent_zone_uses_descendant_membership_for_connectivity(self):
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        recalculate_boundary_crossings(model)
+
+        validation = validate_dfd_model(model)
+
+        self.assertTrue(validation["semantic_ready"], validation)
+        self.assertFalse(any("Organization" in issue and "no evidenced" in issue for issue in validation["semantic_issues"]))
+
+    def test_process_metadata_and_lineage_refs_are_graph_checked(self):
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        process = next(node for node in model.nodes if node.id == "P1")
+        process.process_metadata.input_flow_ids.append("missing-flow")
+        data_object = next(item for item in model.data_objects if item.id == "DO3")
+        data_object.lineage_refs.append("missing-element")
+
+        validation = validate_dfd_model(model)
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(any("input metadata references missing flow" in error for error in validation["errors"]))
+        self.assertTrue(any("missing lineage element" in error for error in validation["errors"]))
+
+    def test_direct_transfer_without_process_or_data_label_is_review_blocking(self):
+        model = DfdModel(
+            id="direct-transfer",
+            project_id="project-1",
+            title="Direct transfer",
+            nodes=[
+                DfdNode(id="E1", display_id="E1", type="entity", name="Client", zone_ids=["z1"]),
+                DfdNode(id="D1", display_id="D1", type="data_store", name="Store", zone_ids=["z1"]),
+            ],
+            zones=[DfdZone(id="z1", display_id="Z1", name="System")],
+            flows=[DfdFlow(
+                id="F1",
+                display_id="F1",
+                source_id="E1",
+                target_id="D1",
+                name="HTTPS",
+                protocol="HTTPS",
+            )],
+        )
+
+        validation = validate_dfd_model(model)
+
+        self.assertTrue(validation["valid"])
+        self.assertFalse(validation["semantic_ready"])
+        self.assertTrue(any("without a process" in issue for issue in validation["semantic_issues"]))
+        self.assertTrue(any("no data object label" in issue for issue in validation["semantic_issues"]))
+
+    def test_analysis_context_keeps_flow_security_and_process_semantics(self):
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        context = format_dfd_analysis_context(model.model_dump())
+
+        self.assertIn("data_object_ids=['DO1']", context)
+        self.assertIn("protocol=HTTPS", context)
+        self.assertIn("authn=unknown", context)
+        self.assertIn("PROCESS METADATA P1", context)
+        self.assertIn("ZONES:", context)
+        self.assertIn("source_zones=['Customer-controlled']", context)
 
     def test_unknown_membership_is_reviewable_and_not_no_crossing(self):
         from backend.models.dfd import DfdModel

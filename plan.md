@@ -5,7 +5,7 @@
 - Acuan: `DFD_Feature_AI_Agent_Prompt.md`
 - Status project saat ini: **grounded threat-modeling MVP dengan DFD visualization**.
 - Target akhir: **semantic DFD modeling feature** yang menjadi source of truth untuk canvas, inventory, export, STRIDE, dan LINDDUN.
-- Verifikasi branch saat ini: 82 test Python lulus, 1 regression test JavaScript lulus, syntax/diff checks lulus, dan Playwright smoke-test UI/API lulus.
+- Verifikasi branch saat ini: 86 test Python lulus, 1 regression test JavaScript lulus, syntax/diff checks lulus, dan Playwright smoke-test UI/API lulus.
 - Branch enhanced/revamp: `codex/dfd-threat-model-alignment`.
 - Checkpoint fondasi: `77db35f Add canonical DFD semantic model foundation`.
 - Audit core terbaru: **2026-09-19**, terhadap commit `d6b8111` dan report demo revision 5. Gunakan bagian **Audit core function dan optimasi** serta milestone **C0–C6** sebagai urutan pekerjaan berikutnya; M0–M9 tetap menjadi peta alignment historis.
@@ -257,7 +257,9 @@ Definition of done:
 
 ### M2 — Graph integrity dan DFD semantics
 
-Status: **Sebagian selesai — prioritas P0**
+Status: **Selesai untuk core graph integrity dan semantic validator — prioritas P0**. Gap topology
+yang benar-benar belum didukung evidence tetap dilaporkan sebagai `semantic_ready=false`;
+model tidak mengarang process, data object, atau edge untuk memaksa status hijau.
 
 Progress:
 
@@ -268,6 +270,12 @@ Progress:
 - OpenAPI/Postman operation metadata menghasilkan flow request/response terpisah bila response fields tersedia.
 - Flow tanpa process/data label tetap tersimpan sebagai review warning; tidak dibuatkan process fiktif.
 - Feature view menyimpan dan memvalidasi input/output flow port mappings terhadap parent process.
+- Zone connectivity memakai ancestor-expanded membership sehingga parent container tidak false-positive terisolasi hanya karena node berada di child zone.
+- Process input/output metadata, data-object lineage/transformation refs, dan store reader/writer relationships sekarang dicek terhadap graph aktual.
+- Direct entity-to-store/store-to-store flow diberi review issue yang spesifik; flow tanpa data object atau hanya berlabel protokol menurunkan semantic readiness tanpa menghapus graph.
+- Generic process labels dan reverse boundary/flow references diberi warning/error yang dapat ditindaklanjuti.
+- Context STRIDE/LINDDUN membawa node zone/parent, process purpose/identity/privileges, flow data IDs/protocol/authn/authz/evidence, zone hierarchy, dan boundary rationale.
+- Request/response projection hanya dibuat dari canonical operation yang relevan dengan endpoint flow; authn tidak lagi dipromosikan dari project-wide default ke semua flow.
 
 Deliverables:
 
@@ -285,8 +293,9 @@ Deliverables:
 
 Definition of done:
 
-- Unit test untuk graph integrity, same-zone flow, invalid flow, duplicate ID, dan dangling reference.
+- Unit test untuk graph integrity, same-zone flow, invalid flow, duplicate ID, dangling reference, nested parent connectivity, process metadata, lineage, direct transfer, dan analysis context.
 - Postman-only input tidak menghasilkan database atau topology internal yang tidak terdokumentasi.
+- Synthetic nested fixture lulus dengan `semantic_ready=true`; incomplete topology tetap menghasilkan issue yang dapat ditindaklanjuti.
 
 ### M3 — Ownership, scope, exposure, zone, dan boundary crossing
 
@@ -535,7 +544,7 @@ Status: **Sebagian selesai — prioritas P1/P2**
 Progress:
 
 - Test suite bertambah dari 24 menjadi 65 Python tests.
-- Test suite branch saat ini berjumlah 82 Python tests, termasuk privacy assessment,
+- Test suite branch saat ini berjumlah 86 Python tests, termasuk privacy assessment,
   pipeline acceptance, assertion provenance refresh, proposal dismiss, dan logical
   reviewer-boundary coverage.
 - Test baru mencakup canonical model typed refs, graph invalidity, zone cycle, multi-boundary threat mapping, request/response, fixture crossing, DFD persistence, SVG escaping, threat schema validation, dan redaction.
@@ -571,10 +580,10 @@ Acceptance test groups:
 | Artifact ingestion dan basic evidence | Partial / cukup baik |
 | Postman nested/inherited auth | Partial / sudah ada |
 | Canonical semantic DFD | **Core contract complete**: typed schema, explicit canonical storage, migration loader, evidence/assertions, privacy/lifecycle metadata, hash/revision, validator, editable graph; semantic completeness/import demo masih banyak unknown/inferred dan dilacak M2–M4 |
-| Stable typed node/flow model | Partial: typed node/flow/data/boundary refs, request/response, feature projections/port lint, add/edit/remove editor; automated mutation coverage belum lengkap |
+| Stable typed node/flow model | **Core graph integrity complete**: typed node/flow/data/boundary refs, request/response, ancestor-aware connectivity, process metadata/lineage validation, feature projections/port lint; automated mutation coverage UI belum lengkap |
 | Ownership/scope/exposure separation | Partial: independent fields, unknown questions, semantic crossing, reviewer/editor resolution; evidence-backed classification masih incomplete |
 | Nested and logical boundary | Partial: ancestor crossing, common-parent guard, logical/mixed reviewer crossing dengan rationale, zone/boundary editor, add/remove, proposal review, dan question resolution; full logical boundary workflow belum ada |
-| Same-zone analysis | Partial: same-zone flows retained and analyzed; full UI coverage belum ada |
+| Same-zone analysis | **Core validator complete**: same-zone flows retained, tidak dianggap crossing, dan tetap masuk scope; full UI mutation coverage belum ada |
 | Threat traceability | Partial: explicit DFD refs, unmapped state, cross-boundary fan-out fixed, threat-to-DFD focus action, typed control locations/evidence refs |
 | STRIDE coverage model | Partial: prompt, validated output, deterministic element/category coverage, revision tracking; engine-backed coverage masih reviewable |
 | LINDDUN PRO-aligned model | Partial: canonical labels/aliases, sender-flow-receiver prompt, privacy/lifecycle assessment, `needs_context` annotation, non-compliance guard; evidence-backed lifecycle resolution belum lengkap |
@@ -584,7 +593,7 @@ Acceptance test groups:
 | Authentication/project isolation | Partial: configurable token-per-workspace guard + cross-workspace resource check; IdP/JWT production integration belum ada |
 | Failure/retry/provider safety | Partial: persisted analysis run state, retry endpoint/UI, URL allowlist, local-only policy, and bounded token/timeout/retries; server-side cancellation/quota belum ada |
 | Synthetic DFD fixture | Partial: customer-registration source/model tersedia; Postman-only fixture inline test |
-| Automated verification sesuai AC01–AC20 | Partial: 82 Python tests + JS regression + Playwright DFD/report/privacy/proposal smoke-test + access-control/provider/failure helper tests; audit core menemukan gap CT01–CT15, full end-to-end/UI mutation criteria belum lengkap |
+| Automated verification sesuai AC01–AC20 | Partial: 86 Python tests + JS regression + Playwright DFD/report/privacy/proposal smoke-test + access-control/provider/failure helper tests; audit core menemukan gap CT01–CT15, full end-to-end/UI mutation criteria belum lengkap |
 
 ## Prioritas implementasi
 
@@ -605,6 +614,7 @@ database atas perbaikan data/hasil yang sudah terbukti salah.
 
 - 2026-09-19: Added core-function industry-practice audit against Microsoft STRIDE, LINDDUN PRO, OWASP threat modeling, ASVS 5.0.0 and WSTG 4.2. Recorded report revision 5, F01–F13 findings, C0–C6 delivery milestones, data/processing optimizations and CT01–CT15 acceptance backlog. Re-ran 82 Python tests and JS regression; inspected DFD/Controls/Tests with Playwright and reproduced three validation/mapping issues in memory. The audit gaps remain tracked for C0–C6; M1 hardening is recorded in the next entry.
 - 2026-09-19: Completed M1 core contract hardening: explicit per-project canonical DFD storage, legacy envelope migration, supported-schema gate, empty-draft readiness state, orphan assertion/layout/evidence validation, and report-to-canonical lazy hydration. Verification: 82 Python tests, JavaScript regression, Playwright GET `/dfd` status 200 with `dfd-v1` revision 5, 20 nodes/8 flows/90 evidence/226 assertions, `valid=true`, and expected `semantic_ready=false` topology warnings.
+- 2026-09-19: Completed M2 core graph remediation: ancestor-aware zone connectivity, process metadata and lineage reference validation, actionable direct-transfer/data-label checks, operation-scoped request/response projection, and complete DFD analysis context. Verification: 86 Python tests, JavaScript regression, Playwright GET `/dfd` status 200 with `valid=true`, `semantic_ready=false` only for the active demo's evidenced topology gaps, and zero console errors.
 - 2026-09-19: Created branch `codex/dfd-threat-model-alignment` for rollback-safe enhanced/revamp work.
 - 2026-09-19: Added canonical DFD contract, deterministic model adapter, graph validator, DFD persistence in analysis report, DFD context in STRIDE/LINDDUN prompts, semantic stale detection, and multi-boundary threat mapping regression fix.
 - 2026-09-19: Added secret redaction, AI threat/coverage validation, canonical LINDDUN labels with legacy aliases, direct `affected_refs` mapping, and reviewable DFD-tied fallbacks.
