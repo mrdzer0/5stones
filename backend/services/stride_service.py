@@ -33,7 +33,7 @@ async def generate_stride_threats(
     if force_fallback:
         return ThreatGenerationResult(_fallback_stride(project, trust_boundaries, dfd_model), [])
 
-    cfg = get_active_provider_config()
+    cfg = get_active_provider_config(project.get("data_policy"))
 
     context = _build_context(project)
     evidence_context = build_evidence_context(project)

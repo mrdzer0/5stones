@@ -7,14 +7,22 @@ from urllib.parse import urlparse
 from openai import AsyncOpenAI
 from cryptography.fernet import Fernet
 import base64
+from backend.services.provider_policy import (
+    validate_provider_url,
+    normalize_max_tokens,
+    normalize_timeout_seconds,
+    normalize_max_retries,
+)
 
 
 def _get_client(base_url: Optional[str] = None, api_key: Optional[str] = None) -> AsyncOpenAI:
-    timeout_seconds = float(os.getenv("LLM_TIMEOUT_SECONDS", "180"))
-    max_retries = int(os.getenv("LLM_MAX_RETRIES", "0"))
+    timeout_seconds = normalize_timeout_seconds(os.getenv("LLM_TIMEOUT_SECONDS", "180"))
+    max_retries = normalize_max_retries(os.getenv("LLM_MAX_RETRIES", "0"))
+    resolved_base_url = base_url or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    validate_provider_url(resolved_base_url)
     return AsyncOpenAI(
         api_key=api_key or os.getenv("OPENAI_API_KEY", "ollama"),
-        base_url=base_url or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        base_url=resolved_base_url,
         timeout=timeout_seconds,
         max_retries=max_retries,
     )
@@ -289,27 +297,51 @@ async def chat_complete_json(
     ) from last_error
 
 
-def get_active_provider_config() -> dict:
+def get_active_provider_config(data_policy: str | None = None) -> dict:
     """Read active provider from settings or env vars."""
     from backend.utils.storage import get_settings
     settings = get_settings()
+    if data_policy == "local_only":
+        if settings.get("local_llm_endpoint") and settings.get("local_llm_model"):
+            config = {
+                "base_url": settings.get("local_llm_endpoint"),
+                "model": settings.get("local_llm_model"),
+                "api_key": os.getenv("LOCAL_LLM_API_KEY", "ollama"),
+                "is_local": True,
+                "max_tokens": normalize_max_tokens(os.getenv("LLM_MAX_TOKENS", "4096")),
+            }
+            validate_provider_url(config["base_url"], is_local=True, data_policy=data_policy)
+            return config
+        raise ValueError("local_only project requires a configured local LLM provider")
     active_id = settings.get("active_provider_id")
     if active_id:
         for p in settings.get("providers", []):
             if p.get("provider_id") == active_id:
-                return {
+                config = {
                     "base_url": p.get("base_url"),
                     "model": p.get("model"),
                     "api_key": _decrypt(p.get("_api_key", "")),
+                    "is_local": bool(p.get("is_local") or p.get("provider_type") == "local"),
+                    "max_tokens": normalize_max_tokens(p.get("max_tokens", 4096)),
                 }
+                validate_provider_url(config["base_url"], is_local=config["is_local"], data_policy=data_policy)
+                return config
     if settings.get("local_llm_endpoint") and settings.get("local_llm_model"):
-        return {
+        config = {
             "base_url": settings.get("local_llm_endpoint"),
             "model": settings.get("local_llm_model"),
             "api_key": os.getenv("LOCAL_LLM_API_KEY", "ollama"),
+            "is_local": True,
+            "max_tokens": normalize_max_tokens(os.getenv("LLM_MAX_TOKENS", "4096")),
         }
-    return {
+        validate_provider_url(config["base_url"], is_local=True, data_policy=data_policy)
+        return config
+    config = {
         "base_url": os.getenv("OPENAI_BASE_URL"),
         "model": os.getenv("OPENAI_MODEL", "gpt-4o"),
         "api_key": os.getenv("OPENAI_API_KEY"),
+        "is_local": False,
+        "max_tokens": normalize_max_tokens(os.getenv("LLM_MAX_TOKENS", "4096")),
     }
+    validate_provider_url(config["base_url"] or "https://api.openai.com/v1", data_policy=data_policy)
+    return config

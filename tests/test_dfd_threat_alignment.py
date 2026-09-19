@@ -9,6 +9,7 @@ from backend.services.threat_validation_service import (
     validate_generated_threats,
 )
 from backend.services.trust_boundary_service import attach_target_refs, build_trust_model
+from backend.services.posture_service import enrich_controls
 from backend.utils.redaction import redact_text
 
 
@@ -147,6 +148,33 @@ class DfdThreatAlignmentTests(unittest.TestCase):
         self.assertEqual(node_tampering["status"], "insufficient_information")
         self.assertGreater(summary["insufficient_information"], 0)
         self.assertFalse(summary["complete"])
+
+    def test_control_location_and_target_refs_follow_validated_threat_targets(self):
+        flow_id = self.dfd_model["flows"][0]["id"]
+        threat = {
+            "threat_id": "threat-control-1",
+            "threat_category": "Tampering",
+            "threat_description": "Input can be altered.",
+            "target_refs": [{"type": "data_flow", "id": flow_id}],
+            "risk_level": "High",
+        }
+        controls = enrich_controls(
+            [{
+                "name": "Validate input",
+                "threat_ids": ["threat-control-1", "not-a-threat"],
+                "target_refs": [{"type": "data_flow", "id": flow_id}, {"type": "flow", "id": "missing"}],
+                "verification_evidence_refs": ["missing-evidence"],
+            }],
+            [threat],
+            self.project,
+            dfd_model=self.dfd_model,
+            evidence_ids={"EV-1"},
+        )
+
+        self.assertEqual(controls[0]["threat_ids"], ["threat-control-1"])
+        self.assertEqual(controls[0]["target_refs"], [{"type": "data_flow", "id": flow_id}])
+        self.assertEqual(controls[0]["location_ref"]["id"], flow_id)
+        self.assertEqual(controls[0]["verification_evidence_refs"], [])
 
     def test_redaction_protects_structured_and_plain_text_secrets(self):
         content = '{"api_key":"secret-value","raw":"{\\"password\\":\\"pw\\"}","name":"safe"}'

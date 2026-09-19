@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Request
 from backend.utils.storage import get_project, save_project, save_report, get_report
 from backend.utils.audit import log_event
 from backend.utils.access_control import get_authorized_project, workspace_access_dependency
+from backend.utils.redaction import redact_text
 from backend.services.trust_boundary_service import (
     TRUST_BOUNDARY_REVIEW_STATUSES,
     active_trust_boundaries,
@@ -36,6 +37,7 @@ from backend.services.posture_service import (
     normalize_report_evidence,
     build_project_evidence_catalog,
     update_item_by_id,
+    validate_control_patch,
 )
 import uuid
 import time
@@ -48,6 +50,7 @@ router = APIRouter(
 )
 
 BOUNDARY_DOWNSTREAM_STAGES = ["stride", "linddun", "controls", "tests", "missing_info", "assumptions"]
+_ACTIVE_ANALYSIS_RUNS: set[str] = set()
 
 
 def _utc_now() -> str:
@@ -87,16 +90,124 @@ def _clear_review_visibility_stale(report: dict):
         report.pop("analysis_stale", None)
 
 
+def _empty_report(project: dict) -> dict:
+    return {
+        "report_id": str(uuid.uuid4()),
+        "project_id": project["project_id"],
+        "project_name": project.get("name", ""),
+        "generated_at": datetime.utcnow().isoformat(),
+        "data_flows": [],
+        "trust_boundaries": [],
+        "threats": [],
+        "controls": [],
+        "test_scenarios": [],
+        "assumptions": [],
+        "missing_info": [],
+        "completeness": {},
+        "risk_summary": {},
+    }
+
+
+def _requested_analysis_types(body: dict | None) -> list[str]:
+    requested = (body or {}).get("analysis_types")
+    if not isinstance(requested, list) or not requested:
+        return ["trust_boundary", "stride", "linddun", "controls", "tests", "missing_info", "assumptions"]
+    return [str(item) for item in requested if str(item).strip()]
+
+
 @router.post("/{project_id}/analyze")
 async def run_full_analysis(project_id: str, body: dict = None, request: Request = None):
+    """Run analysis with a persisted run state and retry-safe failure boundary."""
+    project = get_project(project_id) if request is None else get_authorized_project(project_id, request)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    types = _requested_analysis_types(body)
+    if project_id in _ACTIVE_ANALYSIS_RUNS:
+        raise HTTPException(status_code=409, detail="Analysis is already running")
+    _ACTIVE_ANALYSIS_RUNS.add(project_id)
+    previous_report = get_report(project_id) or _empty_report(project)
+    previous_run = previous_report.get("analysis_run") if isinstance(previous_report.get("analysis_run"), dict) else {}
+    run_state = {
+        "run_id": str(uuid.uuid4()),
+        "status": "running",
+        "requested_types": types,
+        "started_at": _utc_now(),
+        "previous_successful_run_id": previous_run.get("run_id") if previous_run.get("status") in {"completed", "completed_with_warnings"} else None,
+        "retryable": False,
+    }
+    previous_report["analysis_run"] = run_state
+    previous_report["analysis_status"] = "running"
+    save_report(project_id, previous_report)
+    project["analysis_status"] = "running"
+    save_project(project)
+
+    try:
+        result = await _run_analysis_pipeline(project_id, body, request=request)
+    except Exception as exc:
+        safe_error = redact_text(str(exc))[:1000] or "Analysis pipeline failed"
+        failed_report = get_report(project_id) or previous_report
+        failed_report["analysis_run"] = {
+            **run_state,
+            "status": "failed",
+            "failed_at": _utc_now(),
+            "error": safe_error,
+            "retryable": True,
+        }
+        failed_report["analysis_status"] = "failed"
+        save_report(project_id, failed_report)
+        project["analysis_status"] = "failed"
+        save_project(project)
+        log_event("analysis.failed", details={"project_id": project_id, "run_id": run_state["run_id"], "error": safe_error})
+        raise HTTPException(status_code=500, detail="Analysis failed; the previous saved model remains available and can be retried.") from exc
+    finally:
+        _ACTIVE_ANALYSIS_RUNS.discard(project_id)
+
+    statuses = result.get("ai_status") if isinstance(result.get("ai_status"), dict) else {}
+    warning_stages = sorted(
+        stage for stage, status in statuses.items()
+        if isinstance(status, dict) and status.get("ok") is False
+    )
+    result["analysis_run"] = {
+        **run_state,
+        "status": "completed_with_warnings" if warning_stages else "completed",
+        "completed_at": _utc_now(),
+        "warning_stages": warning_stages,
+        "retryable": bool(warning_stages),
+    }
+    result["analysis_status"] = result["analysis_run"]["status"]
+    save_report(project_id, result)
+    project["analysis_status"] = result["analysis_status"]
+    save_project(project)
+    return result
+
+
+@router.post("/{project_id}/analyze/retry")
+async def retry_analysis(project_id: str, request: Request = None):
+    """Retry the last persisted analysis request without discarding its report."""
+    project = get_project(project_id) if request is None else get_authorized_project(project_id, request)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    report = get_report(project_id)
+    run_state = report.get("analysis_run") if isinstance(report, dict) else None
+    if not isinstance(run_state, dict) or not run_state.get("requested_types"):
+        raise HTTPException(status_code=404, detail="No previous analysis run is available to retry")
+    if run_state.get("status") == "running" and project_id in _ACTIVE_ANALYSIS_RUNS:
+        raise HTTPException(status_code=409, detail="Analysis is already running")
+    return await run_full_analysis(
+        project_id,
+        {"analysis_types": run_state["requested_types"]},
+        request=request,
+    )
+
+
+async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Request = None):
     """Run full threat modeling pipeline for a project."""
     project = get_project(project_id) if request is None else get_authorized_project(project_id, request)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    types = (body or {}).get("analysis_types", [
-        "trust_boundary", "stride", "linddun", "controls", "tests", "missing_info", "assumptions"
-    ])
+    types = _requested_analysis_types(body)
     stage_started_at = time.perf_counter()
     log_event("analysis.started", details={"project_id": project_id, "analysis_types": types})
 
@@ -104,21 +215,7 @@ async def run_full_analysis(project_id: str, body: dict = None, request: Request
     if report:
         report = normalize_report_evidence(report, project)
     else:
-        report = {
-            "report_id": str(uuid.uuid4()),
-            "project_id": project_id,
-            "project_name": project.get("name", ""),
-            "generated_at": datetime.utcnow().isoformat(),
-            "data_flows": [],
-            "trust_boundaries": [],
-            "threats": [],
-            "controls": [],
-            "test_scenarios": [],
-            "assumptions": [],
-            "missing_info": [],
-            "completeness": {},
-            "risk_summary": {},
-        }
+        report = _empty_report(project)
 
     report["completeness"] = compute_completeness(project)
     evidence_ids = {
@@ -312,12 +409,26 @@ async def run_full_analysis(project_id: str, body: dict = None, request: Request
     # 4. Controls
     if "controls" in types and report.get("threats"):
         try:
-            controls = await map_controls(report["threats"], force_fallback=False)
+            controls = await map_controls(
+                report["threats"],
+                force_fallback=False,
+                data_policy=project.get("data_policy"),
+            )
             report["ai_status"]["controls"] = {"ok": True, "engine": "AI"}
         except Exception as exc:
-            controls = await map_controls(report["threats"], force_fallback=True)
+            controls = await map_controls(
+                report["threats"],
+                force_fallback=True,
+                data_policy=project.get("data_policy"),
+            )
             report["ai_status"]["controls"] = {"ok": False, "error": str(exc), "engine": "fallback"}
-        report["controls"] = enrich_controls(controls, report["threats"], project)
+        report["controls"] = enrich_controls(
+            controls,
+            report["threats"],
+            project,
+            dfd_model=report.get("dfd_model"),
+            evidence_ids=evidence_ids,
+        )
 
     # 5. Test Scenarios
     if "tests" in types and report.get("threats"):
@@ -492,11 +603,26 @@ async def update_trust_boundary_review(project_id: str, boundary_id: str, data: 
 @router.patch("/{project_id}/controls/{control_id}")
 async def update_control_review(project_id: str, control_id: str, data: dict, request: Request = None):
     """Update checklist/review workflow fields for a mapped control."""
-    if request is not None and not get_authorized_project(project_id, request):
+    project = get_project(project_id) if request is None else get_authorized_project(project_id, request)
+    if request is not None and not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    project = project or {}
     report = get_report(project_id)
     if not report:
         raise HTTPException(status_code=404, detail="No report yet — run analysis first")
+
+    try:
+        data = validate_control_patch(
+            data,
+            dfd_model=report.get("dfd_model"),
+            evidence_ids={
+                str(item.get("evidence_id"))
+                for item in build_project_evidence_catalog(project)
+                if item.get("evidence_id")
+            },
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     if not update_item_by_id(report.get("controls", []), "control_id", control_id, data):
         raise HTTPException(status_code=404, detail="Control not found")

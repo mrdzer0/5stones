@@ -15,7 +15,11 @@ CONTROL_CATEGORY_ALIASES = {
 }
 
 
-async def map_controls(threats: List[dict], force_fallback: bool = False) -> List[dict]:
+async def map_controls(
+    threats: List[dict],
+    force_fallback: bool = False,
+    data_policy: str | None = None,
+) -> List[dict]:
     """Map recommended controls from catalog or generate them using AI."""
     if not threats:
         return []
@@ -24,14 +28,14 @@ async def map_controls(threats: List[dict], force_fallback: bool = False) -> Lis
     if force_fallback:
         return _catalog_fallback(threats, catalog)
 
-    cfg = get_active_provider_config()
+    cfg = get_active_provider_config(data_policy)
 
     catalog_summary = "\n".join([
         f"- {c.get('name')}: {c.get('description')}" for c in catalog[:15]
     ])
 
     threats_summary = "\n".join([
-        f"- Threat: {t.get('threat_category')} - {t.get('threat_description')} (Component: {t.get('component')}) (ID: {t.get('threat_id')})"
+        f"- Threat: {t.get('threat_category')} - {t.get('threat_description')} (Component: {t.get('component')}) (ID: {t.get('threat_id')}) (DFD targets: {t.get('target_refs') or t.get('affected_refs') or []})"
         for t in threats
     ])
 
@@ -54,7 +58,11 @@ Return one JSON object with a "controls" array:
     "description": "what this control does",
     "implementation_guidance": "specific how-to guidance",
     "status": "Unknown|Partial|Implemented|Missing",
+    "implementation_status": "Unknown|Partial|Implemented|Missing",
     "evidence": "what evidence is needed to confirm status",
+    "verification_evidence_refs": ["valid evidence IDs only; leave empty unless implementation evidence exists"],
+    "target_refs": [{{"type": "data_flow|process|data_store|entity|boundary|data_object", "id": "valid DFD element ID"}}],
+    "location_ref": {{"type": "data_flow|process|data_store|entity|boundary|data_object", "id": "primary DFD element ID"}},
     "owner": "Backend|DevOps|QA|Security|Product",
     "threat_ids": ["list of threat_ids this control addresses"]
     }}
@@ -103,6 +111,7 @@ def _catalog_fallback(threats: list, catalog: list) -> list:
                     "description": ctrl["description"],
                     "implementation_guidance": ctrl.get("implementation_guidance", ""),
                     "status": "Unknown",
+                    "implementation_status": "Unknown",
                     "evidence": "Need code review to confirm status",
                     "owner": ctrl.get("owner", "Backend"),
                     "threat_ids": [t.get("threat_id", "") for t in threats[:3]],
@@ -117,6 +126,7 @@ def _catalog_fallback(threats: list, catalog: list) -> list:
                 "description": ctrl["description"],
                 "implementation_guidance": ctrl.get("implementation_guidance", ""),
                 "status": "Unknown",
+                "implementation_status": "Unknown",
                 "evidence": "Confirm via code review",
                 "owner": ctrl.get("owner", "Backend"),
                 "threat_ids": [],

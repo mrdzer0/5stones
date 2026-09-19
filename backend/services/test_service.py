@@ -13,7 +13,7 @@ async def generate_test_scenarios(threats: List[dict], project: dict, force_fall
     if force_fallback:
         return _fallback_scenarios(threats)
 
-    cfg = get_active_provider_config()
+    cfg = get_active_provider_config(project.get("data_policy"))
 
     threats_summary = "\n".join([
         f"- ID: {t['threat_id']}\n  Category: {t['threat_category']}\n  Description: {t['threat_description']}\n  Recommended Control: {t.get('recommended_control','')}"
@@ -198,7 +198,7 @@ async def generate_missing_info(project: dict, threats: List[dict], force_fallba
     if force_fallback:
         return _fallback_missing_info(project)
 
-    cfg = get_active_provider_config()
+    cfg = get_active_provider_config(project.get("data_policy"))
 
     context = f"""Project: {project.get('name')}
 Description: {project.get('description', '')}

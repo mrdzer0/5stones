@@ -5,6 +5,7 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from backend.utils.storage import get_settings, save_settings
 from backend.utils.audit import log_event, get_recent_events
+from backend.services.provider_policy import normalize_max_tokens, validate_provider_url, ProviderPolicyError
 from cryptography.fernet import Fernet
 import base64
 
@@ -32,6 +33,19 @@ def _mask(value: str) -> str:
     if not value:
         return ""
     return value[:4] + "****" + value[-4:] if len(value) > 8 else "****"
+
+
+def _validate_provider_input(data: dict, current: dict | None = None) -> tuple[str, bool, int]:
+    current = current or {}
+    provider_type = str(data.get("provider_type", current.get("provider_type", "openai")) or "openai")
+    base_url = str(data.get("base_url", current.get("base_url", "https://api.openai.com/v1")) or "https://api.openai.com/v1").strip()
+    is_local = bool(data.get("is_local", current.get("is_local", False))) or provider_type == "local"
+    try:
+        validate_provider_url(base_url, is_local=is_local)
+        max_tokens = normalize_max_tokens(data.get("max_tokens", current.get("max_tokens", 4096)))
+    except ProviderPolicyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return base_url, is_local, max_tokens
 
 
 @router.get("")
@@ -62,6 +76,13 @@ async def get_app_settings():
 @router.put("")
 async def update_app_settings(data: dict):
     settings = get_settings()
+    if "default_data_policy" in data and data["default_data_policy"] not in {"local_only", "byok_allowed", "cloud_allowed"}:
+        raise HTTPException(status_code=422, detail="default_data_policy is invalid")
+    if "local_llm_endpoint" in data and data.get("local_llm_endpoint"):
+        try:
+            validate_provider_url(str(data["local_llm_endpoint"]), is_local=True)
+        except ProviderPolicyError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     allowed = ["active_provider_id", "default_data_policy",
                "local_llm_endpoint", "local_llm_model", "mcp_servers"]
     for key in allowed:
@@ -100,6 +121,10 @@ async def set_active_source(data: dict):
     elif source == "local":
         if not (settings.get("local_llm_endpoint") and settings.get("local_llm_model")):
             raise HTTPException(status_code=400, detail="Local LLM not configured. Set endpoint and model first.")
+        try:
+            validate_provider_url(settings["local_llm_endpoint"], is_local=True)
+        except ProviderPolicyError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         # Deactivate all BYOK providers
         for p in settings.get("providers", []):
             p["is_active"] = False
@@ -120,16 +145,17 @@ async def add_provider(data: dict):
     if not api_key:
         raise HTTPException(status_code=400, detail="api_key is required")
 
+    base_url, is_local, max_tokens = _validate_provider_input(data)
     settings = get_settings()
     provider = {
         "provider_id": str(uuid.uuid4()),
         "name": data.get("name", "Custom Provider"),
         "provider_type": data.get("provider_type", "openai"),
-        "base_url": data.get("base_url", "https://api.openai.com/v1"),
+        "base_url": base_url,
         "model": data.get("model", "gpt-4o"),
-        "max_tokens": data.get("max_tokens", 4096),
+        "max_tokens": max_tokens,
         "is_active": False,
-        "is_local": data.get("is_local", False),
+        "is_local": is_local,
         "api_key_masked": _mask(api_key),
         "_api_key": _encrypt(api_key),  # stored encrypted
     }
@@ -175,14 +201,17 @@ async def update_provider(provider_id: str, data: dict):
     if not provider:
         raise HTTPException(status_code=404, detail="Provider not found")
 
+    base_url, is_local, max_tokens = _validate_provider_input(data, provider)
+
     if "name" in data:
         provider["name"] = data["name"]
     if "base_url" in data:
-        provider["base_url"] = data["base_url"]
+        provider["base_url"] = base_url
     if "model" in data:
         provider["model"] = data["model"]
     if "max_tokens" in data:
-        provider["max_tokens"] = int(data["max_tokens"])
+        provider["max_tokens"] = max_tokens
+    provider["is_local"] = is_local
     if "api_key" in data and data["api_key"].strip() != "":
         api_key = data["api_key"]
         provider["api_key_masked"] = _mask(api_key)
@@ -223,6 +252,8 @@ async def list_models(base_url: str, api_key: str = "ollama", provider_id: str |
                     if not base_url:
                         base_url = p.get("base_url")
                     break
+
+        validate_provider_url(base_url)
 
         if not api_key:
             raise ValueError("API key is empty or not provided.")
@@ -272,6 +303,8 @@ async def check_connection(data: dict):
             api_key = os.getenv("OPENAI_API_KEY", "ollama")
         if not model:
             model = os.getenv("OPENAI_MODEL", "gpt-4o")
+
+        validate_provider_url(base_url or "https://api.openai.com/v1")
 
         if data.get("encrypted_api_key"):
             try:

@@ -37,7 +37,7 @@ async def generate_linddun_threats(
     if force_fallback:
         return ThreatGenerationResult(_fallback_linddun(project, dfd_model), [])
 
-    cfg = get_active_provider_config()
+    cfg = get_active_provider_config(project.get("data_policy"))
 
     context = _build_privacy_context(project)
     evidence_context = build_evidence_context(project)

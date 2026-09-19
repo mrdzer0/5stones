@@ -325,6 +325,19 @@ def normalize_report_evidence(report: dict, project: dict) -> dict:
         else:
             threats.append(threat)
     report["threats"] = threats
+    if report.get("controls"):
+        evidence_ids = {
+            str(item.get("evidence_id"))
+            for item in build_project_evidence_catalog(project)
+            if item.get("evidence_id")
+        }
+        report["controls"] = enrich_controls(
+            report.get("controls") or [],
+            report.get("threats") or [],
+            project,
+            dfd_model=report.get("dfd_model"),
+            evidence_ids=evidence_ids,
+        )
     return report
 
 
@@ -360,20 +373,77 @@ def merge_deduped_threats(existing: list, incoming: list) -> tuple[list, int]:
     return merged, deduped
 
 
-def enrich_controls(controls: Iterable[dict], threats: list, project: dict) -> list:
+def enrich_controls(
+    controls: Iterable[dict],
+    threats: list,
+    project: dict,
+    dfd_model: dict | None = None,
+    evidence_ids: set[str] | None = None,
+) -> list:
     threat_by_id = {t.get("threat_id"): t for t in threats}
+    valid_dfd_ids = {
+        str(item.get("id"))
+        for collection in ("nodes", "data_objects", "flows", "boundaries")
+        for item in (dfd_model.get(collection) or [] if isinstance(dfd_model, dict) else [])
+        if isinstance(item, dict) and item.get("id")
+    }
     enriched = []
 
     for control in controls:
         c = dict(control)
-        related = [threat_by_id[tid] for tid in c.get("threat_ids", []) if tid in threat_by_id]
+        c["threat_ids"] = [
+            str(tid) for tid in (c.get("threat_ids") or [])
+            if str(tid) in threat_by_id
+        ]
+        related = [threat_by_id[tid] for tid in c["threat_ids"]]
         if not related:
             related = _related_threats_by_text(c, threats)
+
+        raw_refs = c.get("target_refs") if isinstance(c.get("target_refs"), list) else []
+        target_refs = []
+        for ref in raw_refs:
+            if not isinstance(ref, dict) or not ref.get("id"):
+                continue
+            ref_id = str(ref["id"])
+            if valid_dfd_ids and ref_id not in valid_dfd_ids:
+                continue
+            target_refs.append({
+                "type": str(ref.get("type") or "dfd_element"),
+                "id": ref_id,
+                **({"model_level": ref["model_level"]} if ref.get("model_level") else {}),
+            })
+        if not target_refs:
+            seen_refs = set()
+            for threat in related:
+                for ref in threat.get("target_refs") or []:
+                    if not isinstance(ref, dict) or not ref.get("id"):
+                        continue
+                    ref_id = str(ref["id"])
+                    if valid_dfd_ids and ref_id not in valid_dfd_ids:
+                        continue
+                    key = (str(ref.get("type") or "dfd_element"), ref_id)
+                    if key in seen_refs:
+                        continue
+                    seen_refs.add(key)
+                    target_refs.append({"type": key[0], "id": key[1]})
 
         components = _unique(t.get("component") or t.get("destination") or t.get("asset") for t in related)
         priorities = [t.get("risk_level", "Medium") for t in related]
         c["affected_components"] = c.get("affected_components") or components
+        c["target_refs"] = target_refs
+        location = c.get("location_ref") if isinstance(c.get("location_ref"), dict) else None
+        if location and valid_dfd_ids and str(location.get("id")) not in valid_dfd_ids:
+            location = None
+        c["location_ref"] = location or (target_refs[0] if target_refs else None)
         c["priority"] = c.get("priority") or _highest_priority(priorities)
+        c["implementation_status"] = c.get("implementation_status") or c.get("status") or "Unknown"
+        c["status"] = c.get("status") or c["implementation_status"]
+        verification_refs = c.get("verification_evidence_refs") if isinstance(c.get("verification_evidence_refs"), list) else []
+        c["verification_evidence_refs"] = [
+            str(ref) for ref in verification_refs
+            if evidence_ids is None or str(ref) in evidence_ids
+        ]
+        c["control_origin"] = c.get("control_origin") or "recommended"
         c["review_status"] = c.get("review_status") or "Open"
         c["checklist_items"] = c.get("checklist_items") or _control_checklist(c, related, project)
         c["verification_method"] = c.get("verification_method") or _verification_method(c)
@@ -445,7 +515,10 @@ def enrich_assumptions(items: Iterable[dict], threats: list, project: dict) -> l
 
 
 def update_item_by_id(items: list, id_field: str, item_id: str, patch: dict) -> bool:
-    allowed = {"status", "owner", "review_notes", "review_status", "evidence", "priority"}
+    allowed = {
+        "status", "implementation_status", "owner", "review_notes", "review_status",
+        "evidence", "verification_evidence_refs", "priority", "location_ref", "target_refs",
+    }
     for item in items:
         if item.get(id_field) == item_id:
             for key, value in patch.items():
@@ -454,6 +527,59 @@ def update_item_by_id(items: list, id_field: str, item_id: str, patch: dict) -> 
             item["reviewed_at"] = datetime.utcnow().isoformat()
             return True
     return False
+
+
+def validate_control_patch(
+    patch: dict,
+    dfd_model: dict | None = None,
+    evidence_ids: set[str] | None = None,
+) -> dict:
+    """Validate typed control location/target/evidence refs before persistence."""
+    allowed_statuses = {"Implemented", "Partial", "Missing", "Unknown"}
+    normalized = dict(patch or {})
+    for field in ("status", "implementation_status"):
+        if field in normalized and normalized[field] not in allowed_statuses:
+            raise ValueError(f"{field} is invalid")
+
+    valid_ids = {
+        str(item.get("id"))
+        for collection in ("nodes", "data_objects", "flows", "boundaries")
+        for item in (dfd_model.get(collection) or [] if isinstance(dfd_model, dict) else [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    if "target_refs" in normalized:
+        refs = normalized["target_refs"]
+        if not isinstance(refs, list):
+            raise ValueError("target_refs must be a list")
+        cleaned = []
+        for ref in refs:
+            if not isinstance(ref, dict) or not ref.get("id"):
+                raise ValueError("target_refs must contain typed refs")
+            if valid_ids and str(ref["id"]) not in valid_ids:
+                raise ValueError(f"Unknown DFD target ref: {ref['id']}")
+            cleaned.append({"type": str(ref.get("type") or "dfd_element"), "id": str(ref["id"])})
+        normalized["target_refs"] = cleaned
+    if "location_ref" in normalized:
+        location = normalized["location_ref"]
+        if location is not None:
+            if not isinstance(location, dict) or not location.get("id"):
+                raise ValueError("location_ref must be a typed ref or null")
+            if valid_ids and str(location["id"]) not in valid_ids:
+                raise ValueError(f"Unknown DFD location ref: {location['id']}")
+            normalized["location_ref"] = {
+                "type": str(location.get("type") or "dfd_element"),
+                "id": str(location["id"]),
+            }
+    if "verification_evidence_refs" in normalized:
+        refs = normalized["verification_evidence_refs"]
+        if not isinstance(refs, list):
+            raise ValueError("verification_evidence_refs must be a list")
+        normalized["verification_evidence_refs"] = [str(ref) for ref in refs]
+        if evidence_ids is not None:
+            invalid = [ref for ref in normalized["verification_evidence_refs"] if ref not in evidence_ids]
+            if invalid:
+                raise ValueError(f"Unknown verification evidence refs: {', '.join(invalid)}")
+    return normalized
 
 
 def _normalize(value: str) -> str:

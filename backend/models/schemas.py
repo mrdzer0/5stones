@@ -163,7 +163,9 @@ class Control(BaseModel):
     description: Optional[str] = None
     implementation_guidance: Optional[str] = None
     status: ControlStatus = "Unknown"
+    implementation_status: ControlStatus = "Unknown"
     evidence: Optional[str] = None
+    verification_evidence_refs: List[str] = Field(default_factory=list)
     checklist_items: List[str] = Field(default_factory=list)
     affected_components: List[str] = Field(default_factory=list)
     verification_method: Optional[str] = None
@@ -172,6 +174,7 @@ class Control(BaseModel):
     owner: Optional[str] = None
     threat_ids: List[str] = Field(default_factory=list)
     target_refs: List[dict] = Field(default_factory=list)
+    location_ref: Optional[dict] = None
 
 
 # ── Test Scenario ─────────────────────────────────────────────────────────────

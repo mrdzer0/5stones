@@ -791,6 +791,8 @@
 .analysis-stale-notice > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .analysis-stale-notice strong { color: #6f420d; font-size: .8rem; }
 .analysis-stale-notice span { font-size: .74rem; }
+.analysis-stale-notice.is-error { color: #8b1e1e; background: #fff1f1; border-color: #f1b5b5; }
+.analysis-stale-notice.is-error strong { color: #991b1b; }
 
 .analysis-overview {
   margin-bottom: var(--space-5);

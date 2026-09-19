@@ -195,7 +195,7 @@ async def upload_artifact(
     # Preserve user-entered context before adding the first structured source.
     capture_manual_context(project, legacy=bool(existing_sources))
     try:
-        parsed = await parse_artifact(data.artifact_type, data.content)
+        parsed = await parse_artifact(data.artifact_type, data.content, project.get("data_policy"))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     parsed["artifact_type"] = data.artifact_type

@@ -22,7 +22,7 @@ SENSITIVE_FIELD_TOKENS = {
 }
 
 
-async def parse_artifact(artifact_type: str, content: str) -> dict:
+async def parse_artifact(artifact_type: str, content: str, data_policy: str | None = None) -> dict:
     """Parse an artifact without using AI for schema-defined API formats."""
     safe_content = redact_text(content)
     if artifact_type == "openapi":
@@ -32,7 +32,7 @@ async def parse_artifact(artifact_type: str, content: str) -> dict:
         document = _load_structured_document(safe_content, allow_yaml=False)
         return parse_postman_document(document)
 
-    cfg = get_active_provider_config()
+    cfg = get_active_provider_config(data_policy)
     user_prompt = f"""Analyze this {artifact_type} artifact and extract security-relevant information.
 
 ARTIFACT CONTENT:

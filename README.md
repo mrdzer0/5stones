@@ -73,6 +73,11 @@ Bearer ...` on project-scoped requests. The default remains disabled for local
 single-user development; production deployments should replace this adapter
 with the application's IdP/JWT authorization layer.
 
+Provider endpoints are allowlisted before any outbound model request. OpenAI and
+OpenRouter hosts are built in; add a custom provider hostname to
+`LLM_PROVIDER_ALLOWLIST`. A project with `data_policy=local_only` requires a
+configured local endpoint and will not use an active cloud provider.
+
 ### 3. Run the server
 
 ```bash

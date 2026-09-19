@@ -53,6 +53,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('btn-run-affected')?.addEventListener('click', () => {
     runAnalysis(pendingArtifactAnalysisTypes.length ? pendingArtifactAnalysisTypes : fullAnalysisTypes());
   });
+  document.getElementById('btn-retry-persisted-analysis')?.addEventListener('click', retryPersistedAnalysis);
   document.getElementById('btn-apply-dfd-proposal')?.addEventListener('click', applyDfdProposal);
   document.getElementById('btn-upload-artifact')?.addEventListener('click', uploadArtifact);
   document.getElementById('artifact-type-select')?.addEventListener('change', (e) => updateArtifactFileAccept(e.target.value));
@@ -610,6 +611,51 @@ async function tryLoadExistingReport() {
   } catch {
     // No report yet — show empty state
     document.body.classList.remove('analysis-has-report');
+  }
+}
+
+function renderAnalysisRunState(report) {
+  const panel = document.getElementById('analysis-run-state');
+  const title = document.getElementById('analysis-run-state-title');
+  const message = document.getElementById('analysis-run-state-message');
+  const retry = document.getElementById('btn-retry-persisted-analysis');
+  if (!panel || !title || !message) return;
+  const run = report?.analysis_run;
+  if (!run?.status || run.status === 'completed') {
+    panel.style.display = 'none';
+    return;
+  }
+  const status = String(run.status);
+  const failed = status === 'failed';
+  const warning = status === 'completed_with_warnings';
+  const running = status === 'running';
+  panel.style.display = 'flex';
+  panel.classList.toggle('is-error', failed);
+  title.textContent = failed ? 'Analysis failed safely' : warning ? 'Analysis completed with review warnings' : 'Analysis run was interrupted';
+  const detail = run.error || (run.warning_stages?.length ? `Stages using baseline results: ${run.warning_stages.join(', ')}.` : 'The saved model remains available.');
+  message.textContent = `${detail} ${running || failed ? 'The previous saved model was preserved.' : ''}`.trim();
+  if (retry) {
+    retry.style.display = failed || running || warning ? '' : 'none';
+    retry.disabled = analysisIsRunning;
+  }
+}
+
+async function retryPersistedAnalysis() {
+  if (analysisIsRunning) return;
+  setAnalysisRunning(true);
+  const button = document.getElementById('btn-retry-persisted-analysis');
+  if (button) button.disabled = true;
+  try {
+    const report = await API.analysis.retry(projectId);
+    currentReport = report;
+    renderResults(report);
+    showToast(report.analysis_run?.status === 'completed_with_warnings' ? 'Analysis retried with review warnings.' : 'Analysis retry completed.', 'success');
+  } catch (err) {
+    showToast(`Analysis retry failed: ${userFacingAnalysisError(err.message)}`, 'error');
+    try { await tryLoadExistingReport(); } catch (_) {}
+  } finally {
+    setAnalysisRunning(false);
+    if (button) button.disabled = false;
   }
 }
 
@@ -1227,6 +1273,7 @@ function renderResults(report) {
   renderControls(visibility.controls);
   renderTests(visibility.tests);
   renderGaps(visibility.missingInfo, visibility.assumptions);
+  renderAnalysisRunState(report);
   syncAnalysisStaleness(report);
   renderDfdProposal(report);
   syncDfdHistoryButtons();

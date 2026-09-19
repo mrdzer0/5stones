@@ -327,7 +327,7 @@ function renderControlsTable(controls) {
   tbody.innerHTML = controls.map((c, index) => `
     <tr id="${reportRowId('control', c.control_id || c.name, index)}">
       <td data-label="Control">
-        <div class="report-cell-stack"><div class="report-finding-title">${escHtml(c.name || 'Unnamed control')}</div><span class="badge ${statusColor[c.status] || 'badge-neutral'}">${escHtml(c.review_status || c.status || 'Unknown')}</span></div>
+        <div class="report-cell-stack"><div class="report-finding-title">${escHtml(c.name || 'Unnamed control')}</div><span class="badge ${statusColor[c.implementation_status || c.status] || 'badge-neutral'}">${escHtml(c.review_status || c.implementation_status || c.status || 'Unknown')}</span><div class="text-xs text-muted">${escHtml(c.control_origin || 'recommended')} · ${c.location_ref?.id ? `location ${escHtml(c.location_ref.id)}` : 'location unknown'}</div></div>
       </td>
       <td data-label="Implementation"><div class="report-cell-value">${escHtml(c.implementation_guidance || c.description || '—')}</div></td>
       <td data-label="Verification">
@@ -335,6 +335,8 @@ function renderControlsTable(controls) {
         <details class="report-row-details"><summary>Evidence &amp; verification method</summary><div>
           <p><strong>Evidence:</strong> ${escHtml(c.evidence || 'Not provided')}</p>
           <p><strong>Verify with:</strong> ${escHtml(c.verification_method || 'Manual implementation review')}</p>
+          <p><strong>DFD targets:</strong> ${escHtml((c.target_refs || []).map(ref => ref.id).join(', ') || 'Unknown')}</p>
+          <p><strong>Verification evidence refs:</strong> ${escHtml((c.verification_evidence_refs || []).join(', ') || 'None recorded')}</p>
         </div></details>
       </td>
       <td data-label="Owner"><div class="report-cell-value">${escHtml(c.owner || 'Unassigned')}</div></td>

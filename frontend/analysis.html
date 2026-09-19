@@ -175,6 +175,15 @@
               Refresh affected stages
             </button>
           </div>
+          <div class="analysis-stale-notice" id="analysis-run-state" role="status" aria-live="polite" style="display:none;">
+            <div>
+              <strong id="analysis-run-state-title">Analysis state</strong>
+              <span id="analysis-run-state-message"></span>
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-retry-persisted-analysis" style="display:none;">
+              Retry analysis
+            </button>
+          </div>
           <div class="analysis-stale-notice" id="dfd-proposal-panel" role="region" aria-live="polite" style="display:none;">
             <div>
               <strong>DFD regeneration proposal</strong>

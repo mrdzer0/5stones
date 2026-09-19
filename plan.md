@@ -33,9 +33,9 @@ belum cukup untuk menyatakan fitur DFD/threat analysis selesai.
 | Data privacy/lifecycle | Data-object privacy assertions/questions dan store lifecycle unknowns sudah dibuat | Belum ada resolusi metadata privacy, retention, deletion, backup, recipient, dan legal-basis yang terintegrasi ke threat decision | P1 |
 | Evidence dan provenance | Evidence catalog, redaction, assertion status, evidence validation, conflict/question records tersedia | Pipeline review/resolution dan sumber evidence pada setiap edit belum menjadi workflow UI lengkap | P1 |
 | STRIDE/LINDDUN | Prompt menerima canonical snapshot; output/taxonomy/refs/coverage/revision divalidasi; deterministic graph coverage melengkapi pasangan element/category; fallback ditandai candidate-only | Demo masih memiliki banyak metadata unknown/inferred; accepted finding/control lifecycle dan engine-backed coverage review belum lengkap | P0/P1 |
-| Threat traceability | Threat dapat menarget typed node/flow/boundary/data object dan tombol focus membuka elemen DFD | Highlight lintas semua projection dan controls typed ke location/evidence masih perlu ditutup | P1 |
-| Revision/staleness | Semantic vs layout revision, stale marking, conflict, proposal diff/apply tersedia | Dismiss/partial review proposal, rerun job state, cancellation, dan recovery failure belum tersedia | P1 |
-| Safety/isolation | Redaction, schema checks, dan configurable workspace guard tersedia | Production IdP/JWT integration, provider URL allowlist, `local_only`, resource limits, serta failure/partial-model state belum ada | P0/P1 |
+| Threat traceability | Threat dapat menarget typed node/flow/boundary/data object, tombol focus membuka elemen DFD, dan controls membawa `location_ref`/`target_refs` | Highlight lintas semua projection dan control verification evidence workflow masih perlu ditutup | P1 |
+| Revision/staleness | Semantic vs layout revision, stale marking, conflict, proposal diff/apply, persisted run state, dan retry endpoint tersedia | Dismiss/partial review proposal, cancellation/job progress server-side, dan recovery lintas process masih belum tersedia | P1 |
+| Safety/isolation | Redaction, schema checks, configurable workspace guard, provider URL allowlist, `local_only`, token/timeout/retry limits, dan safe failure state tersedia | Production IdP/JWT integration, outbound resource quotas, serta full untrusted-document integration test belum ada | P0/P1 |
 | Export/import/reviewability | JSON schema-validated round-trip, SVG export, inventory, accessible text alternative, dan UI delete impact preview tersedia | Visual QA boundary/label clipping dan full destructive-flow integration test belum lengkap | P1 |
 
 Bukti Playwright pada project demo (`11c22c23-7517-4fd5-944a-a38f53cd7768`): Context,
@@ -231,6 +231,9 @@ Progress:
   transition scope, dan rationale; zone inspector dapat mengubah parent dan trust assumptions.
 - Backend `impact-preview` menghitung dependent node/flow/view/boundary/zone/question/threat
   sebelum deletion, dan UI delete menampilkan konfirmasi dependency sebelum mutasi.
+- Control mapping sekarang menyimpan implementation status terpisah dari review status,
+  menormalisasi `location_ref`/`target_refs` terhadap canonical DFD, dan menolak verification
+  evidence refs yang tidak ada.
 
 Deliverables:
 
@@ -347,6 +350,11 @@ Progress:
   routes saat `WORKSPACE_AUTH_REQUIRED=true`; cross-workspace project disamarkan sebagai 404.
 - Frontend meneruskan workspace ID dan bearer token dari `sessionStorage` bila deployment
   mengaktifkan guard.
+- Analysis run menyimpan state `running`, `failed`, `completed_with_warnings`, atau
+  `completed`; kegagalan menyimpan error redacted dan retryable state tanpa mengganti report
+  lama, sedangkan UI menampilkan status dan retry action.
+- Provider URL, local-only selection, token budget, timeout, dan retry count melewati policy
+  validation sebelum outbound request.
 
 Deliverables:
 
@@ -370,7 +378,7 @@ Status: **Sebagian selesai — prioritas P1/P2**
 
 Progress:
 
-- Test suite bertambah dari 24 menjadi 56 Python tests.
+- Test suite bertambah dari 24 menjadi 65 Python tests.
 - Test baru mencakup canonical model typed refs, graph invalidity, zone cycle, multi-boundary threat mapping, request/response, fixture crossing, DFD persistence, SVG escaping, threat schema validation, dan redaction.
 - Synthetic customer-registration source/model fixture tersedia; full acceptance coverage AC01–AC20 masih belum selesai.
 
@@ -408,15 +416,16 @@ Acceptance test groups:
 | Ownership/scope/exposure separation | Partial: independent fields, unknown questions, semantic crossing, reviewer/editor resolution; evidence-backed classification masih incomplete |
 | Nested and logical boundary | Partial: ancestor crossing, common-parent guard, logical reviewer crossing, zone/boundary editor, add/remove, dan question resolution; full logical boundary workflow belum ada |
 | Same-zone analysis | Partial: same-zone flows retained and analyzed; full UI coverage belum ada |
-| Threat traceability | Partial: explicit DFD refs, unmapped state, cross-boundary fan-out fixed, threat-to-DFD focus action |
+| Threat traceability | Partial: explicit DFD refs, unmapped state, cross-boundary fan-out fixed, threat-to-DFD focus action, typed control locations/evidence refs |
 | STRIDE coverage model | Partial: prompt, validated output, deterministic element/category coverage, revision tracking; engine-backed coverage masih reviewable |
 | LINDDUN PRO-aligned model | Partial: canonical labels/aliases, sender-flow-receiver prompt, non-compliance guard; lifecycle metadata analysis belum lengkap |
 | Editable DFD dan layout persistence | Partial: add/edit/remove node/flow/data/zone/boundary, inventory, I-P-O/store inspector, layout persistence, undo/redo, impact preview; automated UI mutation test belum ada |
 | Regenerate diff/revision conflict | Partial: revision conflict, candidate proposal, dan explicit apply sudah ada; dismiss/section review UI belum ada |
 | JSON round-trip/SVG export | Partial: schema-validated JSON import/export dan SVG export; visual QA boundary/label belum lengkap |
 | Authentication/project isolation | Partial: configurable token-per-workspace guard + cross-workspace resource check; IdP/JWT production integration belum ada |
+| Failure/retry/provider safety | Partial: persisted analysis run state, retry endpoint/UI, URL allowlist, local-only policy, and bounded token/timeout/retries; server-side cancellation/quota belum ada |
 | Synthetic DFD fixture | Partial: customer-registration source/model tersedia; Postman-only fixture inline test |
-| Automated verification sesuai AC01–AC20 | Partial: 56 Python tests + JS regression + Playwright UI smoke-test + access-control helper tests; end-to-end/UI/failure criteria belum lengkap |
+| Automated verification sesuai AC01–AC20 | Partial: 65 Python tests + JS regression + Playwright DFD/report smoke-test + access-control/provider/failure helper tests; full end-to-end/UI mutation criteria belum lengkap |
 
 ## Prioritas implementasi
 
@@ -441,7 +450,8 @@ Acceptance test groups:
 - 2026-09-19: Added zone/boundary metadata editors, backend deletion impact preview, and threat-card focus navigation to canonical DFD targets.
 - 2026-09-19: Added deterministic graph coverage completion, process I-P-O/store/data-object inspectors, question resolution, canonical add/remove UI, and duplicate display/reference validation.
 - 2026-09-19: Added configurable workspace authorization guard, cross-workspace resource isolation, frontend workspace headers, and access-control regression tests.
-- 2026-09-19: Verification: 56 Python unit tests, JavaScript analysis visibility regression, JS syntax checks, Python compilation, diff whitespace checks, and Playwright UI smoke-test passed; favicon route returns 200.
+- 2026-09-19: Added persisted analysis run state/retry boundary, provider URL/data-policy/resource validation, and typed control locations/verification references.
+- 2026-09-19: Verification: 65 Python unit tests, JavaScript analysis visibility regression, JS syntax checks, Python compilation, diff whitespace checks, and Playwright DFD/report smoke-test passed; favicon route returns 200.
 
 ## Progress rule
 
