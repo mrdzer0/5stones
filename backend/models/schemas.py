@@ -40,6 +40,11 @@ class ProjectCreate(BaseModel):
     external_systems: List[str] = Field(default_factory=list)
     critical_actions: List[str] = Field(default_factory=list)
     existing_controls: List[str] = Field(default_factory=list)
+    # Optional evidence-backed architecture classifications. Unknown values
+    # remain explicit in the canonical DFD until a reviewer supplies them.
+    entity_metadata: dict = Field(default_factory=dict)
+    zone_metadata: List[dict] = Field(default_factory=list)
+    boundary_metadata: List[dict] = Field(default_factory=list)
 
 
 class Project(ProjectCreate):

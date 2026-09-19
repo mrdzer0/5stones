@@ -19,7 +19,7 @@ from backend.services.dfd_model_service import (
     load_dfd_model,
     validate_dfd_model,
 )
-from backend.services.trust_boundary_service import attach_target_refs, build_trust_model
+from backend.services.trust_boundary_service import attach_boundary_refs, attach_target_refs, build_trust_model
 from backend.models.dfd import DfdFlow, DfdModel, DfdNode, DfdZone
 
 
@@ -133,6 +133,65 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertEqual(len(model.boundaries), 2)
         self.assertEqual(len(next(boundary for boundary in model.boundaries if "External Dependency" in boundary.name).crossing_flow_ids), 2)
         self.assertFalse(any("Customer" in (flow["source"], flow["destination"]) for flow in trust_model["data_flows"]))
+
+    def test_explicit_m3_classification_and_nested_zone_metadata_are_preserved(self):
+        project = {
+            **self.project,
+            "entity_metadata": {
+                "Customer": {
+                    "scope": "external_dependency",
+                    "ownership": "customer",
+                    "exposure": "internet_facing",
+                    "zone_id": "customer",
+                    "operator_control_party": "Customer",
+                    "evidence_refs": ["artifact:artifact-1:ownership"],
+                },
+                "Registration API": {
+                    "scope": "in_scope",
+                    "ownership": "organization",
+                    "exposure": "internet_facing",
+                    "zone_id": "application",
+                    "operator_control_party": "Acme Security",
+                    "evidence_refs": ["artifact:artifact-1:architecture"],
+                },
+                "Customer Database": {
+                    "scope": "in_scope",
+                    "ownership": "organization",
+                    "exposure": "private",
+                    "zone_id": "restricted-data",
+                },
+            },
+            "zone_metadata": [
+                {"id": "customer", "name": "Customer-controlled", "evidence_refs": ["artifact:artifact-1:zones"]},
+                {"id": "organization", "name": "Organization", "ownership_group_id": "org-group", "evidence_refs": ["artifact:artifact-1:zones"]},
+                {"id": "application", "name": "Application", "parent_zone_id": "organization", "ownership_group_id": "org-group", "evidence_refs": ["artifact:artifact-1:zones"]},
+                {"id": "restricted-data", "name": "Restricted data", "parent_zone_id": "organization", "ownership_group_id": "org-group", "evidence_refs": ["artifact:artifact-1:zones"]},
+            ],
+            "extracted_data_flows": [
+                {**self.project["extracted_data_flows"][0], "boundary_types": ["network", "organization"]},
+                self.project["extracted_data_flows"][1],
+            ],
+        }
+
+        trust_model = build_trust_model(project)
+        model = build_dfd_model(project, trust_model)
+        nodes = {node.name: node for node in model.nodes}
+        zones = {zone.id: zone for zone in model.zones}
+
+        self.assertEqual((nodes["Customer"].scope, nodes["Customer"].ownership, nodes["Customer"].exposure), ("external_dependency", "customer", "internet_facing"))
+        self.assertEqual(nodes["Registration API"].operator_control_party, "Acme Security")
+        self.assertEqual(nodes["Customer Database"].exposure, "private")
+        self.assertEqual(zones["zone-application"].parent_zone_id, "zone-organization")
+        self.assertEqual(zones["zone-application"].ownership_group_id, "org-group")
+        self.assertIn("network", model.boundaries[0].types)
+        self.assertIn("organization", model.boundaries[0].types)
+
+    def test_missing_m3_classification_stays_unknown(self):
+        model = build_dfd_model(self.project, build_trust_model(self.project))
+
+        self.assertTrue(all(node.scope == "unknown" for node in model.nodes))
+        self.assertTrue(all(node.ownership == "unknown" for node in model.nodes))
+        self.assertTrue(all(node.exposure == "unknown" for node in model.nodes))
 
     def test_canonical_operations_split_request_and_response_flows(self):
         project = {
@@ -347,6 +406,21 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertEqual(threat["trust_boundary_ids"], [])
         self.assertFalse(any(ref["type"] == "trust_boundary" for ref in threat["target_refs"]))
         self.assertEqual(threat["mapping_status"], "unmapped")
+
+    def test_boundary_label_matching_uses_word_boundaries(self):
+        model = build_trust_model(self.project)
+        boundary = model["boundaries"][0]
+        threats = [{
+            "threat_id": "near-match",
+            "trust_boundary": "SuperUser to API Gateway",
+            "source": "SuperUser",
+            "destination": "Identity API",
+        }]
+
+        attach_boundary_refs(threats, [boundary])
+
+        self.assertEqual(threats[0]["trust_boundary_ids"], [])
+        self.assertEqual(threats[0]["mapping_status"], "unmapped")
 
     def test_synthetic_customer_registration_covers_nested_and_logical_crossings(self):
         fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"

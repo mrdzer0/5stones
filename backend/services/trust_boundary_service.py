@@ -12,6 +12,10 @@ from typing import Any
 
 TRUST_MODEL_VERSION = "grounded-v2"
 TRUST_BOUNDARY_REVIEW_STATUSES = {"Candidate", "Confirmed", "Rejected"}
+BOUNDARY_TYPES = {"network", "identity", "privilege", "tenant", "organization", "unknown"}
+ENTITY_SCOPES = {"in_scope", "external_dependency", "unknown"}
+ENTITY_OWNERSHIPS = {"organization", "customer", "vendor", "shared", "unknown"}
+ENTITY_EXPOSURES = {"internet_facing", "private", "local", "unknown"}
 
 
 def _unique_strings(values) -> list[str]:
@@ -100,6 +104,96 @@ def _same_entity_name(left: str, right: str) -> bool:
     return not left_first or not right_first or left_first == right_first
 
 
+def _entity_metadata_index(project: dict) -> dict[str, dict]:
+    """Read explicit entity classifications without deriving security facts from labels."""
+    manual = project.get("manual_context") if isinstance(project.get("manual_context"), dict) else {}
+    raw = project.get("entity_metadata") or manual.get("entity_metadata") or {}
+    entries = raw.items() if isinstance(raw, dict) else (
+        (item.get("name") or item.get("label"), item)
+        for item in (raw or []) if isinstance(item, dict)
+    )
+    result = {}
+    for label, metadata in entries:
+        if label and isinstance(metadata, dict):
+            result[str(label).casefold()] = metadata
+    return result
+
+
+def _zone_metadata_index(project: dict) -> dict[str, dict]:
+    """Normalize optional nested-zone metadata to stable unprefixed zone keys."""
+    raw = project.get("zone_metadata") or project.get("trust_zones") or []
+    if isinstance(raw, dict):
+        entries = [dict(value, id=key) if isinstance(value, dict) else {"id": key} for key, value in raw.items()]
+    else:
+        entries = [item for item in raw if isinstance(item, dict)]
+    result = {}
+    for item in entries:
+        zone_id = str(item.get("id") or item.get("zone_id") or "").strip()
+        if not zone_id:
+            continue
+        key = zone_id.removeprefix("zone-")
+        normalized = dict(item)
+        normalized["id"] = key
+        parent = str(normalized.get("parent_zone_id") or normalized.get("parentZoneId") or "").strip()
+        normalized["parent_zone_id"] = parent.removeprefix("zone-") if parent else None
+        result[key] = normalized
+    return result
+
+
+def _effective_zone_ids(zone_id: str, zone_metadata: dict[str, dict]) -> set[str]:
+    members = set()
+    current = str(zone_id or "").removeprefix("zone-")
+    visited = set()
+    while current and current not in visited:
+        visited.add(current)
+        members.add(current)
+        current = str(zone_metadata.get(current, {}).get("parent_zone_id") or "").removeprefix("zone-")
+    return members
+
+
+def _is_zone_transition(source_zone: str, destination_zone: str, zone_metadata: dict[str, dict]) -> bool:
+    source_members = _effective_zone_ids(source_zone, zone_metadata)
+    destination_members = _effective_zone_ids(destination_zone, zone_metadata)
+    shared = source_members & destination_members
+    return bool((source_members - shared) and (destination_members - shared))
+
+
+def _explicit_boundary_types(*sources: dict | None) -> list[str]:
+    values = []
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        raw = source.get("boundary_types") or source.get("boundaryTypes") or source.get("boundary_type")
+        if isinstance(raw, str):
+            raw = [raw]
+        values.extend(str(value).strip().casefold() for value in (raw or []))
+    normalized = _unique_strings(values)
+    typed = [value for value in normalized if value in BOUNDARY_TYPES and value != "unknown"]
+    return typed or ["unknown"]
+
+
+def _boundary_metadata_for_flow(project: dict, flow: dict) -> list[dict]:
+    raw = project.get("boundary_metadata") or []
+    if isinstance(raw, dict):
+        raw = [dict(value, boundary_id=key) if isinstance(value, dict) else {"boundary_id": key} for key, value in raw.items()]
+    source = str(flow.get("source") or "").casefold()
+    destination = str(flow.get("destination") or "").casefold()
+    flow_id = str(flow.get("flow_id") or "")
+    matched = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        flow_ids = {str(value) for value in (item.get("flow_ids") or item.get("crossing_flow_ids") or [])}
+        item_source = str(item.get("source") or "").casefold()
+        item_destination = str(item.get("destination") or "").casefold()
+        if (
+            flow_id in flow_ids
+            or (item_source and item_destination and item_source == source and item_destination == destination)
+        ):
+            matched.append(item)
+    return matched
+
+
 def _composite_external_endpoint(label: str, external_systems: list[str]) -> bool:
     base, separator, detail = label.partition("(")
     if not separator or not re.search(r"\b(?:apis?|providers?)\b", base, re.I):
@@ -111,6 +205,8 @@ def _composite_external_endpoint(label: str, external_systems: list[str]) -> boo
 def build_entity_registry(project: dict, flows: list[dict] | None = None) -> dict[str, dict]:
     """Build the allowlist of entities that boundary results may reference."""
     manual = project.get("manual_context") if isinstance(project.get("manual_context"), dict) else {}
+    metadata_index = _entity_metadata_index(project)
+    zone_metadata = _zone_metadata_index(project)
     registry: dict[str, dict] = {}
     external_systems = [str(value) for value in (project.get("external_systems") or []) if value]
     type_rank = {"component": 0, "ingress": 1, "actor": 2, "data_store": 3, "external_system": 3}
@@ -123,15 +219,30 @@ def build_entity_registry(project: dict, flows: list[dict] | None = None) -> dic
         key = matches[0] if len(matches) == 1 else display.casefold()
         if entity_type == "component" and _composite_external_endpoint(display, external_systems):
             entity_type = "external_system"
-        zone_id, trust_level = _entity_zone(entity_type, display)
+        metadata = metadata_index.get(display.casefold(), {})
+        if not metadata:
+            metadata = next(
+                (value for label, value in metadata_index.items() if _same_entity_name(display, label)),
+                {},
+            )
+        inferred_zone_id, trust_level = _entity_zone(entity_type, display)
+        explicit_zone_id = str(metadata.get("zone_id") or metadata.get("trust_zone_id") or "").strip().removeprefix("zone-")
+        zone_id = explicit_zone_id or inferred_zone_id
+        explicit_evidence_refs = _unique_strings(metadata.get("evidence_refs") or metadata.get("evidence") or [])
         record = registry.setdefault(key, {
             "entity_id": _stable_id("entity", display),
             "name": display,
             "entity_type": entity_type,
             "zone_id": zone_id,
             "trust_level": trust_level,
+            "scope": "unknown",
+            "ownership": "unknown",
+            "exposure": "unknown",
+            "operator_control_party": None,
+            "zone_parent_id": zone_metadata.get(zone_id, {}).get("parent_zone_id"),
+            "zone_metadata_source": "explicit" if explicit_zone_id or zone_id in zone_metadata else "inferred",
             "confidence": confidence,
-            "evidence_refs": [],
+            "evidence_refs": explicit_evidence_refs,
         })
         record["evidence_refs"] = _unique_strings([*record["evidence_refs"], f"{source}:{locator}"])
         if type_rank.get(entity_type, 0) > type_rank.get(record["entity_type"], 0):
@@ -139,6 +250,21 @@ def build_entity_registry(project: dict, flows: list[dict] | None = None) -> dic
         if source != "flow" and record["name"] != display and type_rank.get(entity_type, 0) >= type_rank.get(record["entity_type"], 0):
             record["name"] = display
             record["entity_id"] = _stable_id("entity", display)
+        for field, allowed in (
+            ("scope", ENTITY_SCOPES),
+            ("ownership", ENTITY_OWNERSHIPS),
+            ("exposure", ENTITY_EXPOSURES),
+        ):
+            value = str(metadata.get(field) or "").strip().casefold()
+            if value in allowed:
+                record[field] = value
+        operator = str(metadata.get("operator_control_party") or metadata.get("operatorControlParty") or "").strip()
+        if operator:
+            record["operator_control_party"] = operator
+        if explicit_zone_id or zone_id in zone_metadata:
+            record["zone_parent_id"] = zone_metadata.get(zone_id, {}).get("parent_zone_id")
+            record["zone_metadata_source"] = "explicit"
+            record["evidence_refs"] = _unique_strings([*record["evidence_refs"], *explicit_evidence_refs])
         if confidence == "High":
             record["confidence"] = "High"
 
@@ -254,6 +380,11 @@ def validate_boundary_candidates(boundaries: list[dict], registry: dict[str, dic
     accepted: list[dict] = []
     warnings: list[str] = []
     flows_by_id = {flow.get("flow_id"): flow for flow in flows if flow.get("flow_id")}
+    zone_metadata = {
+        str(item.get("zone_id")): {"parent_zone_id": item.get("zone_parent_id")}
+        for item in registry.values()
+        if item.get("zone_id")
+    }
     seen: set[tuple[str, str, str, str]] = set()
 
     for boundary in boundaries:
@@ -274,7 +405,7 @@ def validate_boundary_candidates(boundaries: list[dict], registry: dict[str, dic
         if not matching_flows:
             warnings.append(f"Rejected boundary without a matching data flow: {boundary.get('source')} → {boundary.get('destination')}")
             continue
-        if source_entity["zone_id"] == destination_entity["zone_id"]:
+        if not _is_zone_transition(source_entity["zone_id"], destination_entity["zone_id"], zone_metadata):
             warnings.append(f"Rejected same-zone relationship: {boundary.get('source')} → {boundary.get('destination')}")
             continue
 
@@ -306,6 +437,7 @@ def validate_boundary_candidates(boundaries: list[dict], registry: dict[str, dic
             "destination_zone_id": destination_entity["zone_id"],
             "source_trust_level": source_entity["trust_level"],
             "destination_trust_level": destination_entity["trust_level"],
+            "boundary_types": _explicit_boundary_types(boundary, *(matching_flows[:1] or [{}])),
             "evidence_refs": evidence_refs,
             "crossing_flow_ids": [flow["flow_id"] for flow in matching_flows],
             "generation_method": "deterministic",
@@ -376,11 +508,16 @@ def _group_zone_boundaries(boundaries: list[dict]) -> list[dict]:
         first = dict(members[0])
         evidence_refs = _unique_strings(ref for item in members for ref in item.get("evidence_refs", []))
         flow_ids = _unique_strings(flow_id for item in members for flow_id in item.get("crossing_flow_ids", []))
+        boundary_types = _explicit_boundary_types(*(
+            {"boundary_types": item.get("boundary_types") or []}
+            for item in members
+        ))
         first.update({
             "boundary_id": _stable_id("boundary", *zone_pair),
             "boundary_label": f"{zone_pair[0].replace('-', ' ').title()} ↔ {zone_pair[1].replace('-', ' ').title()}",
             "basis": "Evidenced flows cross this trust-zone transition; review the controls for each flow.",
             "evidence_refs": evidence_refs,
+            "boundary_types": boundary_types,
             "crossing_flow_ids": flow_ids,
             "status": "Candidate" if any(item.get("status") != "Confirmed" for item in members) else "Confirmed",
             "model_fingerprint": _stable_id("topology", *zone_pair, *sorted(evidence_refs), *sorted(flow_ids)),
@@ -752,6 +889,12 @@ def attach_target_refs(
             "component", "source", "destination", "trust_boundary",
         )).casefold()
 
+    def phrase_present(text: str, phrase: str) -> bool:
+        normalized = " ".join(str(phrase or "").casefold().split())
+        if not normalized:
+            return False
+        return bool(re.search(rf"(?<![a-z0-9]){re.escape(normalized)}(?![a-z0-9])", text))
+
     def scenario_text(item: dict) -> str:
         # Do not use the broad evidence list here. A report may retain secondary
         # references from another operation; those are useful for review but are
@@ -796,7 +939,9 @@ def attach_target_refs(
                 source = str(boundary.get("source") or "").casefold()
                 destination = str(boundary.get("destination") or "").casefold()
                 label = str(boundary.get("boundary_label") or "").casefold()
-                if (source and destination and source in text and destination in text) or (label and label in text):
+                if (
+                    source and destination and phrase_present(text, source) and phrase_present(text, destination)
+                ) or (label and phrase_present(text, label)):
                     matched.append(str(boundary["boundary_id"]))
             # An unmapped finding must remain unmapped. Falling back to every
             # boundary creates false cross-boundary coverage and can hide a
@@ -917,6 +1062,7 @@ def propagate_target_refs(report: dict) -> dict:
 def build_trust_model(project: dict) -> dict:
     flows = build_grounded_data_flows(project)
     registry = build_entity_registry(project, flows)
+    zone_metadata = _zone_metadata_index(project)
     normalized_flows = []
     for flow in flows:
         normalized = dict(flow)
@@ -931,17 +1077,27 @@ def build_trust_model(project: dict) -> dict:
     for flow in flows:
         source = registry.get(str(flow.get("source") or "").casefold())
         destination = registry.get(str(flow.get("destination") or "").casefold())
-        if not source or not destination or source["zone_id"] == destination["zone_id"]:
+        if not source or not destination or not _is_zone_transition(source["zone_id"], destination["zone_id"], zone_metadata):
             continue
+        boundary_metadata = _boundary_metadata_for_flow(project, flow)
+        metadata_evidence = _unique_strings(
+            ref
+            for item in boundary_metadata
+            for ref in (item.get("evidence_refs") or item.get("evidenceRefs") or [])
+        )
         candidates.append({
             "source": source["name"],
             "destination": destination["name"],
             "boundary_label": f"{source['zone_id'].replace('-', ' ').title()} → {destination['zone_id'].replace('-', ' ').title()}",
             "risk_note": "Data enters a different trust zone. Validate identity, authorization, input constraints, and abuse resistance at this ingress.",
-            "basis": flow.get("basis"),
+            "basis": next(
+                (item.get("rationale") or item.get("basis") for item in boundary_metadata if item.get("rationale") or item.get("basis")),
+                flow.get("basis"),
+            ),
+            "boundary_types": _explicit_boundary_types(flow, *boundary_metadata),
             "confidence": flow.get("confidence", "Low"),
             "status": flow.get("status", "Candidate"),
-            "evidence_refs": flow.get("evidence_refs", []),
+            "evidence_refs": _unique_strings([*(flow.get("evidence_refs") or []), *metadata_evidence]),
             "crossing_flow_ids": [flow["flow_id"]],
         })
 

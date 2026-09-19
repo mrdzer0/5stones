@@ -763,17 +763,46 @@ def build_dfd_model(project: dict, trust_model: dict, previous: dict | None = No
     for node_type, prefix in (("entity", "E"), ("process", "P"), ("data_store", "D")):
         display_by_node.update(_display_ids([item for item in raw_nodes if item["type"] == node_type], prefix))
 
-    zone_ids = sorted({str(item.get("zone_id")) for item in entities if item.get("zone_id")})
+    raw_zone_metadata = project.get("zone_metadata") or project.get("trust_zones") or []
+    if isinstance(raw_zone_metadata, dict):
+        zone_metadata_items = [dict(value, id=key) if isinstance(value, dict) else {"id": key} for key, value in raw_zone_metadata.items()]
+    else:
+        zone_metadata_items = [item for item in raw_zone_metadata if isinstance(item, dict)]
+    zone_metadata = {}
+    for item in zone_metadata_items:
+        zone_id = str(item.get("id") or item.get("zone_id") or "").strip().removeprefix("zone-")
+        if zone_id:
+            zone_metadata[zone_id] = item
+    zone_ids = sorted({
+        *[str(item.get("zone_id")) for item in entities if item.get("zone_id")],
+        *zone_metadata,
+    })
     zone_display = {zone_id: f"Z{index}" for index, zone_id in enumerate(zone_ids, start=1)}
     zones = [DfdZone(
         id=f"zone-{zone_id}",
         display_id=zone_display[zone_id],
-        name=_zone_label(zone_id),
-        description="Derived from grounded topology; ownership and exposure require review.",
-        trust_assumptions=[],
-        knowledge_status="inferred",
+        name=str(zone_metadata.get(zone_id, {}).get("name") or _zone_label(zone_id)),
+        description=zone_metadata.get(zone_id, {}).get("description") or "Derived from grounded topology; ownership and exposure require review.",
+        parent_zone_id=(
+            f"zone-{str(zone_metadata[zone_id].get('parent_zone_id') or zone_metadata[zone_id].get('parentZoneId')).removeprefix('zone-')}"
+            if zone_metadata.get(zone_id, {}).get("parent_zone_id") or zone_metadata.get(zone_id, {}).get("parentZoneId")
+            else None
+        ),
+        ownership_group_id=zone_metadata.get(zone_id, {}).get("ownership_group_id") or zone_metadata.get(zone_id, {}).get("ownershipGroupId"),
+        trust_assumptions=list(zone_metadata.get(zone_id, {}).get("trust_assumptions") or zone_metadata.get(zone_id, {}).get("trustAssumptions") or []),
+        knowledge_status=(
+            "documented" if zone_metadata.get(zone_id, {}).get("evidence_refs") or zone_metadata.get(zone_id, {}).get("evidenceRefs")
+            else "inferred"
+        ),
+        evidence_refs=_unique(
+            zone_metadata.get(zone_id, {}).get("evidence_refs") or zone_metadata.get(zone_id, {}).get("evidenceRefs") or []
+        ),
     ) for zone_id in zone_ids]
-    zone_ref = {zone_id: f"zone-{zone_id}" for zone_id in zone_ids}
+    zone_ref = {
+        alias: f"zone-{zone_id}"
+        for zone_id in zone_ids
+        for alias in (zone_id, f"zone-{zone_id}")
+    }
 
     nodes = []
     for item in entities:
@@ -784,9 +813,10 @@ def build_dfd_model(project: dict, trust_model: dict, previous: dict | None = No
             display_id=display_by_node[node_id],
             type=raw_type,
             name=item["name"],
-            scope="unknown",
-            ownership="unknown",
-            exposure="unknown",
+            scope=item.get("scope") if item.get("scope") in {"in_scope", "external_dependency", "unknown"} else "unknown",
+            ownership=item.get("ownership") if item.get("ownership") in {"organization", "customer", "vendor", "shared", "unknown"} else "unknown",
+            operator_control_party=item.get("operator_control_party"),
+            exposure=item.get("exposure") if item.get("exposure") in {"internet_facing", "private", "local", "unknown"} else "unknown",
             zone_ids=[zone_ref[item["zone_id"]]] if item.get("zone_id") in zone_ref else [],
             knowledge_status="inferred" if item.get("confidence") != "High" else "documented",
             evidence_refs=_unique(item.get("evidence_refs", [])),
