@@ -5,9 +5,10 @@
 - Acuan: `DFD_Feature_AI_Agent_Prompt.md`
 - Status project saat ini: **grounded threat-modeling MVP dengan DFD visualization**.
 - Target akhir: **semantic DFD modeling feature** yang menjadi source of truth untuk canvas, inventory, export, STRIDE, dan LINDDUN.
-- Verifikasi branch saat ini: 79 test Python lulus, 1 regression test JavaScript lulus, syntax/diff checks lulus, dan Playwright smoke-test UI/API lulus.
+- Verifikasi branch saat ini: 82 test Python lulus, 1 regression test JavaScript lulus, syntax/diff checks lulus, dan Playwright smoke-test UI/API lulus.
 - Branch enhanced/revamp: `codex/dfd-threat-model-alignment`.
 - Checkpoint fondasi: `77db35f Add canonical DFD semantic model foundation`.
+- Audit core terbaru: **2026-09-19**, terhadap commit `d6b8111` dan report demo revision 5. Gunakan bagian **Audit core function dan optimasi** serta milestone **C0–C6** sebagai urutan pekerjaan berikutnya; M0–M9 tetap menjadi peta alignment historis.
 
 ## Goal
 
@@ -20,10 +21,140 @@ Align project dengan dokumen acuan, dengan fokus pada:
 5. UI DFD yang editable, dapat direview, disimpan, diekspor, dan dapat ditelusuri ke threat.
 6. Isolation, redaction, schema validation, dan proteksi untrusted document.
 
+## Audit core function dan optimasi — 2026-09-19
+
+### Kesimpulan dan batas penilaian
+
+Project **sebagian selaras dengan praktik threat modeling, tetapi belum konsisten untuk handoff end-to-end ke Developer/QA**. DFD canonical, evidence, taxonomy, dan review lifecycle merupakan fondasi yang dapat dipakai untuk assisted review. Kelemahan utama ada pada kualitas input analisis, konsistensi revisi, applicability rekomendasi kontrol, serta kelengkapan dan pembuktian hasil test.
+
+Tidak ada satu standar threat modeling universal yang menjadikan pemakaian label STRIDE/LINDDUN sebagai sertifikasi. Audit memakai empat tahap OWASP—modeling, identifikasi/prioritisasi ancaman, mitigasi, review/validasi—sebagai pembanding proses; Microsoft untuk STRIDE; LINDDUN PRO untuk privacy; ASVS/WSTG untuk kebutuhan kontrol dan pengujian. Schema DFD dan AC01–AC20 di dokumen project adalah kontrak produk, bukan schema wajib resmi framework. [OWASP Threat Modeling](https://cheatsheetseries.owasp.org/cheatsheets/Threat_Modeling_Cheat_Sheet.html)
+
+Scope sesi ini adalah inspeksi kode, report tersimpan, pemeriksaan UI dengan Playwright, reproduksi helper di memori, dan pembaruan plan. Tidak menjalankan ulang provider berbayar, mengganti data report, menjalankan security test terhadap target, atau mengimplementasikan perbaikan runtime.
+
+### Referensi metode dan penerapannya
+
+| Referensi resmi | Yang dipakai dalam audit / target implementasi |
+|---|---|
+| [Microsoft STRIDE](https://learn.microsoft.com/en-us/azure/security/develop/threat-modeling-tool-threats) | Enam kategori ancaman untuk menyusun skenario spesifik; kategori bukan bukti vulnerability atau skor severity. |
+| [LINDDUN PRO](https://linddun.org/pro/) | Evaluasi interaksi sender–transfer–receiver secara sistematis, memakai applicability mapping dan threat trees; daftar tujuh kategori saja belum cukup. |
+| [LINDDUN threat types](https://linddun.org/threat-types/) | Privacy mencakup pemrosesan sah, linking/inference, attribution, data berlebih, dan kemampuan individu mengendalikan data. Pisahkan dampak individu dari dampak sistem. |
+| [OWASP ASVS](https://owasp.org/projects/asvs) | Referensi requirement kontrol aplikasi; versi stabil yang diperiksa: **5.0.0**. Simpan version + requirement ID + URL bila applicability terbukti. |
+| [OWASP WSTG](https://owasp.org/projects/web-security-testing-guide) | Referensi prosedur pengujian web; versi stabil yang diperiksa: **4.2**, sedangkan 5.0 masih pengembangan. Mapping hanya untuk test yang relevan; privacy lifecycle memerlukan skenario tambahan. |
+
+Mapping ke ASVS/WSTG adalah pilihan desain untuk traceability dan handoff, bukan syarat resmi agar analisis boleh disebut STRIDE atau LINDDUN. Versi internal `stride-v1`/`linddun-v1` saat ini perlu disertai sumber taxonomy/mapping yang dipin; jangan dipresentasikan sebagai versi publikasi resmi.
+
+### Bukti kondisi saat audit
+
+Report sampel: `11c22c23-7517-4fd5-944a-a38f53cd7768`, `generated_at=2026-09-19T14:15:06.784063`, canonical revision **5**. Angka berikut adalah snapshot satu project, bukan benchmark semua project.
+
+| Data / proses | Hasil pemeriksaan |
+|---|---|
+| DFD | 20 nodes, 14 data objects, 8 flows, 4 zones, 2 boundaries. `valid=true`, `semantic_ready=false`; 13 node tanpa flow dan zone Customer terisolasi. |
+| STRIDE / LINDDUN | 19 STRIDE + 3 LINDDUN tersimpan; 14 threat tanpa `analyzed_revision`, termasuk satu STRIDE tanpa `threat_category`. Hasil lama dan baru bercampur. |
+| Coverage STRIDE | 264 pasangan element/category: 43 candidate, 0 reviewed-no-candidate, 221 insufficient-information. |
+| Coverage LINDDUN | 308 pasangan: 27 candidate, 1 reviewed-no-candidate, 280 insufficient-information. Ini matriks internal aplikasi, bukan bukti seluruh interaksi PRO sudah diperiksa. |
+| Controls | Retry terbaru **sukses AI**, menghasilkan 12 controls. Sebanyak 11 berstatus `Missing` dan semuanya tanpa `verification_evidence_refs`; status ini belum membuktikan absence runtime. Error JSON sebelumnya bersifat intermittent, tidak lagi status controls terbaru. |
+| Tests | Masih fallback karena `KeyError: threat_category`; 10 test seluruhnya mengarah ke STRIDE, tidak ada test untuk tiga LINDDUN dalam snapshot. |
+| Review | DFD proposal 35 perubahan masih pending; seluruh downstream stage masih stale. Readiness context 75/100 bukan ukuran completeness graph atau mutu hasil analisis. |
+| Verifikasi repository | 82 Python tests + regression JavaScript lulus ulang. Acceptance pipeline yang ada men-stub controls/tests menjadi list kosong; kelulusan suite belum membuktikan kualitas kedua generator tersebut. |
+| Playwright | Diagram, coverage/partial/stale banners, Controls, Tests, dan expand scenario dapat diakses; 0 console error. Desktop 1440×900 dan Controls/Tests 390×844 setelah resize stabil tidak overflow halaman. Overflow awal 534 px bersifat sementara saat transisi, bukan defect persistent yang terkonfirmasi. |
+
+### Gap prioritas berdasarkan kode dan perilaku
+
+| ID / prioritas | Temuan dan dampak | Bukti utama / hasil yang diperlukan |
+|---|---|---|
+| F01 · P0 | Threat legacy tidak divalidasi sebelum downstream. STRIDE menghapus hanya fallback lama, sementara LINDDUN menghapus semua hasil framework sebelum merge: malformed/stale STRIDE bisa bertahan, review LINDDUN berisiko hilang. | [analysis.py](backend/routers/analysis.py), `merge_deduped_threats()` di [posture_service.py](backend/services/posture_service.py), [test_service.py](backend/services/test_service.py). Migrasi/quarantine record invalid dengan alasan dan audit; jangan mengubah kategori kosong menjadi `General` lalu menganggap valid. Reconcile per framework/revision dan pertahankan keputusan reviewer. |
+| F02 · P0 | Generator STRIDE/LINDDUN menolak `threats=[]` walaupun coverage bisa valid reviewed-no-candidate. Status AI sudah `ok=true` sebelum validasi candidate, sehingga semua output yang gugur berpotensi tetap tampak sukses. | [stride_service.py](backend/services/stride_service.py), [linddun_service.py](backend/services/linddun_service.py), [analysis.py](backend/routers/analysis.py). Bedakan valid empty assessment, schema failure, partial assessment, dan fallback; zero finding bukan otomatis failure atau proof of safety. |
+| F03 · P0 | Konteks DFD yang dikirim ke engine kehilangan atribut inti: flow `data_object_ids`, `protocol`, `authn/authz`, process identity/privilege/transformation, zone membership/assumptions tidak diserialisasi lengkap. Controls menerima ringkasan threat, Tests tidak menerima canonical DFD maupun hasil control mapping. | `format_dfd_analysis_context()` di [dfd_model_service.py](backend/services/dfd_model_service.py), [control_service.py](backend/services/control_service.py), [test_service.py](backend/services/test_service.py). Bentuk snapshot semantic yang lengkap dan ringkas lalu teruskan subset relevan dengan revision/hash yang sama ke semua stage. |
+| F04 · P0 | Respons controls hanya diparse sebagai JSON dan dicek nonempty; schema Control/TestScenario belum ditegakkan pada jalur generation. `finish_reason`/usage tidak dicatat dan budget stage hardcoded. Error malformed JSON belum dapat dibedakan dari output terpotong. | [ai_service.py](backend/services/ai_service.py), [control_service.py](backend/services/control_service.py), [test_service.py](backend/services/test_service.py). Validasi envelope, item, enum, dan refs; retry terbatas berdasarkan jenis kegagalan. Penyebab spesifik error JSON lama belum dapat dipastikan karena metadata respons tidak disimpan. |
+| F05 · P0 | Fallback controls memakai keyword seluruh threat lalu menghubungkan setiap match ke `threats[:3]`; jika tidak match memilih tiga controls pertama. `_related_threats_by_text()` juga dapat mencocokkan string kosong. Hubungan mitigasi dapat keliru walau ID valid. | [control_service.py](backend/services/control_service.py), [posture_service.py](backend/services/posture_service.py). Reproduksi di memori: control untuk threat ke-4 justru terhubung ke threat 1–3. Match per threat + data/interaction + applicability, simpan rationale; unsupported mapping tetap unassigned. |
+| F06 · P0 | Controls dapat membawa `Missing`/`Implemented` dari AI tanpa dasar implementasi terverifikasi. AI prompt tidak mendapat implementation evidence catalog yang memadai. Catalog mencampur consent dengan transparansi dan mapping TLS→Linkability terlalu luas untuk risiko inference saat data sedang diproses. | [control_service.py](backend/services/control_service.py), `enrich_controls()`, [controls_catalog.json](backend/data/controls_catalog.json). Default Unknown; pisahkan documented/planned/runtime-verified, evidence request vs evidence collected, dan review status. Tambahkan applicability untuk consent, endpoint signature, logging, dan privacy mitigations. |
+| F07 · P0 | Tests memakai indexing wajib yang crash pada legacy record, membatasi input AI ke 15 threat dan fallback ke 10 pertama. Template Spoofing otomatis menjadi webhook; fallback tidak memiliki template canonical LINDDUN lengkap. | [test_service.py](backend/services/test_service.py). Generate dari validated active threat + linked control + interaction; batch semua threat relevan dan catat not-applicable/blocked beserta alasan. Jangan menyamakan semua Spoofing dengan webhook. |
+| F08 · P0 | Staleness di-clear berdasarkan stage yang diminta, bukan hanya hasil current-revision yang sukses dan tervalidasi. Full analysis UI membuat request terpisah per stage sehingga tidak ada immutable run snapshot bersama; API multi-stage memberi semua stage durasi total yang sama. | [analysis.py](backend/routers/analysis.py), `runAnalysis()` di [analysis.js](frontend/js/analysis.js). Run manifest berisi model/source revision, stage dependencies dan state; kegagalan tidak menggantikan verified history atau meng-clear stale; ukur durasi tiap stage. |
+| F09 · P1 | `semantic_ready` hanya merangkum subset topology issues. Model kosong direproduksi `valid=true, semantic_ready=true`; warning flow tanpa process/data label dan unresolved crossing tidak semuanya memengaruhi readiness. Detector zone memakai membership langsung sehingga parent container dapat mendapat false-positive isolation. | `validate_dfd_model()` di [dfd_model_service.py](backend/services/dfd_model_service.py). Pisahkan structural validity, topology coverage, knowledge completeness, dan reviewer acceptance; draft kosong boleh disimpan tetapi belum analysis-ready. Gunakan ancestor dan scope untuk menentukan connectivity yang relevan. |
+| F10 · P1 | DFD generation masih memakai heuristic type→zone dan label seperti `Internal Trusted` / `Sensitive Internal Store`. Seluruh external system bisa digabung satu zone meskipun control party berbeda. Alias helper belum mempertimbangkan environment/tenant sebagai bagian identitas. | `_entity_zone()`, `_same_entity_name()` di [trust_boundary_service.py](backend/services/trust_boundary_service.py). Jadikan grouping inferred/reviewable, gunakan evidence identitas/ownership/control party untuk split/merge; semantic boundary bukan otomatis ownership group. |
+| F11 · P1 | Coverage semua element×category tidak mempunyai applicability/not-applicable rationale atau manifest interaksi PRO. Non-compliance guard hanya menurunkan status bila obligation **dan** evidence sama-sama kosong. Salah satu kosong lolos—terkonfirmasi via helper. LINDDUN juga default `data_classification=PII` ketika field dihilangkan engine. | [threat_validation_service.py](backend/services/threat_validation_service.py), [linddun_service.py](backend/services/linddun_service.py). Validasi kedua kebutuhan secara terpisah, pertahankan classification unknown, dan simpan interaction/mapping/threat-type refs. Classification/security/privacy tidak boleh dipromosikan menjadi fakta dari default. |
+| F12 · P1 | Risk summary menjumlah label AI tanpa likelihood/impact rationale atau residual-risk method; review preservation untuk controls/tests belum konsisten saat regenerate karena replacement list dan UUID baru. | [analysis.py](backend/routers/analysis.py), [posture_service.py](backend/services/posture_service.py). Risk rubric yang terdokumentasi, owner/decision/rationale dan stable control/test identity. Jangan menyamakan confidence, completeness, atau jumlah finding dengan risiko. |
+| F13 · P1 | Catalog 15 controls tidak memiliki versioned standard references. Test menyimpan `related_control` sebagai teks, belum control IDs, execution status, actual result, environment/build atau verification evidence. UI Tests tidak menampilkan `evidence_needed`, link DFD/threat, atau aksi hasil eksekusi; header accordion berupa `div onclick` tanpa keyboard semantics. Markdown export hanya ringkasan test. | [schemas.py](backend/models/schemas.py), [controls_catalog.json](backend/data/controls_catalog.json), `renderControls()/renderTests()` di [analysis.js](frontend/js/analysis.js), [export.py](backend/routers/export.py). Handoff perlu traceability, acceptance criteria, status dan evidence; UI harus membedakan recommendation/review/implementation/execution. |
+
+### Optimasi data dan processing yang disarankan
+
+Urutan target: **ingest/version → normalize/evidence → validate/review DFD → freeze analysis snapshot → STRIDE & LINDDUN → reconcile findings → controls → verification plan → review/execution evidence**. Model parsial tetap dapat dianalisis, tetapi scope, omitted context, asumsi, dan coverage yang belum diperiksa harus terlihat.
+
+| Lapisan | Kondisi sekarang | Optimasi dan kriteria keberhasilan |
+|---|---|---|
+| Ingestion dokumen | Generic AI parser hanya membaca `safe_content[:8000]`, meminta maksimum 12 evidence items. Detail akhir dokumen berisiko tidak ikut diekstrak. | Chunk berdasarkan section/locator dengan coverage manifest, dedupe evidence berdasarkan source revision/hash; tampilkan bagian yang belum dibaca. Fixture penting setelah karakter ke-8000 harus terambil atau eksplisit deferred. |
+| Evidence/context | Prompt evidence mengambil 28 item pertama; canonical evidence mengikutkan 96 item catalog pertama sebelum handling refs tambahan. DFD prompt memasukkan semua questions, termasuk yang sudah resolved. | Index evidence per element/interaction, retrieve yang relevan untuk setiap batch, laporkan truncation/omission, simpan full evidence di model. Resolved questions diringkas tanpa menghilangkan keputusan reviewer. |
+| Analysis contract | Serializer tekstual kehilangan semantics penting; tiap stage membangun context sendiri. | Typed `AnalysisSnapshot` berisi project/model/source hash, relevant nodes/flows/data/store/assertions/controls, valid IDs, privacy context dan scope. Persist prompt/schema/taxonomy/provider-model versions + result provenance untuk reproduksi. |
+| Budget dan structured output | Token hardcoded: STRIDE 4000, LINDDUN 3000, controls 3000, tests 3500; nilai provider `max_tokens` dibaca tetapi tidak dipakai sebagai budget stage ini. | Effective budget di bawah policy cap, hitung perkiraan ukuran dan batch per interaction/threat/control; catat usage, finish reason, validation outcome, retry reason dan latency. Benchmark dahulu sebelum menetapkan target latency/cost. |
+| Scheduling | UI serial menjalankan stage dengan POST lalu GET report penuh; catalog/evidence/review enrichment berulang. | Setelah snapshot immutable tersedia, STRIDE dan LINDDUN dapat berjalan paralel terbatas lalu join sebelum controls/tests. Cache context/catalog dalam run; retry hanya stage gagal dan dependent stages yang invalid. Jangan memparalelkan penulisan file report shared saat ini. |
+| Incremental update | Semantic hash dan stale flags tersedia, tetapi belum cache per scope analisis. | Cache key minimal workspace/project + model/source/evidence hash + framework/prompt/schema/model version + policy. Invalidasi neighborhood/data lifecycle terkait saat berubah; layout-only tidak memicu AI. Keputusan reviewer tetap diaudit. |
+| Graph processing | Validator berulang membuat `set(all_ids)` dan mencari flow/boundary via linear scan; coverage menghasilkan semua pasangan tanpa applicability. | Index node/flow/boundary/ancestor sekali, batch refs, applicability-aware coverage dan pagination inventory. Ukur 50/250/1000 nodes dengan connected/isolated/nested fixtures sebelum optimasi renderer lebih besar. |
+| Persistence | JSON project/report cukup untuk MVP; status, model, findings dan hasil stage menulis shared report. | Stage output dan execution evidence diberi revision/run IDs, atomic save dan conflict check. SQLite transactional merupakan opsi tahap awal; perubahan database diputuskan setelah concurrency benchmark, bukan prasyarat audit. |
+
+Tidak ada benchmark p95 latency, token cost, concurrency, atau kualitas lintas banyak project pada sesi ini. Durasi UI 22 detik atau snapshot stage bukan bukti bottleneck spesifik dan tidak dipakai menjanjikan peningkatan persentase.
+
+### Usability dan kemudahan implementasi
+
+Untuk Security/Architect, diagram, inventory, inspector dan unresolved warnings sudah membantu review. Untuk pengguna baru, readiness 75/100, stale proposal, candidate count dan insufficient-information tampil bersamaan tanpa satu langkah berikutnya yang jelas. Untuk Developer/QA, hasil controls/tests masih perlu interpretasi manual sebelum menjadi task yang dapat dikerjakan.
+
+Target alur: **Review model → Review threats → Plan controls → Prepare tests → Record evidence**. Tiap tahap menampilkan satu next action, readiness yang spesifik, dan label draft/AI/fallback/stale/verified. Tampilkan fallback pada item dan export, bukan hanya banner run; jangan menutup draft karena evidence belum lengkap.
+
+Control card perlu menunjukkan: threat/flow yang ditangani, applicability/rationale, lokasi implementasi, prioritas dan owner, requirement reference bila relevan, implementation status terpisah dari review status, serta evidence yang diperlukan. Test card perlu control/threat/DFD links, setup/role/data, langkah, expected/actual result, evidence, serta status not-run/pass/fail/blocked. Semua aksi utama dan accordion harus dapat dipakai via keyboard.
+
+Perubahan validation/legacy handling dapat dibuat pada service yang sudah ada dengan kompleksitas rendah–sedang. Snapshot bersama, stable identities, interaction coverage, serta execution evidence memerlukan migrasi schema dan integrasi beberapa modul (sedang–tinggi). Pertahankan backend/frontend yang ada; tidak perlu mengganti stack untuk menutup gap inti ini. Kemudahan pengguna belum diuji melalui studi pengguna independen atau screen reader; Playwright hanya memverifikasi jalur interaksi/DOM yang diperiksa.
+
+### Milestone core berikutnya — sumber status aktif
+
+Status **Belum selesai** berarti deliverable berikut belum lolos acceptance; fondasi yang sudah ada tidak dihapus dari M0–M9. Urutan kerja C0 → C1 → C2 → C3 → C4, lalu C5/C6; perbaikan kecil UX boleh berjalan setelah kontrak datanya stabil.
+
+| Milestone / prioritas / kompleksitas | Sudah tersedia | Belum selesai / acceptance penutup | Dependensi / pemetaan |
+|---|---|---|---|
+| C0 — Validated report & recovery · P0 · sedang | New-threat schema, run state, retry dan fallback labels | F01/F02/F04/F08: quarantine legacy, valid empty assessment, validated control/test envelopes, preserve reviewed history, structured error codes, stale hanya clear untuk hasil valid revisi aktif. Regresi malformed report dan retry lulus. | Pertama; M6/M7/M8/M9 |
+| C1 — DFD semantic input & review · P0/P1 · sedang | Canonical graph, editing, crossing dan proposal | F03/F09/F10: snapshot menyertakan identity/auth/data links; empty graph tidak ready; nested zone scope-aware; isolated nodes punya resolve/defer reason; alias lintas tenant/vendor tidak salah merge. | C0; M1–M5 |
+| C2 — STRIDE/LINDDUN assessment · P1 · sedang–tinggi | Taxonomy, candidate refs, privacy metadata dan coverage | F02/F11/F12: applicable STRIDE checks, PRO interaction manifest + mapping refs, validated no-candidate, guard obligation/evidence lengkap, risk rationale, version pin dan review preservation. | C0/C1; M6/M7 |
+| C3 — Evidence-based control recommendation · P0/P1 · sedang | Catalog, ownership/checklist, typed DFD target refs | F05/F06/F13: per-threat applicability, reasoned many-to-many links, Unknown tanpa evidence, stable control IDs, versioned ASVS refs bila relevan, privacy-specific choices dan implementable acceptance criteria. | C0/C1, selaras C2; M7 + perluasan |
+| C4 — Actionable verification scenarios · P0/P1 · sedang | Scenario draft, steps/expected result dan UI accordion | F07/F13: all-scope batching termasuk LINDDUN, FK threat/control/DFD, test coverage denominator, setup/assertions/evidence, execution status dan revision, WSTG refs bila relevan. Tidak ada default webhook tanpa evidence. | C3; M7/M9 + perluasan |
+| C5 — Processing efficiency & observability · P1/P2 · sedang–tinggi | Hash/revision dan beberapa resource caps | Section chunking, evidence retrieval, effective token budget, per-stage usage/latency, server run snapshot, selective retry/cache, concurrency-safe persistence. Benchmarks terukur tanpa penurunan coverage/quality. | Kontrak C0–C4 stabil; M4/M8 |
+| C6 — Usability & acceptance release · P1 · sedang | Tabs, inspector, DFD focus, stale/fallback banners, export | Guided next-action, item provenance/status, keyboard accordion, implementation/execution evidence workflow, lengkap export handoff, end-to-end failure/retry/edit/reload serta studi tugas Developer/QA. | C0–C5; M5/M7/M9 |
+
+Checklist pencapaian sesi audit:
+
+- [x] Inspeksi empat core function dan doc DFD; snapshot kondisi existing dicatat.
+- [x] Referensi resmi STRIDE, LINDDUN PRO, ASVS dan WSTG diperiksa.
+- [x] Regresi existing 82 Python + JavaScript dijalankan; UI inspected dengan Playwright.
+- [x] Reproduksi di memori: empty-DFD readiness, wrong fallback control links, dan partial Non-compliance guard.
+- [ ] C0–C6 diimplementasikan dan acceptance masing-masing lulus. Audit ini tidak menandai runtime fix sebagai selesai.
+
+### Skenario pengujian yang harus ditambahkan
+
+Tabel ini adalah acceptance backlog untuk **produk threat-modeling**; test yang nantinya dihasilkan untuk aplikasi pengguna harus disesuaikan dengan evidence target, bukan dieksekusi otomatis dari dokumen.
+
+| ID / core | Fixture / trigger | Expected result dan evidence verifikasi |
+|---|---|---|
+| CT01 · lifecycle | Report legacy mengandung threat tanpa kategori, wrong enum, duplicate IDs atau dangling refs; rerun/retry | Invalid record masuk quarantine dengan alasan dan dapat diaudit; stage lain tidak crash; reviewed findings dan model lama tetap tersedia. |
+| CT02 · STRIDE/LINDDUN | JSON valid `threats=[]` dengan coverage no-candidate; lalu kasus semua candidate gagal validasi | Kasus pertama valid assessment; kasus kedua partial/failed yang eksplisit. Tidak dibuat fallback threat hanya untuk mengisi daftar. |
+| CT03 · provider | Prose, markdown JSON, truncated JSON, wrong shape, empty content, timeout, rate-limit dan invalid control/test FK | Output typed + refs valid saja dipersist; bounded retry, reason terstruktur, no silent truncation success, previous verified results dipertahankan. |
+| CT04 · DFD | Empty graph, same-zone valid flow, isolated actor, nested ownership container, unresolved membership, flow tanpa process/data label | Draft bisa disimpan; readiness sesuai issue; parent container tidak dipaksa punya artificial flow; tidak ada invented store/edge. |
+| CT05 · DFD/input | Authn/authz, process identity, privilege, data-object association dan source evidence berbeda pada dua snapshot | Prompt/context yang diuji mengandung perbedaan aktual; graph IDs dan source revision konsisten sampai controls/tests. Layout-only tidak mengubah assessment hash. |
+| CT06 · STRIDE | Same-zone authorization transition, tenant crossing, request/response, negative case dengan kontrol evidenced | Setiap applicable check punya assessment/rationale, candidate spesifik dan affected refs; tidak wajib enam finding per node; risk didukung rationale. |
+| CT07 · LINDDUN | Data sah namun berlebih, identifier linking, vendor sharing, store retention/deletion, awareness/control individu, audit attribution | Sender–transfer–receiver dan lifecycle diperiksa, impact individu dicatat; mitigasi tidak berhenti pada TLS/authentication. |
+| CT08 · LINDDUN evidence | Obligation saja, evidence saja, keduanya, atau tidak keduanya; classification tidak ada | Missing salah satu konteks tidak dipromosikan menjadi supported Non-compliance claim; unknown tidak menjadi PII/consent secara default. |
+| CT09 · controls | Threat relevan di posisi ke-4/ke-20; kategori kosong; unrelated webhook; recommended vs implemented control | Mapping tidak bergantung urutan; alasan applicability dan valid links tersedia; Unknown bila implementation evidence tidak memadai; review decision bertahan saat regenerate. |
+| CT10 · test coverage | Lebih dari 15 threat, dua framework, threat prioritas tinggi di akhir daftar, controls bersama beberapa threat | Semua threat in-scope memiliki test atau explicit not-applicable/blocked reason. Test→control→threat→DFD dapat ditelusuri; privacy tidak terlewat karena slicing. |
+| CT11 · scenario applicability | Spoofing pada UI/API tanpa webhook; retention unknown; data isolation dua user/tenant; legitimate request | Tidak membuat webhook fiktif; retention test blocked jika policy belum diketahui; setup, positive/negative assertion, data cleanup, expected evidence spesifik. Untuk load/rate-limit test, budget dan environment ditetapkan sebelum execution. |
+| CT12 · lifecycle/concurrency | Semantic edit saat run, source proposal pending, retry stage gagal, model sama dengan layout berubah | Commit hasil tidak menimpa revision baru; stale tidak clear karena fallback; retry memakai snapshot yang diketahui; hasil lama dan reviewer decision tetap bisa dipulihkan. |
+| CT13 · QA handoff | Pilih threat → control → test → catat hasil/evidence → reload/export | Status recommendation/implementation/execution terpisah; test berisi build/environment/actual result; seluruh ID dan evidence links valid; Markdown/JSON menyertakan langkah dan limitation. |
+| CT14 · processing | Dokumen dengan detail penting setelah 8000 karakter; >28 evidence; 50/250/1000-node graph | No silent omission; chunk/coverage manifest lengkap; ukur latency, usage, retries, memory dan identical-snapshot consistency. Target p95 ditetapkan setelah baseline, bukan diasumsikan. |
+| CT15 · usability/E2E | Project baru dari fixture serta report legacy; desktop/narrow, keyboard navigation, provider failure/retry | Generate → review → edit → analyze → reload → export selesai; next action dan partial/fallback jelas; test accordion dapat dioperasikan keyboard. Studi tugas Dev/QA mencatat waktu, kesalahan dan bantuan yang diperlukan. |
+
+Kriteria release core: CT01–CT13 dan CT15 lulus untuk jalur terkait; CT14 mempunyai baseline dan tidak menunjukkan regression coverage. Setiap active threat memiliki assessment revision dan coverage/mitigation disposition; setiap executable test memiliki setup, expected result dan traceability valid. Jumlah test lulus saja tidak cukup untuk menyatakan seluruh hasil sesuai praktik industri.
+
 ## Gap analysis terhadap `DFD_Feature_AI_Agent_Prompt.md`
 
-Temuan ini membedakan fondasi yang sudah diimplementasikan dari alignment yang masih
-belum cukup untuk menyatakan fitur DFD/threat analysis selesai.
+Bagian berikut mempertahankan peta fondasi M0–M9. Audit core di atas memperinci gap
+runtime yang ditemukan setelah checkpoint sebelumnya; bila ada perbedaan status,
+gunakan temuan F01–F13 dan acceptance C0–C6 sebagai acuan terbaru.
 
 | Area acuan | Kondisi saat ini | Gap yang perlu ditutup | Prioritas |
 |---|---|---|---|
@@ -71,7 +202,9 @@ Referensi utama: `backend/services/trust_boundary_service.py`, `backend/services
 
 ### M1 — Canonical semantic DFD model
 
-Status: **Sebagian selesai — prioritas P0**
+Status: **Selesai untuk core contract/persistence — prioritas P0**. Semantic completeness,
+boundary classification, dan input extraction tetap dilacak oleh M2–M4/C1; status M1
+tidak berarti setiap project otomatis memiliki topology lengkap.
 
 Progress pada branch `codex/dfd-threat-model-alignment`:
 
@@ -85,6 +218,10 @@ Progress pada branch `codex/dfd-threat-model-alignment`:
 - Data-object privacy metadata mencakup direct/indirect identifiers, linkability, notice, individual control, dan documented legal basis; store metadata mencakup evidence refs dan lifecycle assertions.
 - `refresh_attribute_assertions()` menyelaraskan status documented/inferred/unknown setelah human edit tanpa menghapus unmanaged conflict/flow assertions.
 - Evidence refs pada canonical elements sekarang harus resolve ke `model.evidence`; source/manual/flow refs tetap dipertahankan sebagai evidence envelope.
+- Canonical model sekarang juga disimpan eksplisit di `backend/data/dfd_models/{project_id}.json`, terpisah dari report analysis; project deletion menghapus keduanya.
+- Loader canonical melakukan migration envelope legacy camelCase/default fields ke `dfd-v1`, mengisi model identity hanya saat project context tersedia, dan menolak schema version future yang tidak didukung.
+- GET/save/import/proposal menggunakan loader schema yang sama; canonical storage dipulihkan dari report lama secara lazy sehingga report legacy tetap dapat dibuka tanpa kehilangan evidence envelope.
+- Validator menolak schema version unsupported, orphan assertion, invalid view position refs, dan evidence ref zone; empty model tetap boleh disimpan sebagai draft tetapi `semantic_ready=false`.
 
 Deliverables:
 
@@ -114,6 +251,9 @@ Definition of done:
 - Semua API input/output dan AI output melewati schema validation.
 - Model dapat disimpan, dibuka kembali, dan memiliki revision yang jelas.
 - Duplicate ID, dangling reference, invalid type, dan invalid schema ditolak.
+- Model tersimpan di canonical storage yang dapat dibaca ulang tanpa bergantung pada field derived report.
+- Legacy envelope yang didukung dapat dimigrasikan deterministik; schema future ditolak dengan error yang dapat ditindaklanjuti.
+- M1 regression coverage lulus untuk migration, empty readiness, orphan metadata, revision-safe save, export/import, dan lazy legacy hydration.
 
 ### M2 — Graph integrity dan DFD semantics
 
@@ -297,7 +437,7 @@ Progress:
 - Privacy readiness dipersist sebagai `privacy_assessment`; setiap threat LINDDUN diberi privacy context status/missing fields dan metadata yang belum ada menghasilkan `needs_context`, bukan klaim aman atau non-compliance.
 - Prompt LINDDUN menerima lifecycle/privacy assessment dan secara eksplisit membedakan missing information dari legal conclusion.
 - Validasi AI menolak shape list yang salah, memfilter evidence/DFD IDs dangling, menambahkan title/scenario/controls/mitigations, serta menandai `analyzed_revision`.
-- Non-compliance tanpa obligation dan evidence diturunkan menjadi `needs_context`/`Needs Info`, bukan confirmed legal violation.
+- Non-compliance saat obligation dan evidence sama-sama kosong diturunkan menjadi `needs_context`/`Needs Info`. Audit F11 menemukan guard belum mencakup kasus hanya salah satunya hilang; acceptance belum selesai.
 
 Deliverables STRIDE:
 
@@ -395,7 +535,7 @@ Status: **Sebagian selesai — prioritas P1/P2**
 Progress:
 
 - Test suite bertambah dari 24 menjadi 65 Python tests.
-- Test suite branch saat ini berjumlah 76 Python tests, termasuk privacy assessment,
+- Test suite branch saat ini berjumlah 82 Python tests, termasuk privacy assessment,
   pipeline acceptance, assertion provenance refresh, proposal dismiss, dan logical
   reviewer-boundary coverage.
 - Test baru mencakup canonical model typed refs, graph invalidity, zone cycle, multi-boundary threat mapping, request/response, fixture crossing, DFD persistence, SVG escaping, threat schema validation, dan redaction.
@@ -430,7 +570,7 @@ Acceptance test groups:
 |---|---|
 | Artifact ingestion dan basic evidence | Partial / cukup baik |
 | Postman nested/inherited auth | Partial / sudah ada |
-| Canonical semantic DFD | Partial: contract, adapter, persistence, evidence/assertions, privacy/lifecycle metadata, hash/revision, validator, editable graph; import demo masih banyak unknown/inferred |
+| Canonical semantic DFD | **Core contract complete**: typed schema, explicit canonical storage, migration loader, evidence/assertions, privacy/lifecycle metadata, hash/revision, validator, editable graph; semantic completeness/import demo masih banyak unknown/inferred dan dilacak M2–M4 |
 | Stable typed node/flow model | Partial: typed node/flow/data/boundary refs, request/response, feature projections/port lint, add/edit/remove editor; automated mutation coverage belum lengkap |
 | Ownership/scope/exposure separation | Partial: independent fields, unknown questions, semantic crossing, reviewer/editor resolution; evidence-backed classification masih incomplete |
 | Nested and logical boundary | Partial: ancestor crossing, common-parent guard, logical/mixed reviewer crossing dengan rationale, zone/boundary editor, add/remove, proposal review, dan question resolution; full logical boundary workflow belum ada |
@@ -444,21 +584,27 @@ Acceptance test groups:
 | Authentication/project isolation | Partial: configurable token-per-workspace guard + cross-workspace resource check; IdP/JWT production integration belum ada |
 | Failure/retry/provider safety | Partial: persisted analysis run state, retry endpoint/UI, URL allowlist, local-only policy, and bounded token/timeout/retries; server-side cancellation/quota belum ada |
 | Synthetic DFD fixture | Partial: customer-registration source/model tersedia; Postman-only fixture inline test |
-| Automated verification sesuai AC01–AC20 | Partial: 76 Python tests + JS regression + Playwright DFD/report/privacy/proposal smoke-test + access-control/provider/failure helper tests; full end-to-end/UI mutation criteria belum lengkap |
+| Automated verification sesuai AC01–AC20 | Partial: 82 Python tests + JS regression + Playwright DFD/report/privacy/proposal smoke-test + access-control/provider/failure helper tests; audit core menemukan gap CT01–CT15, full end-to-end/UI mutation criteria belum lengkap |
 
 ## Prioritas implementasi
 
-1. **P0:** M1 canonical model dan M2 graph validator.
-2. **P0:** M3 boundary/crossing semantics dan perbaikan threat mapping.
-3. **P0:** M6 graph-driven threat adapter dengan validated output.
-4. **P0/P1:** M8 authorization, redaction, revision, dan failure safety.
-5. **P1:** M4 evidence/assertion/question pipeline.
-6. **P1:** M5 editable views, inspector, inventory, layout persistence, dan regenerate diff.
-7. **P1:** M7 threat traceability, controls, dan stale analysis.
-8. **P1/P2:** M9 fixture, export/import, visual QA, dan acceptance tests.
+1. **P0 — C0:** report legacy, schema seluruh stage, empty assessment yang sah, serta retry/staleness yang tidak merusak hasil review.
+2. **P0/P1 — C1:** input canonical lengkap, readiness yang benar, dan evidence-based DFD review.
+3. **P1 — C2:** applicability/coverage STRIDE dan LINDDUN PRO, evidence guard dan risk rationale.
+4. **P0/P1 — C3:** control mapping per threat, implementation evidence, dan actionable recommendation.
+5. **P0/P1 — C4:** scenario generation tanpa crash/silent omission, privacy coverage, serta verification evidence workflow.
+6. **P1/P2 — C5:** observability, chunking/retrieval, budget/batching, run snapshot dan selective retry/cache.
+7. **P1 — C6:** guided review/handoff, keyboard usability, export lengkap dan acceptance end-to-end.
+
+P0 pada C3/C4 dapat dikerjakan setelah kontrak C0/C1 siap, tanpa menunggu seluruh
+penyempurnaan C2. Pekerjaan authorization/deployment M8 tetap tercatat, tetapi bukan
+fokus audit empat core function ini. Jangan mendahulukan redesign canvas atau pergantian
+database atas perbaikan data/hasil yang sudah terbukti salah.
 
 ## Change log
 
+- 2026-09-19: Added core-function industry-practice audit against Microsoft STRIDE, LINDDUN PRO, OWASP threat modeling, ASVS 5.0.0 and WSTG 4.2. Recorded report revision 5, F01–F13 findings, C0–C6 delivery milestones, data/processing optimizations and CT01–CT15 acceptance backlog. Re-ran 82 Python tests and JS regression; inspected DFD/Controls/Tests with Playwright and reproduced three validation/mapping issues in memory. The audit gaps remain tracked for C0–C6; M1 hardening is recorded in the next entry.
+- 2026-09-19: Completed M1 core contract hardening: explicit per-project canonical DFD storage, legacy envelope migration, supported-schema gate, empty-draft readiness state, orphan assertion/layout/evidence validation, and report-to-canonical lazy hydration. Verification: 82 Python tests, JavaScript regression, Playwright GET `/dfd` status 200 with `dfd-v1` revision 5, 20 nodes/8 flows/90 evidence/226 assertions, `valid=true`, and expected `semantic_ready=false` topology warnings.
 - 2026-09-19: Created branch `codex/dfd-threat-model-alignment` for rollback-safe enhanced/revamp work.
 - 2026-09-19: Added canonical DFD contract, deterministic model adapter, graph validator, DFD persistence in analysis report, DFD context in STRIDE/LINDDUN prompts, semantic stale detection, and multi-boundary threat mapping regression fix.
 - 2026-09-19: Added secret redaction, AI threat/coverage validation, canonical LINDDUN labels with legacy aliases, direct `affected_refs` mapping, and reviewable DFD-tied fallbacks.

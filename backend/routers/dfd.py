@@ -18,10 +18,11 @@ from backend.services.dfd_model_service import (
     recalculate_boundary_crossings,
     refresh_attribute_assertions,
     _model_evidence,
+    load_dfd_model,
     validate_dfd_model,
 )
 from backend.utils.audit import log_event
-from backend.utils.storage import get_project, get_report, save_report
+from backend.utils.storage import get_dfd_model, get_project, get_report, save_dfd_model, save_report
 from backend.utils.access_control import get_authorized_project, workspace_access_dependency
 
 
@@ -129,13 +130,29 @@ def _hydrate_model_evidence(model: DfdModel, project: dict | None) -> DfdModel:
 
 def _load_model(project_id: str) -> tuple[dict, DfdModel]:
     report = get_report(project_id)
-    if not report or not report.get("dfd_model"):
+    stored_payload = get_dfd_model(project_id)
+    report_payload = report.get("dfd_model") if isinstance(report, dict) else None
+    if not report and not stored_payload:
+        raise HTTPException(status_code=404, detail="No canonical DFD model yet — run analysis first")
+    if stored_payload and (
+        not isinstance(report_payload, dict)
+        or int(stored_payload.get("revision", 0) or 0) >= int(report_payload.get("revision", 0) or 0)
+    ):
+        payload = stored_payload
+    else:
+        payload = report_payload
+    if not isinstance(payload, dict):
         raise HTTPException(status_code=404, detail="No canonical DFD model yet — run analysis first")
     try:
-        model = DfdModel.model_validate(report["dfd_model"])
-    except ValidationError as exc:
+        model, migrated = load_dfd_model(payload, project_id=project_id)
+    except (ValidationError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=500, detail="Stored canonical DFD model is invalid") from exc
-    return report, _hydrate_model_evidence(model, get_project(project_id))
+    model = _hydrate_model_evidence(model, get_project(project_id))
+    recalculate_boundary_crossings(model)
+    hydrated_payload = model.model_dump()
+    if migrated or not stored_payload or payload is report_payload or hydrated_payload != payload:
+        save_dfd_model(project_id, hydrated_payload)
+    return report or {}, model
 
 
 def _project_for_request(project_id: str, request: Request = None) -> dict | None:
@@ -151,7 +168,7 @@ async def get_dfd(project_id: str, request: Request = None):
     report, model = _load_model(project_id)
     return {
         "model": model.model_dump(),
-        "validation": report.get("dfd_validation") or validate_dfd_model(model),
+        "validation": validate_dfd_model(model),
     }
 
 
@@ -175,7 +192,7 @@ async def save_dfd(project_id: str, body: dict, request: Request = None):
             detail={"message": "DFD revision conflict", "current_revision": current.revision},
         )
     try:
-        model = DfdModel.model_validate(body["model"])
+        model, _migrated = load_dfd_model(body["model"], project_id=project_id)
     except (ValidationError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail="Canonical DFD schema validation failed") from exc
     _hydrate_model_evidence(model, get_project(project_id))
@@ -197,10 +214,12 @@ async def save_dfd(project_id: str, body: dict, request: Request = None):
     model.layout_revision = max(current.layout_revision, model.layout_revision) + 1
     model.human_edit_revision = current.human_edit_revision + (1 if semantic_changed else 0)
     model.source_semantic_hash = current.source_semantic_hash or current.semantic_hash
-    report["dfd_model"] = model.model_dump()
+    model_payload = model.model_dump()
+    report["dfd_model"] = model_payload
     report["dfd_validation"] = validation
     if semantic_changed:
         _stale(report, "Canonical DFD semantic model edited. Refresh dependent analysis stages.")
+    save_dfd_model(project_id, model_payload)
     save_report(project_id, report)
     log_event("dfd.saved", details={
         "project_id": project_id,
@@ -238,7 +257,7 @@ async def apply_dfd_regeneration_proposal(project_id: str, body: dict, request: 
         )
 
     try:
-        candidate = DfdModel.model_validate(proposal["candidate_model"])
+        candidate, _migrated = load_dfd_model(proposal["candidate_model"], project_id=project_id)
     except (ValidationError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail="Stored DFD proposal candidate is invalid") from exc
     _hydrate_model_evidence(candidate, get_project(project_id))
@@ -292,9 +311,11 @@ async def apply_dfd_regeneration_proposal(project_id: str, body: dict, request: 
     else:
         model.source_semantic_hash = candidate.semantic_hash
         report.pop("dfd_proposal", None)
-    report["dfd_model"] = model.model_dump()
+    model_payload = model.model_dump()
+    report["dfd_model"] = model_payload
     report["dfd_validation"] = validation
     _stale(report, "A reviewed DFD regeneration proposal changed the canonical semantic model. Refresh dependent analysis stages.")
+    save_dfd_model(project_id, model_payload)
     save_report(project_id, report)
     log_event("dfd.proposal_applied", details={
         "project_id": project_id,

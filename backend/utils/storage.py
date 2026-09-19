@@ -9,12 +9,14 @@ from datetime import datetime
 DATA_DIR = Path(os.getenv("DATA_DIR", "./backend/data"))
 PROJECTS_DIR = DATA_DIR / "projects"
 REPORTS_DIR = DATA_DIR / "reports"
+DFD_MODELS_DIR = DATA_DIR / "dfd_models"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 
 
 def _ensure_dirs():
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    DFD_MODELS_DIR.mkdir(parents=True, exist_ok=True)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -66,6 +68,9 @@ def delete_project(project_id: str) -> bool:
         report_path = REPORTS_DIR / f"{project_id}.json"
         if report_path.exists():
             report_path.unlink()
+        dfd_path = DFD_MODELS_DIR / f"{project_id}.json"
+        if dfd_path.exists():
+            dfd_path.unlink()
         return True
     return False
 
@@ -80,6 +85,18 @@ def save_report(project_id: str, report: dict) -> dict:
 
 def get_report(project_id: str) -> Optional[dict]:
     return _read_json(REPORTS_DIR / f"{project_id}.json")
+
+
+# ── Canonical DFD models ─────────────────────────────────────────────────────
+
+def save_dfd_model(project_id: str, model: dict) -> dict:
+    """Persist the canonical DFD independently from the analysis report."""
+    _write_json(DFD_MODELS_DIR / f"{project_id}.json", model)
+    return model
+
+
+def get_dfd_model(project_id: str) -> Optional[dict]:
+    return _read_json(DFD_MODELS_DIR / f"{project_id}.json")
 
 
 # ── Settings ─────────────────────────────────────────────────────────────────

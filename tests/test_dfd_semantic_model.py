@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from backend.models.dfd import DfdBoundary
+from backend.models.dfd import DfdAssertion, DfdBoundary
 from backend.routers.dfd import apply_dfd_regeneration_proposal, export_dfd, import_dfd, save_dfd, resolve_dfd_regeneration_proposal
 from backend.services.dfd_model_service import (
     apply_dfd_proposal,
@@ -15,6 +15,7 @@ from backend.services.dfd_model_service import (
     recalculate_boundary_crossings,
     reconcile_generated_dfd,
     refresh_attribute_assertions,
+    load_dfd_model,
     validate_dfd_model,
 )
 from backend.services.trust_boundary_service import attach_target_refs, build_trust_model
@@ -273,6 +274,55 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertFalse(validation["valid"])
         self.assertTrue(any("Duplicate node display ID" in error for error in validation["errors"]))
 
+    def test_empty_canonical_model_is_valid_draft_but_not_analysis_ready(self):
+        model = DfdModel(id="empty-model", project_id="project-1", title="Empty draft")
+
+        validation = validate_dfd_model(model)
+
+        self.assertTrue(validation["valid"])
+        self.assertFalse(validation["semantic_ready"])
+        self.assertIn("Canonical DFD has no semantic elements", validation["semantic_issues"])
+
+    def test_loader_migrates_legacy_envelope_and_rejects_future_schema(self):
+        payload = {
+            "id": "legacy-model",
+            "projectId": "project-1",
+            "title": "Legacy model",
+            "nodes": [],
+            "assertions": [{
+                "object_id": "merged-away-entity",
+                "field_path": "scope",
+                "status": "unknown",
+            }],
+        }
+
+        model, migrated = load_dfd_model(payload, project_id="project-1")
+
+        self.assertTrue(migrated)
+        self.assertEqual(model.project_id, "project-1")
+        self.assertEqual(model.schema_version, "dfd-v1")
+        self.assertEqual(model.assertions[0].object_id, "legacy-model")
+        self.assertTrue(model.assertions[0].field_path.startswith("legacy_orphan[merged-away-entity]."))
+        self.assertTrue(validate_dfd_model(model)["valid"])
+        with self.assertRaises(ValueError):
+            load_dfd_model({**payload, "schema_version": "dfd-v2"}, project_id="project-1")
+
+    def test_validator_rejects_orphan_assertions_and_layout_positions(self):
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        model.assertions.append(DfdAssertion(
+            object_id="missing-element",
+            field_path="scope",
+            status="unknown",
+        ))
+        model.views[0].positions["missing-element"] = {"x": 1, "y": 2}
+
+        validation = validate_dfd_model(model)
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(any("references missing model element" in error for error in validation["errors"]))
+        self.assertTrue(any("position references missing element" in error for error in validation["errors"]))
+
     def test_unmapped_threat_does_not_fan_out_to_all_boundaries(self):
         model = build_trust_model(self.project)
         boundaries = model["boundaries"]
@@ -404,6 +454,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         with (
             patch("backend.routers.dfd.get_project", return_value={"project_id": "fixture-customer-registration"}),
             patch("backend.routers.dfd.get_report", return_value=report),
+            patch("backend.routers.dfd.get_dfd_model", return_value=None),
             patch("backend.routers.dfd.save_report"),
             patch("backend.routers.dfd.log_event"),
         ):
@@ -428,6 +479,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         with (
             patch("backend.routers.dfd.get_project", return_value={"project_id": "fixture-customer-registration"}),
             patch("backend.routers.dfd.get_report", return_value=report),
+            patch("backend.routers.dfd.get_dfd_model", return_value=None),
             patch("backend.routers.dfd.save_report"),
             patch("backend.routers.dfd.log_event"),
         ):
@@ -463,6 +515,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         with (
             patch("backend.routers.dfd.get_project", return_value={"project_id": "fixture-customer-registration"}),
             patch("backend.routers.dfd.get_report", return_value=report),
+            patch("backend.routers.dfd.get_dfd_model", return_value=None),
             patch("backend.routers.dfd.save_report"),
             patch("backend.routers.dfd.log_event"),
         ):
@@ -485,6 +538,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         with (
             patch("backend.routers.dfd.get_project", return_value={"project_id": "fixture-customer-registration"}),
             patch("backend.routers.dfd.get_report", return_value=report),
+            patch("backend.routers.dfd.get_dfd_model", return_value=None),
         ):
             with self.assertRaises(HTTPException) as raised:
                 __import__("asyncio").run(save_dfd(
@@ -537,6 +591,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         with (
             patch("backend.routers.dfd.get_project", return_value={"project_id": "fixture-customer-registration"}),
             patch("backend.routers.dfd.get_report", return_value=report),
+            patch("backend.routers.dfd.get_dfd_model", return_value=None),
             patch("backend.routers.dfd.save_report"),
             patch("backend.routers.dfd.log_event"),
         ):
@@ -590,6 +645,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         with (
             patch("backend.routers.dfd.get_project", return_value={"project_id": "fixture-customer-registration"}),
             patch("backend.routers.dfd.get_report", return_value=report),
+            patch("backend.routers.dfd.get_dfd_model", return_value=None),
             patch("backend.routers.dfd.save_report"),
             patch("backend.routers.dfd.log_event"),
         ):
@@ -650,6 +706,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         with (
             patch("backend.routers.dfd.get_project", return_value={"project_id": "fixture-customer-registration"}),
             patch("backend.routers.dfd.get_report", return_value=report),
+            patch("backend.routers.dfd.get_dfd_model", return_value=None),
             patch("backend.routers.dfd.save_report"),
             patch("backend.routers.dfd.log_event"),
         ):

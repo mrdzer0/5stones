@@ -1,7 +1,7 @@
 """Analysis router — runs threat modeling pipeline."""
 from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
-from backend.utils.storage import get_project, save_project, save_report, get_report
+from backend.utils.storage import get_project, save_dfd_model, save_project, save_report, get_report
 from backend.utils.audit import log_event
 from backend.utils.access_control import get_authorized_project, workspace_access_dependency
 from backend.utils.redaction import redact_text
@@ -258,6 +258,7 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
             dfd_validation = validate_dfd_model(dfd_model)
             report["dfd_model"] = dfd_model.model_dump()
             report["dfd_validation"] = dfd_validation
+            save_dfd_model(project_id, report["dfd_model"])
             report["trust_model"] = {
                 "version": trust_model["version"],
                 "generation_method": trust_model["generation_method"],

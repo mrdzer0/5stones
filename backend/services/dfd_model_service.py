@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import defaultdict
+from copy import deepcopy
 
 from backend.models.dfd import (
     DfdAssertion,
@@ -23,6 +24,7 @@ from backend.services.posture_service import build_project_evidence_catalog
 
 
 DFD_SCHEMA_VERSION = "dfd-v1"
+SUPPORTED_DFD_SCHEMA_VERSIONS = {DFD_SCHEMA_VERSION}
 _VALID_INTERACTIONS = {"request", "response", "event", "read", "write", "replication", "unknown"}
 _VALID_BOUNDARY_TYPES = {"network", "identity", "privilege", "tenant", "organization", "unknown"}
 
@@ -30,6 +32,127 @@ _VALID_BOUNDARY_TYPES = {"network", "identity", "privilege", "tenant", "organiza
 def _stable_id(prefix: str, *values: object) -> str:
     raw = "|".join(str(value or "").strip().casefold() for value in values)
     return f"{prefix}-{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]}"
+
+
+_TOP_LEVEL_ALIASES = {
+    "projectId": "project_id",
+    "schemaVersion": "schema_version",
+    "layoutRevision": "layout_revision",
+    "humanEditRevision": "human_edit_revision",
+    "sourceSemanticHash": "source_semantic_hash",
+    "semanticHash": "semantic_hash",
+    "scopeDescription": "scope_description",
+    "sourceRefs": "source_refs",
+    "dataObjects": "data_objects",
+}
+
+
+def migrate_dfd_payload(payload: dict, *, project_id: str | None = None) -> tuple[dict, bool]:
+    """Normalize persisted/imported DFD payloads to the current v1 contract.
+
+    Migration is deliberately additive: it fills fields that were introduced by
+    the canonical contract, accepts the historical camelCase envelope, and
+    rejects future schema versions instead of silently dropping semantics.
+    Internal IDs are never invented during migration; an element without an ID
+    remains a schema error and must be repaired by the reviewer/source adapter.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("Canonical DFD payload must be an object")
+    normalized = deepcopy(payload)
+    migrated = False
+    for legacy, current in _TOP_LEVEL_ALIASES.items():
+        if current not in normalized and legacy in normalized:
+            normalized[current] = normalized.pop(legacy)
+            migrated = True
+
+    schema_version = str(normalized.get("schema_version") or DFD_SCHEMA_VERSION)
+    if schema_version not in SUPPORTED_DFD_SCHEMA_VERSIONS:
+        raise ValueError(
+            f"Unsupported canonical DFD schema version: {schema_version}. "
+            f"Supported versions: {', '.join(sorted(SUPPORTED_DFD_SCHEMA_VERSIONS))}"
+        )
+    if normalized.get("schema_version") != DFD_SCHEMA_VERSION:
+        normalized["schema_version"] = DFD_SCHEMA_VERSION
+        migrated = True
+    if project_id and not normalized.get("project_id"):
+        normalized["project_id"] = project_id
+        migrated = True
+
+    defaults = {
+        "revision": 1,
+        "layout_revision": 1,
+        "human_edit_revision": 0,
+        "source_refs": [],
+        "evidence": [],
+        "assertions": [],
+        "nodes": [],
+        "data_objects": [],
+        "flows": [],
+        "stores": {},
+        "zones": [],
+        "boundaries": [],
+        "views": [],
+        "questions": [],
+    }
+    for field, default in defaults.items():
+        if field not in normalized or normalized[field] is None:
+            normalized[field] = deepcopy(default)
+            migrated = True
+
+    if not normalized.get("id") and project_id:
+        normalized["id"] = _stable_id("dfd-model", project_id)
+        migrated = True
+    if not normalized.get("title"):
+        normalized["title"] = "Threat Model"
+        migrated = True
+
+    # Early canonical builds could leave attribute assertions behind when an
+    # entity alias was merged. Preserve those assertions as model-level legacy
+    # records instead of making the whole stored model unloadable or silently
+    # discarding the original value.
+    element_ids = {
+        str(item.get("id"))
+        for collection in ("nodes", "data_objects", "flows", "zones", "boundaries", "views", "questions")
+        for item in (normalized.get(collection) or [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    element_ids.update(str(key) for key in (normalized.get("stores") or {}) if key)
+
+    def repair_assertions(assertions, owner_id: str):
+        nonlocal migrated
+        repaired = []
+        for assertion in assertions or []:
+            if not isinstance(assertion, dict):
+                repaired.append(assertion)
+                continue
+            object_id = str(assertion.get("object_id") or "")
+            if object_id and (object_id in element_ids or object_id.startswith("conflict-")):
+                repaired.append(assertion)
+                continue
+            legacy = deepcopy(assertion)
+            legacy_field = str(legacy.get("field_path") or "unknown")
+            legacy["object_id"] = owner_id
+            legacy["field_path"] = f"legacy_orphan[{object_id or 'unknown'}].{legacy_field}"
+            repaired.append(legacy)
+            migrated = True
+        return repaired
+
+    normalized["assertions"] = repair_assertions(normalized.get("assertions"), str(normalized["id"]))
+    for collection in ("nodes", "data_objects", "boundaries"):
+        for item in normalized.get(collection) or []:
+            if isinstance(item, dict) and item.get("id"):
+                item["assertions"] = repair_assertions(item.get("assertions"), str(item["id"]))
+    for store_id, store in (normalized.get("stores") or {}).items():
+        if isinstance(store, dict):
+            store["assertions"] = repair_assertions(store.get("assertions"), str(store_id))
+    return normalized, migrated
+
+
+def load_dfd_model(payload: dict, *, project_id: str | None = None) -> tuple[DfdModel, bool]:
+    """Migrate and schema-validate a canonical DFD at every persistence edge."""
+    normalized, migrated = migrate_dfd_payload(payload, project_id=project_id)
+    model = DfdModel.model_validate(normalized)
+    return model, migrated
 
 
 def _unique(values) -> list[str]:
@@ -928,6 +1051,15 @@ def validate_dfd_model(model: DfdModel) -> dict:
     """Return blocking graph errors separately from reviewable warnings."""
     errors: list[str] = []
     warnings: list[str] = []
+    if model.schema_version not in SUPPORTED_DFD_SCHEMA_VERSIONS:
+        errors.append(
+            f"Unsupported DFD schema version {model.schema_version}; "
+            f"supported: {', '.join(sorted(SUPPORTED_DFD_SCHEMA_VERSIONS))}"
+        )
+    if not str(model.id or "").strip():
+        errors.append("Canonical DFD model id is required")
+    if not str(model.project_id or "").strip():
+        errors.append("Canonical DFD project_id is required")
     node_ids = [item.id for item in model.nodes]
     data_ids = [item.id for item in model.data_objects]
     zone_ids = [item.id for item in model.zones]
@@ -965,6 +1097,7 @@ def validate_dfd_model(model: DfdModel) -> dict:
     boundary_set = set(boundary_ids)
     flow_set = set(flow_ids)
     evidence_set = {item.id for item in model.evidence}
+    element_set = {model.id, *all_ids}
 
     def validate_evidence_refs(owner: str, refs: list[str]):
         for evidence_id in refs:
@@ -985,12 +1118,31 @@ def validate_dfd_model(model: DfdModel) -> dict:
         validate_evidence_refs(f"Boundary {boundary.id}", boundary.evidence_refs)
         for assertion in boundary.assertions:
             validate_evidence_refs(f"Assertion {assertion.object_id}.{assertion.field_path}", assertion.evidence_refs)
+    for zone in model.zones:
+        validate_evidence_refs(f"Zone {zone.id}", zone.evidence_refs)
     for store_id, store in model.stores.items():
         validate_evidence_refs(f"Store {store_id}", store.evidence_refs)
         for assertion in store.assertions:
             validate_evidence_refs(f"Assertion {assertion.object_id}.{assertion.field_path}", assertion.evidence_refs)
     for assertion in model.assertions:
         validate_evidence_refs(f"Assertion {assertion.object_id}.{assertion.field_path}", assertion.evidence_refs)
+
+    # Flatten the nested assertion collections explicitly so every assertion
+    # remains tied to a canonical object and cannot become orphan metadata.
+    all_assertions = [
+        *model.assertions,
+        *(assertion for item in model.nodes for assertion in item.assertions),
+        *(assertion for item in model.data_objects for assertion in item.assertions),
+        *(assertion for item in model.boundaries for assertion in item.assertions),
+        *(assertion for item in model.stores.values() for assertion in item.assertions),
+    ]
+    for assertion in all_assertions:
+        if assertion.object_id not in element_set and not assertion.object_id.startswith("conflict-"):
+            errors.append(
+                f"Assertion {assertion.object_id}.{assertion.field_path} references missing model element"
+            )
+        if not str(assertion.field_path or "").strip():
+            errors.append(f"Assertion for {assertion.object_id} has an empty field path")
 
     for zone in model.zones:
         if zone.parent_zone_id and zone.parent_zone_id not in zone_set:
@@ -1076,6 +1228,11 @@ def validate_dfd_model(model: DfdModel) -> dict:
             for mapped_id in mapped_ids:
                 if mapped_id not in set(all_ids):
                     errors.append(f"View {view.id} projection maps to missing element {mapped_id}")
+        for position_id, position in view.positions.items():
+            if position_id not in element_set:
+                errors.append(f"View {view.id} position references missing element {position_id}")
+            if not isinstance(position, dict) or not all(isinstance(value, (int, float)) for value in position.values()):
+                errors.append(f"View {view.id} position for {position_id} must contain numeric coordinates")
         if view.kind == "feature":
             if not view.parent_process_id or view.parent_process_id not in node_by_id:
                 errors.append(f"Feature view {view.id} requires a valid parent process")
@@ -1134,6 +1291,8 @@ def validate_dfd_model(model: DfdModel) -> dict:
     connected_zones: set[str] = set()
     connected_nodes: set[str] = set()
     semantic_issues: list[str] = []
+    if not model.nodes and not model.flows and not model.data_objects and not model.zones:
+        semantic_issues.append("Canonical DFD has no semantic elements")
     for flow in model.flows:
         if flow.source_id not in node_by_id or flow.target_id not in node_by_id:
             continue
