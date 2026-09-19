@@ -413,14 +413,21 @@ def preview_dfd_delete_impact(
             return False
 
         dependent_nodes = [node.id for node in model.nodes if node_in_zone(node)]
-        dependent_zones = [zone.id for zone in model.zones if zone.parent_zone_id == element_id]
+        descendants = []
+        pending = [element_id]
+        while pending:
+            parent_id = pending.pop()
+            children = [zone.id for zone in model.zones if zone.parent_zone_id == parent_id]
+            descendants.extend(child for child in children if child not in descendants)
+            pending.extend(child for child in children if child not in pending)
+        dependent_zones = descendants
         dependent_flows = [
             flow.id for flow in model.flows
             if any(node_in_zone(node) for node in model.nodes if node.id in {flow.source_id, flow.target_id})
         ]
         dependent_boundaries = [
             boundary.id for boundary in model.boundaries
-            if element_id in [*boundary.source_zone_ids, *boundary.target_zone_ids]
+            if any(zone_id in {element_id, *dependent_zones} for zone_id in [*boundary.source_zone_ids, *boundary.target_zone_ids])
         ]
     if element_type == "boundary":
         dependent_boundaries = [element_id]
@@ -849,6 +856,16 @@ def validate_dfd_model(model: DfdModel) -> dict:
     duplicates(boundary_ids, "boundary")
     duplicates(flow_ids, "flow")
     duplicates(all_ids, "model element")
+    duplicates([item.id for item in model.views], "view")
+    duplicates([item.id for item in model.questions], "question")
+    for items, label in (
+        (model.nodes, "node display"),
+        (model.data_objects, "data object display"),
+        (model.flows, "flow display"),
+        (model.zones, "zone display"),
+        (model.boundaries, "boundary display"),
+    ):
+        duplicates([item.display_id for item in items], label)
 
     node_by_id = {item.id: item for item in model.nodes}
     data_set = set(data_ids)

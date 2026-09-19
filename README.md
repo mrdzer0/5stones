@@ -66,6 +66,13 @@ cp .env.example .env
 
 For a connected provider, configure `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL`. For local inference, use the local endpoint settings shown in `.env.example`.
 
+Project-scoped workspace isolation is available as a configurable MVP guard. Set
+`WORKSPACE_AUTH_REQUIRED=true`, configure `WORKSPACE_AUTH_TOKENS_JSON` as a
+workspace-to-token JSON map, and send `X-Workspace-ID` plus `Authorization:
+Bearer ...` on project-scoped requests. The default remains disabled for local
+single-user development; production deployments should replace this adapter
+with the application's IdP/JWT authorization layer.
+
 ### 3. Run the server
 
 ```bash

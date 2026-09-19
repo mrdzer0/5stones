@@ -28,21 +28,21 @@ belum cukup untuk menyatakan fitur DFD/threat analysis selesai.
 | Area acuan | Kondisi saat ini | Gap yang perlu ditutup | Prioritas |
 |---|---|---|---|
 | Canonical DFD sebagai source of truth | Model typed, revisioned, persisted, dan dipakai oleh canvas/prompt | Hasil import masih banyak `unknown`/`inferred`; perlu workflow resolve/approve metadata sebelum confidence tinggi | P0 |
-| Graph semantics | Dangling/duplicate/cycle, request-response, data labels, feature ports, dan crossing metadata divalidasi | Belum semua elemen dapat dibuat/dihapus dari UI; process/store/data-object lifecycle masih perlu editor dan rule lebih ketat | P0 |
-| Trust zone dan boundary | Ancestor crossing, logical reviewer crossing, common-ancestor guard, unresolved membership, zone/boundary inspector tersedia | Belum ada add/remove UI, pemodelan boundary logical/identity/tenant lengkap, dan resolusi pertanyaan end-to-end | P0 |
+| Graph semantics | Dangling/duplicate/cycle, request-response, data labels, feature ports, crossing metadata, dan duplicate display IDs divalidasi | Rule domain untuk beberapa kombinasi store/process masih reviewable warning; mutation integration test belum lengkap | P0 |
+| Trust zone dan boundary | Ancestor crossing, logical reviewer crossing, common-ancestor guard, unresolved membership, zone/boundary inspector, add/remove UI, dan question resolution tersedia | Pemodelan boundary logical/identity/tenant dan evidence-backed review belum lengkap di seluruh workflow | P0 |
 | Data privacy/lifecycle | Data-object privacy assertions/questions dan store lifecycle unknowns sudah dibuat | Belum ada resolusi metadata privacy, retention, deletion, backup, recipient, dan legal-basis yang terintegrasi ke threat decision | P1 |
 | Evidence dan provenance | Evidence catalog, redaction, assertion status, evidence validation, conflict/question records tersedia | Pipeline review/resolution dan sumber evidence pada setiap edit belum menjadi workflow UI lengkap | P1 |
-| STRIDE/LINDDUN | Prompt menerima canonical snapshot; output/taxonomy/refs/coverage/revision divalidasi; fallback ditandai candidate-only | Belum ada deterministic graph coverage penuh; demo masih menunjukkan 12 mapped dan 3 unmapped finding serta banyak metadata unknown; accepted finding/control lifecycle belum lengkap | P0/P1 |
+| STRIDE/LINDDUN | Prompt menerima canonical snapshot; output/taxonomy/refs/coverage/revision divalidasi; deterministic graph coverage melengkapi pasangan element/category; fallback ditandai candidate-only | Demo masih memiliki banyak metadata unknown/inferred; accepted finding/control lifecycle dan engine-backed coverage review belum lengkap | P0/P1 |
 | Threat traceability | Threat dapat menarget typed node/flow/boundary/data object dan tombol focus membuka elemen DFD | Highlight lintas semua projection dan controls typed ke location/evidence masih perlu ditutup | P1 |
 | Revision/staleness | Semantic vs layout revision, stale marking, conflict, proposal diff/apply tersedia | Dismiss/partial review proposal, rerun job state, cancellation, dan recovery failure belum tersedia | P1 |
-| Safety/isolation | Redaction dan schema checks ada | Authorization/project isolation, provider URL allowlist, `local_only`, resource limits, serta failure/partial-model state belum ada | P0/P1 |
-| Export/import/reviewability | JSON schema-validated round-trip, SVG export, inventory, accessible text alternative tersedia | Visual QA boundary/label clipping; delete impact preview baru tersedia di backend dan belum dipakai UI | P1 |
+| Safety/isolation | Redaction, schema checks, dan configurable workspace guard tersedia | Production IdP/JWT integration, provider URL allowlist, `local_only`, resource limits, serta failure/partial-model state belum ada | P0/P1 |
+| Export/import/reviewability | JSON schema-validated round-trip, SVG export, inventory, accessible text alternative, dan UI delete impact preview tersedia | Visual QA boundary/label clipping dan full destructive-flow integration test belum lengkap | P1 |
 
 Bukti Playwright pada project demo (`11c22c23-7517-4fd5-944a-a38f53cd7768`): Context,
-System DFD, Feature DFD, inventory, node inspector, dan tombol `Focus affected DFD
-elements` berhasil dirender; request API report/project merespons 200. Satu console
-error yang terlihat hanya favicon 404. Bukti ini memverifikasi jalur UI utama, bukan
-completion seluruh acceptance criteria.
+System DFD, Feature DFD, inventory, canonical add-element form, node inspector, dan
+tombol `Focus affected DFD elements` berhasil dirender; request API project/report/DFD
+merespons 200; console smoke-test terbaru tidak memiliki error/warning. Bukti ini
+memverifikasi jalur UI utama, bukan completion seluruh acceptance criteria.
 
 ## Milestone status
 
@@ -230,7 +230,7 @@ Progress:
 - Inventory sekarang mencakup zone; boundary inspector dapat mengubah status, tipe,
   transition scope, dan rationale; zone inspector dapat mengubah parent dan trust assumptions.
 - Backend `impact-preview` menghitung dependent node/flow/view/boundary/zone/question/threat
-  sebelum deletion, tetapi UI delete belum menggunakannya.
+  sebelum deletion, dan UI delete menampilkan konfirmasi dependency sebelum mutasi.
 
 Deliverables:
 
@@ -249,8 +249,8 @@ Deliverables:
 - Simpan posisi, viewport, collapsed group, dan layout revision.
 - Regenerate menghasilkan proposal diff, tidak menimpa human edit.
 
-Catatan status: edit metadata node/flow/zone/boundary sudah tersedia; add/remove dan
-delete-impact confirmation UI masih belum selesai.
+Catatan status: add/edit/remove UI sudah tersedia dan backend tetap menjadi gate schema,
+graph integrity, revision, dan stale analysis. Automated UI mutation test masih perlu diperkuat.
 
 Implementasi tambahan pada checkpoint terbaru:
 
@@ -273,6 +273,9 @@ Progress:
 - Prompt meminta affected refs berbasis stable DFD IDs serta coverage terpisah.
 - Output candidate divalidasi terhadap taxonomy dan current DFD IDs; dangling refs dihapus dengan warning.
 - Coverage AI disimpan terpisah pada `analysis_coverage` setelah validasi.
+- Deterministic graph coverage melengkapi setiap canonical element/category pair yang belum
+  dikembalikan engine sebagai `insufficient_information`; target threat tervalidasi menjadi
+  `candidate_identified` tanpa membuat finding baru.
 - Taxonomy LINDDUN canonical digunakan untuk output baru dengan alias legacy untuk kompatibilitas report lama.
 - Fallback sekarang menghasilkan satu candidate yang `Needs Info`, `candidate_only`, dan tertaut ke flow DFD pertama bila tersedia.
 - Validasi AI menolak shape list yang salah, memfilter evidence/DFD IDs dangling, menambahkan title/scenario/controls/mitigations, serta menandai `analyzed_revision`.
@@ -327,8 +330,9 @@ Deliverables:
 - Layout-only edit tidak menandai stale.
 - Rerun tidak menghapus human review, evidence, atau accepted decisions.
 
-Catatan status: target focus sudah diverifikasi melalui Playwright pada demo report;
-coverage lintas semua projection dan control traceability masih perlu ditutup.
+Catatan status: target focus dan process/question/data-object review sudah diverifikasi
+melalui Playwright pada demo report; controls typed ke location/evidence dan full projection
+coverage masih perlu ditutup.
 
 ### M8 — Persistence, authorization, export, dan failure states
 
@@ -339,6 +343,10 @@ Progress:
 - Canonical DFD persistence endpoint, optimistic revision conflict, semantic stale marking, dan SVG export tersedia.
 - UI memiliki tombol export SVG canonical.
 - JSON export/import canonical dengan schema version dan optimistic revision check tersedia.
+- Configurable workspace access guard melindungi list/create/read/write/export/analyze/artifact/DFD
+  routes saat `WORKSPACE_AUTH_REQUIRED=true`; cross-workspace project disamarkan sebagai 404.
+- Frontend meneruskan workspace ID dan bearer token dari `sessionStorage` bila deployment
+  mengaktifkan guard.
 
 Deliverables:
 
@@ -352,13 +360,17 @@ Deliverables:
 - Export SVG atau PNG yang tidak memotong boundary/label.
 - Enforce `local_only`, redaction policy, resource limits, dan provider URL allowlist.
 
+Catatan authorization: guard ini adalah adapter token-per-workspace untuk MVP, bukan
+identity provider/JWT production. Workspace project lama tanpa `workspace_id` tidak dapat
+diakses ketika mode strict diaktifkan sampai dimigrasikan.
+
 ### M9 — Fixture dan verifikasi acceptance criteria
 
 Status: **Sebagian selesai — prioritas P1/P2**
 
 Progress:
 
-- Test suite bertambah dari 24 menjadi 48 Python tests.
+- Test suite bertambah dari 24 menjadi 56 Python tests.
 - Test baru mencakup canonical model typed refs, graph invalidity, zone cycle, multi-boundary threat mapping, request/response, fixture crossing, DFD persistence, SVG escaping, threat schema validation, dan redaction.
 - Synthetic customer-registration source/model fixture tersedia; full acceptance coverage AC01–AC20 masih belum selesai.
 
@@ -391,20 +403,20 @@ Acceptance test groups:
 |---|---|
 | Artifact ingestion dan basic evidence | Partial / cukup baik |
 | Postman nested/inherited auth | Partial / sudah ada |
-| Canonical semantic DFD | Partial: contract, adapter, persistence, evidence/assertions, hash/revision, validator; import demo masih banyak unknown/inferred |
-| Stable typed node/flow model | Partial: typed node/flow/data/boundary refs, request/response, feature projections/port lint, editor metadata; add/remove editor belum ada |
-| Ownership/scope/exposure separation | Partial: independent fields, unknown questions, semantic crossing; reviewer editor belum lengkap |
-| Nested and logical boundary | Partial: ancestor crossing, common-parent guard, logical reviewer crossing, zone/boundary editor; add/remove dan question resolution belum ada |
+| Canonical semantic DFD | Partial: contract, adapter, persistence, evidence/assertions, hash/revision, validator, editable graph; import demo masih banyak unknown/inferred |
+| Stable typed node/flow model | Partial: typed node/flow/data/boundary refs, request/response, feature projections/port lint, add/edit/remove editor; automated mutation coverage belum lengkap |
+| Ownership/scope/exposure separation | Partial: independent fields, unknown questions, semantic crossing, reviewer/editor resolution; evidence-backed classification masih incomplete |
+| Nested and logical boundary | Partial: ancestor crossing, common-parent guard, logical reviewer crossing, zone/boundary editor, add/remove, dan question resolution; full logical boundary workflow belum ada |
 | Same-zone analysis | Partial: same-zone flows retained and analyzed; full UI coverage belum ada |
 | Threat traceability | Partial: explicit DFD refs, unmapped state, cross-boundary fan-out fixed, threat-to-DFD focus action |
-| STRIDE coverage model | Partial: prompt, coverage persistence, output schema/revision validation; deterministic full coverage belum ada |
+| STRIDE coverage model | Partial: prompt, validated output, deterministic element/category coverage, revision tracking; engine-backed coverage masih reviewable |
 | LINDDUN PRO-aligned model | Partial: canonical labels/aliases, sender-flow-receiver prompt, non-compliance guard; lifecycle metadata analysis belum lengkap |
-| Editable DFD dan layout persistence | Partial: node/flow/zone/boundary metadata editor, inventory, layout persistence, undo/redo, backend impact preview; add/remove/delete confirmation UI belum ada |
+| Editable DFD dan layout persistence | Partial: add/edit/remove node/flow/data/zone/boundary, inventory, I-P-O/store inspector, layout persistence, undo/redo, impact preview; automated UI mutation test belum ada |
 | Regenerate diff/revision conflict | Partial: revision conflict, candidate proposal, dan explicit apply sudah ada; dismiss/section review UI belum ada |
 | JSON round-trip/SVG export | Partial: schema-validated JSON import/export dan SVG export; visual QA boundary/label belum lengkap |
-| Authentication/project isolation | Belum ada |
+| Authentication/project isolation | Partial: configurable token-per-workspace guard + cross-workspace resource check; IdP/JWT production integration belum ada |
 | Synthetic DFD fixture | Partial: customer-registration source/model tersedia; Postman-only fixture inline test |
-| Automated verification sesuai AC01–AC20 | Partial: 49 Python tests + JS regression + Playwright smoke-test; end-to-end/UI/access criteria belum lengkap |
+| Automated verification sesuai AC01–AC20 | Partial: 56 Python tests + JS regression + Playwright UI smoke-test + access-control helper tests; end-to-end/UI/failure criteria belum lengkap |
 
 ## Prioritas implementasi
 
@@ -427,7 +439,9 @@ Acceptance test groups:
 - 2026-09-19: Added explicit proposal apply endpoint/UI, canonical DFD inventory, node/flow metadata editor, layout persistence hook, feature port mapping lint, evidence reference validation, privacy metadata questions, and schema-validated JSON DFD import/export.
 - 2026-09-19: Added DFD proposal section selection, canonical Context/System/Feature level rendering, feature process selector, and undo/redo history.
 - 2026-09-19: Added zone/boundary metadata editors, backend deletion impact preview, and threat-card focus navigation to canonical DFD targets.
-- 2026-09-19: Verification: 49 Python unit tests, JavaScript analysis visibility regression, JS syntax checks, Python compilation, diff whitespace checks, and Playwright smoke-test passed; favicon 404 remains non-functional noise.
+- 2026-09-19: Added deterministic graph coverage completion, process I-P-O/store/data-object inspectors, question resolution, canonical add/remove UI, and duplicate display/reference validation.
+- 2026-09-19: Added configurable workspace authorization guard, cross-workspace resource isolation, frontend workspace headers, and access-control regression tests.
+- 2026-09-19: Verification: 56 Python unit tests, JavaScript analysis visibility regression, JS syntax checks, Python compilation, diff whitespace checks, and Playwright UI smoke-test passed; favicon route returns 200.
 
 ## Progress rule
 

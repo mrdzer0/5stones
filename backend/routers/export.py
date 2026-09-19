@@ -3,18 +3,23 @@ from __future__ import annotations
 import csv
 import io
 import json
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import PlainTextResponse, StreamingResponse
-from backend.utils.storage import get_project, get_report
+from backend.utils.storage import get_report
 from backend.utils.audit import log_event
 from backend.services.posture_service import normalize_report_evidence
+from backend.utils.access_control import get_authorized_project, workspace_access_dependency
 
-router = APIRouter(prefix="/api/projects", tags=["export"])
+router = APIRouter(
+    prefix="/api/projects",
+    tags=["export"],
+    dependencies=[workspace_access_dependency],
+)
 
 
 @router.get("/{project_id}/export")
-async def export_report(project_id: str, format: str = "json"):
-    project = get_project(project_id)
+async def export_report(project_id: str, format: str = "json", request: Request = None):
+    project = get_authorized_project(project_id, request)
     report = get_report(project_id)
     if not project or not report:
         raise HTTPException(status_code=404, detail="Project or report not found")

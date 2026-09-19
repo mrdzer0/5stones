@@ -1219,6 +1219,7 @@ function renderResults(report) {
 
   renderTrustBoundaries(report.trust_boundaries || []);
   renderDiagram(report);                                // ← interactive diagram
+  renderGraphCoverageSummary(report);
   renderDfdInventory(report);
   renderDiagramTextAlternative(report);
   renderThreats('stride-threats-list', 'st', stride);  // ← unique prefix 'st'
@@ -1754,6 +1755,25 @@ function renderDiagramMappingSummary(report) {
     <span class="diagram-mapping-help">Counts are unique findings; one finding may target more than one model element.</span>`;
 }
 
+function renderGraphCoverageSummary(report) {
+  const el = document.getElementById('analysis-coverage-summary');
+  if (!el) return;
+  const summaries = Object.entries(report?.analysis_coverage_summary || {});
+  if (!summaries.length) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  el.style.display = '';
+  el.innerHTML = summaries.map(([framework, summary]) => `
+    <span class="diagram-mapping-label">${escHtml(framework)} graph coverage</span>
+    <span class="diagram-mapping-chip"><strong>${Number(summary.candidate_identified || 0)}</strong> candidate</span>
+    <span class="diagram-mapping-chip"><strong>${Number(summary.reviewed_no_candidate || 0)}</strong> reviewed no candidate</span>
+    <span class="diagram-mapping-chip ${summary.insufficient_information ? 'is-warning' : 'is-complete'}"><strong>${Number(summary.insufficient_information || 0)}</strong> insufficient information</span>
+    <span class="diagram-mapping-help">Missing coverage is reviewable and is not treated as no threat.</span>
+  `).join('');
+}
+
 function canonicalNodeVisualZone(node) {
   if (node.exposure === 'internet_facing') return 'untrusted';
   if (node.ownership === 'vendor' || node.scope === 'external_dependency') return 'external';
@@ -1782,6 +1802,10 @@ function renderDfdInventory(report) {
       type: 'flow', id: flow.id, displayId: flow.display_id, name: flow.name,
       detail: `${nodeById.get(String(flow.source_id))?.name || flow.source_id} → ${nodeById.get(String(flow.target_id))?.name || flow.target_id}`,
     })),
+    ...(model.data_objects || []).map(item => ({
+      type: 'data_object', id: item.id, displayId: item.display_id, name: item.name,
+      detail: `data object · ${item.knowledge_status} · ${item.sensitivity || 'sensitivity unknown'}`,
+    })),
     ...(model.zones || []).map(zone => ({
       type: 'zone', id: zone.id, displayId: zone.display_id, name: zone.name,
       detail: `${zone.parent_zone_id ? `child of ${zone.parent_zone_id}` : 'top-level'} · ${zone.knowledge_status}`,
@@ -1800,6 +1824,13 @@ function renderDfdInventory(report) {
     return;
   }
   container.innerHTML = `
+    <div class="dfd-inventory-actions" role="group" aria-label="Add canonical DFD element">
+      <button type="button" class="btn btn-secondary btn-sm" data-dfd-add-type="node">Add node</button>
+      <button type="button" class="btn btn-secondary btn-sm" data-dfd-add-type="flow">Add flow</button>
+      <button type="button" class="btn btn-secondary btn-sm" data-dfd-add-type="data_object">Add data object</button>
+      <button type="button" class="btn btn-secondary btn-sm" data-dfd-add-type="zone">Add zone</button>
+      <button type="button" class="btn btn-secondary btn-sm" data-dfd-add-type="boundary">Add boundary</button>
+    </div>
     <div class="table-wrap" style="overflow:auto;">
       <table class="data-table" aria-label="Canonical DFD inventory">
         <thead><tr><th scope="col">ID</th><th scope="col">Element</th><th scope="col">Detail</th></tr></thead>
@@ -1813,6 +1844,9 @@ function renderDfdInventory(report) {
     </div>`;
   container.querySelectorAll('[data-dfd-select-id]').forEach(button => {
     button.addEventListener('click', () => focusDfdElement(button.dataset.dfdSelectType, button.dataset.dfdSelectId));
+  });
+  container.querySelectorAll('[data-dfd-add-type]').forEach(button => {
+    button.addEventListener('click', () => showDfdCreateInspector(button.dataset.dfdAddType));
   });
 }
 
@@ -1847,9 +1881,214 @@ function focusDfdElement(type, id) {
       if (zone) showZoneInspector(zone);
       return;
     }
+    if (type === 'data_object') {
+      const dataObject = (model.data_objects || []).find(item => String(item.id) === String(id));
+      if (dataObject) showDataObjectInspector(dataObject);
+      return;
+    }
     const question = (model.questions || []).find(item => String(item.id) === String(id));
     if (question) showDfdQuestionInspector(question);
   }, 120);
+}
+
+function dfdRandomId(prefix) {
+  const uuid = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${prefix}-${uuid}`;
+}
+
+function nextDfdDisplayId(items, prefix) {
+  const max = (items || []).reduce((highest, item) => {
+    const match = String(item.display_id || '').match(new RegExp(`^${prefix}(\\d+)$`, 'i'));
+    return Math.max(highest, match ? Number(match[1]) : 0);
+  }, 0);
+  return `${prefix}${max + 1}`;
+}
+
+function lineValues(value) {
+  return String(value || '').split('\n').map(item => item.trim()).filter(Boolean);
+}
+
+function dfdZoneOptions(model, selected = null, includeBlank = false) {
+  const selectedSet = new Set(Array.isArray(selected) ? selected : selected ? [selected] : []);
+  return `${includeBlank ? '<option value="">Top-level / none</option>' : ''}${(model.zones || []).map(zone =>
+    `<option value="${escHtml(zone.id)}" ${selectedSet.has(zone.id) ? 'selected' : ''}>${escHtml(`${zone.display_id} ${zone.name}`)}</option>`
+  ).join('')}`;
+}
+
+function syncDfdViews(model) {
+  const semanticIds = [
+    ...(model.nodes || []).map(item => item.id),
+    ...(model.data_objects || []).map(item => item.id),
+    ...(model.flows || []).map(item => item.id),
+    ...(model.boundaries || []).map(item => item.id),
+  ];
+  (model.views || []).forEach(view => {
+    if (view.kind === 'context' || view.kind === 'system') {
+      const refs = new Set(view.element_refs || []);
+      semanticIds.forEach(id => refs.add(id));
+      view.element_refs = [...refs];
+      view.projection_mappings = { ...(view.projection_mappings || {}) };
+      semanticIds.forEach(id => { view.projection_mappings[id] = view.projection_mappings[id] || [id]; });
+    }
+    if (view.kind === 'feature' && view.parent_process_id) {
+      const relatedFlows = (model.flows || []).filter(flow => flow.source_id === view.parent_process_id || flow.target_id === view.parent_process_id);
+      const relatedNodes = new Set([view.parent_process_id, ...relatedFlows.flatMap(flow => [flow.source_id, flow.target_id])]);
+      const relatedData = new Set(relatedFlows.flatMap(flow => flow.data_object_ids || []));
+      const refs = [...new Set([...relatedNodes, ...relatedFlows.map(flow => flow.id), ...relatedData])];
+      view.element_refs = refs;
+      view.projection_mappings = Object.fromEntries(refs.map(id => [id, [id]]));
+      view.input_flow_ids = relatedFlows.filter(flow => flow.target_id === view.parent_process_id).map(flow => flow.id).sort();
+      view.output_flow_ids = relatedFlows.filter(flow => flow.source_id === view.parent_process_id).map(flow => flow.id).sort();
+      view.port_mappings = { input: [...view.input_flow_ids], output: [...view.output_flow_ids] };
+    }
+  });
+}
+
+function showDfdCreateInspector(type) {
+  const inspector = document.getElementById('node-inspector');
+  const title = document.getElementById('inspector-title');
+  const body = document.getElementById('inspector-body');
+  const model = currentReport?.dfd_model;
+  if (!inspector || !title || !body || !model) return;
+  const nodeOptions = (model.nodes || []).map(node => `<option value="${escHtml(node.id)}">${escHtml(`${node.display_id} ${node.name}`)}</option>`).join('');
+  const dataOptions = (model.data_objects || []).map(item => `<option value="${escHtml(item.id)}">${escHtml(`${item.display_id} ${item.name}`)}</option>`).join('');
+  const typeForms = {
+    node: `<label class="form-label">Node type<select class="form-select" data-dfd-create-field="type"><option value="process">process</option><option value="entity">entity</option><option value="data_store">data_store</option></select></label>
+      <label class="form-label">Name<input class="form-input" data-dfd-create-field="name" maxlength="240" required /></label>
+      <div class="dfd-editor-grid"><label class="form-label">Scope<select class="form-select" data-dfd-create-field="scope"><option>in_scope</option><option>external_dependency</option><option selected>unknown</option></select></label><label class="form-label">Ownership<select class="form-select" data-dfd-create-field="ownership"><option>organization</option><option>customer</option><option>vendor</option><option>shared</option><option selected>unknown</option></select></label><label class="form-label">Exposure<select class="form-select" data-dfd-create-field="exposure"><option>internet_facing</option><option>private</option><option>local</option><option selected>unknown</option></select></label></div>
+      <label class="form-label">Trust zones<select class="form-select" data-dfd-create-field="zone_ids" multiple size="${Math.min(4, Math.max(2, (model.zones || []).length))}">${dfdZoneOptions(model)}</select></label>`,
+    flow: `<label class="form-label">Source<select class="form-select" data-dfd-create-field="source_id">${nodeOptions}</select></label><label class="form-label">Destination<select class="form-select" data-dfd-create-field="target_id">${nodeOptions}</select></label><label class="form-label">Data flow name<input class="form-input" data-dfd-create-field="name" maxlength="240" required /></label><div class="dfd-editor-grid"><label class="form-label">Interaction<select class="form-select" data-dfd-create-field="interaction_kind">${['request', 'response', 'event', 'read', 'write', 'replication', 'unknown'].map(value => `<option value="${value}">${value}</option>`).join('')}</select></label><label class="form-label">Protocol<input class="form-input" data-dfd-create-field="protocol" maxlength="120" /></label></div><label class="form-label">Data objects<select class="form-select" data-dfd-create-field="data_object_ids" multiple size="${Math.min(5, Math.max(2, (model.data_objects || []).length))}">${dataOptions}</select></label>`,
+    data_object: `<label class="form-label">Data object name<input class="form-input" data-dfd-create-field="name" maxlength="240" required /></label><label class="form-label">Fields<textarea class="form-input" data-dfd-create-field="fields" rows="2" placeholder="One field per line"></textarea></label><div class="dfd-editor-grid"><label class="form-label">Classification<input class="form-input" data-dfd-create-field="classification" /></label><label class="form-label">Sensitivity<input class="form-input" data-dfd-create-field="sensitivity" /></label></div><label class="form-label">Purpose<textarea class="form-input" data-dfd-create-field="purpose" rows="2"></textarea></label>`,
+    zone: `<label class="form-label">Zone name<input class="form-input" data-dfd-create-field="name" maxlength="180" required /></label><label class="form-label">Parent zone<select class="form-select" data-dfd-create-field="parent_zone_id">${dfdZoneOptions(model, null, true)}</select></label><label class="form-label">Trust assumptions<textarea class="form-input" data-dfd-create-field="trust_assumptions" rows="2" placeholder="One assumption per line"></textarea></label>`,
+    boundary: `<label class="form-label">Boundary name<input class="form-input" data-dfd-create-field="name" maxlength="180" required /></label><label class="form-label">Boundary types<select class="form-select" data-dfd-create-field="types" multiple size="5">${['network', 'identity', 'privilege', 'tenant', 'organization'].map(value => `<option value="${value}">${value}</option>`).join('')}</select></label><label class="form-label">Source zones<select class="form-select" data-dfd-create-field="source_zone_ids" multiple size="4">${dfdZoneOptions(model)}</select></label><label class="form-label">Target zones<select class="form-select" data-dfd-create-field="target_zone_ids" multiple size="4">${dfdZoneOptions(model)}</select></label><label class="form-label">Rationale<textarea class="form-input" data-dfd-create-field="rationale" rows="2"></textarea></label>`,
+  };
+  if (!typeForms[type]) return;
+  title.textContent = `Add DFD ${type.replace('_', ' ')}`;
+  body.innerHTML = `<form class="dfd-node-editor" data-dfd-create-editor><div class="node-model-meta">New semantic element · unknown values remain reviewable</div>${typeForms[type]}<button type="button" class="btn btn-primary btn-sm" data-save-dfd-create>Create element</button></form>`;
+  body.querySelector('[data-save-dfd-create]')?.addEventListener('click', () => saveDfdCreate(type, body));
+  inspector.style.display = 'block';
+  inspector.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+async function saveDfdCreate(type, body) {
+  const model = cloneCanonicalDfdModel(currentReport?.dfd_model);
+  if (!model) return;
+  const read = field => body.querySelector(`[data-dfd-create-field="${field}"]`);
+  const selected = field => [...(read(field)?.selectedOptions || [])].map(option => option.value);
+  const name = read('name')?.value.trim();
+  if (!name) { showToast('Name is required', 'error'); return; }
+  if (type === 'node') {
+    const nodeType = read('type')?.value || 'process';
+    const node = {
+      id: dfdRandomId('node'), display_id: nextDfdDisplayId(model.nodes, nodeType === 'entity' ? 'E' : nodeType === 'data_store' ? 'D' : 'P'), type: nodeType, name,
+      description: null, scope: read('scope')?.value || 'unknown', ownership: read('ownership')?.value || 'unknown', operator_control_party: null,
+      exposure: read('exposure')?.value || 'unknown', zone_ids: selected('zone_ids'), parent_process_id: null, knowledge_status: 'unknown', implementation_status: 'unknown', evidence_refs: [], assertions: [],
+      process_metadata: nodeType === 'process' ? { purpose: null, execution_identity: null, privileges: [], input_flow_ids: [], output_flow_ids: [], transformations: [], control_refs: [] } : null,
+    };
+    model.nodes.push(node);
+    if (nodeType === 'data_store') model.stores[node.id] = { data_object_ids: [], readers: [], writers: [], retention: null, deletion: null, backup: null, protection_controls: [] };
+    if (nodeType === 'process') model.views.push({ id: `view-feature-${node.id}`, kind: 'feature', parent_process_id: node.id, element_refs: [node.id], projection_mappings: { [node.id]: [node.id] }, input_flow_ids: [], output_flow_ids: [], port_mappings: { input: [], output: [] }, positions: {}, collapsed_groups: [], viewport: {} });
+  } else if (type === 'flow') {
+    const sourceId = read('source_id')?.value;
+    const targetId = read('target_id')?.value;
+    if (!sourceId || !targetId || sourceId === targetId) { showToast('Select distinct source and destination nodes', 'error'); return; }
+    model.flows.push({ id: dfdRandomId('flow'), display_id: nextDfdDisplayId(model.flows, 'F'), source_id: sourceId, target_id: targetId, name, data_object_ids: selected('data_object_ids'), protocol: read('protocol')?.value.trim() || null, interaction_kind: read('interaction_kind')?.value || 'unknown', authn: null, authz: null, boundary_crossings: [], crossing_rationales: {}, crossing_origins: {}, crossing_status: 'resolved', evidence_refs: [], knowledge_status: 'unknown', implementation_status: 'unknown' });
+  } else if (type === 'data_object') {
+    model.data_objects.push({ id: dfdRandomId('data-object'), display_id: nextDfdDisplayId(model.data_objects, 'DO'), name, fields: lineValues(read('fields')?.value), classification: read('classification')?.value.trim() || null, data_subjects: [], identifiers: [], sensitivity: read('sensitivity')?.value.trim() || null, purpose: read('purpose')?.value.trim() || null, recipients: [], transformation_refs: [], lineage_refs: [], knowledge_status: 'unknown', evidence_refs: [] });
+  } else if (type === 'zone') {
+    model.zones.push({ id: dfdRandomId('zone'), display_id: nextDfdDisplayId(model.zones, 'Z'), name, description: null, parent_zone_id: read('parent_zone_id')?.value || null, ownership_group_id: null, trust_assumptions: lineValues(read('trust_assumptions')?.value), knowledge_status: 'unknown', evidence_refs: [] });
+  } else if (type === 'boundary') {
+    model.boundaries.push({ id: dfdRandomId('boundary'), display_id: nextDfdDisplayId(model.boundaries, 'TB'), name, types: selected('types'), rationale: read('rationale')?.value.trim() || null, source_zone_ids: selected('source_zone_ids'), target_zone_ids: selected('target_zone_ids'), crossing_flow_ids: [], transition_scope: 'zone', controls: [], assertions: [], status: 'unresolved', derived: false, evidence_refs: [] });
+  }
+  syncDfdViews(model);
+  await persistCanonicalDfdModel(model, { message: `DFD ${type.replace('_', ' ')} added` });
+}
+
+function dfdDeleteButtonHtml(type, id) {
+  return `<button type="button" class="btn btn-danger btn-sm" data-delete-dfd-element data-delete-type="${escHtml(type)}" data-delete-id="${escHtml(id)}">Delete ${escHtml(type.replace('_', ' '))}</button>`;
+}
+
+function wireDfdDeleteButton(body) {
+  body.querySelector('[data-delete-dfd-element]')?.addEventListener('click', event => {
+    const button = event.currentTarget;
+    deleteDfdElement(button.dataset.deleteType, button.dataset.deleteId);
+  });
+}
+
+async function deleteDfdElement(type, id) {
+  if (!currentReport?.dfd_model) return;
+  try {
+    const impact = await API.dfd.impactPreview(projectId, type, id);
+    const dependencies = ['dependent_nodes', 'dependent_flows', 'dependent_views', 'dependent_boundaries', 'dependent_zones', 'dependent_questions', 'dependent_threats']
+      .map(key => `${key.replace('dependent_', '')}: ${(impact[key] || []).length}`).join(', ');
+    const message = `Delete ${impact.label || id}?\n\nImpact preview: ${dependencies}.\n\nThis changes the canonical DFD and marks threat analysis stale.`;
+    if (!window.confirm(message)) return;
+    const model = cloneCanonicalDfdModel(currentReport.dfd_model);
+    if (type === 'node') {
+      model.nodes = model.nodes.filter(item => item.id !== id);
+      model.flows = model.flows.filter(flow => flow.source_id !== id && flow.target_id !== id);
+      Object.keys(model.stores || {}).forEach(key => { if (key === id) delete model.stores[key]; });
+      model.nodes.forEach(node => { if (node.parent_process_id === id) node.parent_process_id = null; });
+      model.views = (model.views || []).filter(view => view.parent_process_id !== id);
+    } else if (type === 'data_object') {
+      model.data_objects = model.data_objects.filter(item => item.id !== id);
+      model.flows.forEach(flow => { flow.data_object_ids = (flow.data_object_ids || []).filter(value => value !== id); });
+      Object.values(model.stores || {}).forEach(store => { store.data_object_ids = (store.data_object_ids || []).filter(value => value !== id); });
+    } else if (type === 'flow') {
+      model.flows = model.flows.filter(item => item.id !== id);
+      model.boundaries.forEach(boundary => { boundary.crossing_flow_ids = (boundary.crossing_flow_ids || []).filter(value => value !== id); });
+    } else if (type === 'zone') {
+      model.zones = model.zones.filter(item => item.id !== id);
+      model.nodes.forEach(node => { node.zone_ids = (node.zone_ids || []).filter(value => value !== id); });
+      model.zones.forEach(zone => { if (zone.parent_zone_id === id) zone.parent_zone_id = null; });
+      model.boundaries.forEach(boundary => { boundary.source_zone_ids = (boundary.source_zone_ids || []).filter(value => value !== id); boundary.target_zone_ids = (boundary.target_zone_ids || []).filter(value => value !== id); });
+    } else if (type === 'boundary') {
+      model.boundaries = model.boundaries.filter(item => item.id !== id);
+      model.flows.forEach(flow => { flow.boundary_crossings = (flow.boundary_crossings || []).filter(value => value !== id); delete flow.crossing_rationales?.[id]; delete flow.crossing_origins?.[id]; });
+    }
+    model.questions = (model.questions || []).map(question => ({ ...question, affected_refs: (question.affected_refs || []).filter(value => value !== id) }));
+    model.views = (model.views || []).map(view => ({ ...view, element_refs: (view.element_refs || []).filter(value => value !== id), input_flow_ids: (view.input_flow_ids || []).filter(value => value !== id), output_flow_ids: (view.output_flow_ids || []).filter(value => value !== id), port_mappings: Object.fromEntries(Object.entries(view.port_mappings || {}).map(([key, refs]) => [key, (refs || []).filter(value => value !== id)])), projection_mappings: Object.fromEntries(Object.entries(view.projection_mappings || {}).filter(([key]) => key !== id).map(([key, refs]) => [key, (refs || []).filter(value => value !== id)])) }));
+    syncDfdViews(model);
+    await persistCanonicalDfdModel(model, { message: 'DFD element deleted' });
+  } catch (error) {
+    showToast(`Could not delete DFD element: ${userFacingAnalysisError(error.message)}`, 'error');
+  }
+}
+
+function showDataObjectInspector(dataObject) {
+  const inspector = document.getElementById('node-inspector');
+  const title = document.getElementById('inspector-title');
+  const body = document.getElementById('inspector-body');
+  if (!inspector || !title || !body) return;
+  title.textContent = `${dataObject.display_id || dataObject.id} ${dataObject.name}`;
+  body.innerHTML = `<form class="dfd-node-editor" data-dfd-data-editor>
+    <div class="node-model-meta">${escHtml(dataObject.id)} · data object · ${escHtml(dataObject.knowledge_status)}</div>
+    <label class="form-label">Name<input class="form-input" data-dfd-data-field="name" value="${escHtml(dataObject.name)}" maxlength="240" required /></label>
+    <label class="form-label">Fields<textarea class="form-input" data-dfd-data-field="fields" rows="3">${escHtml((dataObject.fields || []).join('\n'))}</textarea></label>
+    <div class="dfd-editor-grid"><label class="form-label">Classification<input class="form-input" data-dfd-data-field="classification" value="${escHtml(dataObject.classification || '')}" /></label><label class="form-label">Sensitivity<input class="form-input" data-dfd-data-field="sensitivity" value="${escHtml(dataObject.sensitivity || '')}" /></label></div>
+    <label class="form-label">Data subjects<textarea class="form-input" data-dfd-data-field="data_subjects" rows="2">${escHtml((dataObject.data_subjects || []).join('\n'))}</textarea></label>
+    <label class="form-label">Identifiers<textarea class="form-input" data-dfd-data-field="identifiers" rows="2">${escHtml((dataObject.identifiers || []).join('\n'))}</textarea></label>
+    <label class="form-label">Purpose<textarea class="form-input" data-dfd-data-field="purpose" rows="2">${escHtml(dataObject.purpose || '')}</textarea></label>
+    <label class="form-label">Recipients<textarea class="form-input" data-dfd-data-field="recipients" rows="2">${escHtml((dataObject.recipients || []).join('\n'))}</textarea></label>
+    <button type="button" class="btn btn-primary btn-sm" data-save-dfd-data>Save data metadata</button>
+    ${dfdDeleteButtonHtml('data_object', dataObject.id)}
+  </form>`;
+  body.querySelector('[data-save-dfd-data]')?.addEventListener('click', () => saveDataObject(dataObject.id, body));
+  wireDfdDeleteButton(body);
+  inspector.style.display = 'block';
+  inspector.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+async function saveDataObject(dataObjectId, body) {
+  const model = cloneCanonicalDfdModel(currentReport?.dfd_model);
+  const item = (model?.data_objects || []).find(value => String(value.id) === String(dataObjectId));
+  if (!item) return;
+  const read = field => body.querySelector(`[data-dfd-data-field="${field}"]`);
+  item.name = read('name')?.value.trim();
+  if (!item.name) { showToast('Data object name is required', 'error'); return; }
+  item.fields = lineValues(read('fields')?.value); item.classification = read('classification')?.value.trim() || null; item.sensitivity = read('sensitivity')?.value.trim() || null; item.data_subjects = lineValues(read('data_subjects')?.value); item.identifiers = lineValues(read('identifiers')?.value); item.purpose = read('purpose')?.value.trim() || null; item.recipients = lineValues(read('recipients')?.value);
+  const button = body.querySelector('[data-save-dfd-data]'); if (button) button.disabled = true;
+  await persistCanonicalDfdModel(model, { message: 'DFD data metadata saved' });
 }
 
 function showBoundaryInspector(boundary) {
@@ -1872,10 +2111,11 @@ function showBoundaryInspector(boundary) {
       </div>
       <label class="form-label">Boundary types<select class="form-select" data-dfd-boundary-field="types" multiple size="4">${types.map(value => `<option value="${value}" ${(boundary.types || []).includes(value) ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
       <label class="form-label">Rationale<textarea class="form-input" data-dfd-boundary-field="rationale" rows="3" maxlength="1000">${escHtml(boundary.rationale || '')}</textarea></label>
-      <button type="button" class="btn btn-primary btn-sm" data-save-dfd-boundary>Save boundary metadata</button>
+      <div class="dfd-editor-actions"><button type="button" class="btn btn-primary btn-sm" data-save-dfd-boundary>Save boundary metadata</button>${dfdDeleteButtonHtml('boundary', boundary.id)}</div>
     </form>
     <div class="inspector-findings"><strong>${threats.length} mapped finding${threats.length === 1 ? '' : 's'}</strong></div>`;
   body.querySelector('[data-save-dfd-boundary]')?.addEventListener('click', () => saveCanonicalBoundary(boundary.id, body));
+  wireDfdDeleteButton(body);
   inspector.style.display = 'block';
   inspector.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
@@ -1912,9 +2152,10 @@ function showZoneInspector(zone) {
       <label class="form-label">Parent zone<select class="form-select" data-dfd-zone-field="parent_zone_id"><option value="">Top-level</option>${parentOptions}</select></label>
       <label class="form-label">Description<textarea class="form-input" data-dfd-zone-field="description" rows="2" maxlength="1000">${escHtml(zone.description || '')}</textarea></label>
       <label class="form-label">Trust assumptions<textarea class="form-input" data-dfd-zone-field="trust_assumptions" rows="2" placeholder="One assumption per line">${escHtml((zone.trust_assumptions || []).join('\n'))}</textarea></label>
-      <button type="button" class="btn btn-primary btn-sm" data-save-dfd-zone>Save zone metadata</button>
+      <div class="dfd-editor-actions"><button type="button" class="btn btn-primary btn-sm" data-save-dfd-zone>Save zone metadata</button>${dfdDeleteButtonHtml('zone', zone.id)}</div>
     </form>`;
   body.querySelector('[data-save-dfd-zone]')?.addEventListener('click', () => saveCanonicalZone(zone.id, body));
+  wireDfdDeleteButton(body);
   inspector.style.display = 'block';
   inspector.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
@@ -1940,12 +2181,30 @@ function showDfdQuestionInspector(question) {
   if (!inspector || !title || !body) return;
   title.textContent = `Question ${question.id}`;
   body.innerHTML = `
-    <div class="node-model-meta">${escHtml(question.status)} · affected: ${(question.affected_refs || []).join(', ') || 'none'}</div>
-    <p style="font-weight:600;">${escHtml(question.question)}</p>
-    <p class="text-sm text-muted">${escHtml(question.reason)}</p>
-    ${question.source_refs?.length ? `<div class="text-xs text-muted">Sources: ${question.source_refs.map(escHtml).join(', ')}</div>` : ''}`;
+    <form class="dfd-node-editor" data-dfd-question-editor>
+      <div class="node-model-meta">affected: ${(question.affected_refs || []).join(', ') || 'none'}</div>
+      <p style="font-weight:600;">${escHtml(question.question)}</p>
+      <p class="text-sm text-muted">${escHtml(question.reason)}</p>
+      ${question.source_refs?.length ? `<div class="text-xs text-muted">Sources: ${question.source_refs.map(escHtml).join(', ')}</div>` : ''}
+      <label class="form-label">Review status<select class="form-select" data-dfd-question-field="status">${['open', 'answered', 'deferred'].map(value => `<option value="${value}" ${question.status === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
+      <label class="form-label">Resolution<textarea class="form-input" data-dfd-question-field="resolution" rows="3" maxlength="1200" placeholder="Record the evidence or decision that resolves this question">${escHtml(question.resolution || '')}</textarea></label>
+      <button type="button" class="btn btn-primary btn-sm" data-save-dfd-question>Save question review</button>
+    </form>`;
+  body.querySelector('[data-save-dfd-question]')?.addEventListener('click', () => saveDfdQuestion(question.id, body));
   inspector.style.display = 'block';
   inspector.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+async function saveDfdQuestion(questionId, body) {
+  const model = cloneCanonicalDfdModel(currentReport?.dfd_model);
+  const question = (model?.questions || []).find(item => String(item.id) === String(questionId));
+  if (!question) return;
+  const read = field => body.querySelector(`[data-dfd-question-field="${field}"]`);
+  question.status = read('status')?.value || 'open';
+  question.resolution = read('resolution')?.value.trim() || null;
+  const button = body.querySelector('[data-save-dfd-question]');
+  if (button) button.disabled = true;
+  await persistCanonicalDfdModel(model, { message: 'DFD question review saved' });
 }
 
 function focusThreatTargets(threatId) {
@@ -2778,7 +3037,7 @@ function canonicalFlowEditorHtml(flow) {
         <label class="form-label">AuthZ<input class="form-input" data-dfd-flow-field="authz" value="${escHtml(flow.authz || '')}" maxlength="160" /></label>
       </div>
       <label class="form-label">Data objects<select class="form-select" data-dfd-flow-field="data_object_ids" multiple size="${Math.min(5, Math.max(2, (model.data_objects || []).length))}">${dataOptions}</select></label>
-      <button type="button" class="btn btn-primary btn-sm" data-save-dfd-flow>Save flow metadata</button>
+      <div class="dfd-editor-actions"><button type="button" class="btn btn-primary btn-sm" data-save-dfd-flow>Save flow metadata</button>${dfdDeleteButtonHtml('flow', flow.id)}</div>
     </form>`;
 }
 
@@ -2824,6 +3083,7 @@ function showFlowInspector(edge) {
   if (canonicalFlow) {
     body.innerHTML = `${crossing}${canonicalFlowEditorHtml(canonicalFlow)}<ul class="flow-detail-list">${details}</ul>${findings}`;
     body.querySelector('[data-save-dfd-flow]')?.addEventListener('click', () => saveCanonicalFlow(canonicalFlow.id, body));
+    wireDfdDeleteButton(body);
   } else {
     body.innerHTML = `${crossing}<ul class="flow-detail-list">${details}</ul>${findings}`;
   }
@@ -3025,6 +3285,12 @@ function canonicalNodeEditorHtml(node) {
     `<option value="${escHtml(zone.id)}" ${selectedZones.has(zone.id) ? 'selected' : ''}>${escHtml(`${zone.display_id} ${zone.name}`)}</option>`
   ).join('');
   const purpose = node.process_metadata?.purpose || '';
+  const processMetadata = node.process_metadata || {};
+  const storeMetadata = model.stores?.[node.id] || {};
+  const dataObjectOptions = (model.data_objects || []).map(item =>
+    `<option value="${escHtml(item.id)}" ${(storeMetadata.data_object_ids || []).includes(item.id) ? 'selected' : ''}>${escHtml(`${item.display_id} ${item.name}`)}</option>`
+  ).join('');
+  const multiline = values => escHtml((values || []).join('\n'));
   return `
     <form class="dfd-node-editor" data-dfd-node-editor>
       <div class="node-model-meta">${escHtml(node.display_id || node.id)} · ${escHtml(node.type)} · semantic revision ${escHtml(model.revision)}</div>
@@ -3038,9 +3304,51 @@ function canonicalNodeEditorHtml(node) {
       </div>
       <label class="form-label">Description<textarea class="form-input" data-dfd-field="description" rows="2" maxlength="1000">${escHtml(node.description || '')}</textarea></label>
       <label class="form-label">Trust zones<select class="form-select" data-dfd-field="zone_ids" multiple size="${Math.min(4, Math.max(2, (model.zones || []).length))}">${zoneOptions}</select></label>
-      ${node.type === 'process' ? `<label class="form-label">Process purpose<input class="form-input" data-dfd-field="purpose" value="${escHtml(purpose)}" maxlength="500" /></label>` : ''}
-      <button type="button" class="btn btn-primary btn-sm" data-save-dfd-node>Save semantic metadata</button>
+      ${node.type === 'process' ? `
+        <label class="form-label">Process purpose<input class="form-input" data-dfd-field="purpose" value="${escHtml(purpose)}" maxlength="500" /></label>
+        <label class="form-label">Execution identity<input class="form-input" data-dfd-field="execution_identity" value="${escHtml(processMetadata.execution_identity || '')}" maxlength="240" /></label>
+        <label class="form-label">Privileges<textarea class="form-input" data-dfd-field="privileges" rows="2" placeholder="One privilege per line">${multiline(processMetadata.privileges)}</textarea></label>
+        <label class="form-label">Transformations<textarea class="form-input" data-dfd-field="transformations" rows="2" placeholder="One transformation per line">${multiline(processMetadata.transformations)}</textarea></label>
+        <label class="form-label">Control references<textarea class="form-input" data-dfd-field="control_refs" rows="2" placeholder="One control reference per line">${multiline(processMetadata.control_refs)}</textarea></label>
+      ` : ''}
+      ${node.type === 'data_store' ? `
+        <fieldset class="dfd-editor-fieldset"><legend>Store lifecycle</legend>
+          <label class="form-label">Stored data<select class="form-select" data-dfd-store-field="data_object_ids" multiple size="${Math.min(5, Math.max(2, (model.data_objects || []).length))}">${dataObjectOptions}</select></label>
+          <label class="form-label">Readers<textarea class="form-input" data-dfd-store-field="readers" rows="2" placeholder="One node ID per line">${multiline(storeMetadata.readers)}</textarea></label>
+          <label class="form-label">Writers<textarea class="form-input" data-dfd-store-field="writers" rows="2" placeholder="One node ID per line">${multiline(storeMetadata.writers)}</textarea></label>
+          <label class="form-label">Retention<input class="form-input" data-dfd-store-field="retention" value="${escHtml(storeMetadata.retention || '')}" maxlength="240" /></label>
+          <label class="form-label">Deletion<input class="form-input" data-dfd-store-field="deletion" value="${escHtml(storeMetadata.deletion || '')}" maxlength="240" /></label>
+          <label class="form-label">Backup<input class="form-input" data-dfd-store-field="backup" value="${escHtml(storeMetadata.backup || '')}" maxlength="240" /></label>
+          <label class="form-label">Protection controls<textarea class="form-input" data-dfd-store-field="protection_controls" rows="2" placeholder="One control per line">${multiline(storeMetadata.protection_controls)}</textarea></label>
+        </fieldset>
+      ` : ''}
+      <div class="dfd-editor-actions"><button type="button" class="btn btn-primary btn-sm" data-save-dfd-node>Save semantic metadata</button>${dfdDeleteButtonHtml('node', node.id)}</div>
     </form>`;
+}
+
+function canonicalProcessIpoHtml(node) {
+  const model = currentReport?.dfd_model;
+  if (!model || node.type !== 'process') return '';
+  const nodeById = new Map((model.nodes || []).map(item => [String(item.id), item]));
+  const dataById = new Map((model.data_objects || []).map(item => [String(item.id), item]));
+  const incoming = (model.flows || []).filter(flow => String(flow.target_id) === String(node.id));
+  const outgoing = (model.flows || []).filter(flow => String(flow.source_id) === String(node.id));
+  const flowRows = (flows, direction) => flows.length ? flows.map(flow => {
+    const otherId = direction === 'input' ? flow.source_id : flow.target_id;
+    const other = nodeById.get(String(otherId));
+    const data = (flow.data_object_ids || []).map(id => dataById.get(String(id))?.name || id).join(', ') || 'unknown data';
+    return `<li><button type="button" class="btn btn-link btn-sm" data-dfd-ipo-flow="${escHtml(flow.id)}">${escHtml(`${flow.display_id} ${flow.name}`)}</button><span class="text-sm text-muted">${escHtml(`${direction === 'input' ? other?.name || otherId : other?.name || otherId} · ${data} · ${flow.interaction_kind}`)}</span></li>`;
+  }).join('') : '<li class="text-sm text-muted">No grounded flow on this side.</li>';
+  const metadata = node.process_metadata || {};
+  return `
+    <section class="dfd-ipo-summary" aria-labelledby="dfd-ipo-heading">
+      <h4 id="dfd-ipo-heading">Input–Process–Output</h4>
+      <div class="dfd-ipo-grid">
+        <div><strong>Input</strong><ul>${flowRows(incoming, 'input')}</ul></div>
+        <div><strong>Process</strong><p class="text-sm">${escHtml(metadata.purpose || 'unknown purpose')}</p><p class="text-sm text-muted">Identity: ${escHtml(metadata.execution_identity || 'unknown')} · Privileges: ${escHtml((metadata.privileges || []).join(', ') || 'unknown')}</p><p class="text-sm text-muted">Transformations: ${escHtml((metadata.transformations || []).join(', ') || 'none documented')}</p></div>
+        <div><strong>Output</strong><ul>${flowRows(outgoing, 'output')}</ul></div>
+      </div>
+    </section>`;
 }
 
 async function saveCanonicalNode(nodeId, body) {
@@ -3063,6 +3371,26 @@ async function saveCanonicalNode(nodeId, body) {
   if (node.type === 'process') {
     node.process_metadata = node.process_metadata || {};
     node.process_metadata.purpose = read('purpose')?.value.trim() || null;
+    node.process_metadata.execution_identity = read('execution_identity')?.value.trim() || null;
+    node.process_metadata.privileges = (read('privileges')?.value || '').split('\n').map(value => value.trim()).filter(Boolean);
+    node.process_metadata.transformations = (read('transformations')?.value || '').split('\n').map(value => value.trim()).filter(Boolean);
+    node.process_metadata.control_refs = (read('control_refs')?.value || '').split('\n').map(value => value.trim()).filter(Boolean);
+    node.process_metadata.input_flow_ids = model.flows.filter(flow => flow.target_id === node.id).map(flow => flow.id).sort();
+    node.process_metadata.output_flow_ids = model.flows.filter(flow => flow.source_id === node.id).map(flow => flow.id).sort();
+  }
+  if (node.type === 'data_store') {
+    const readStore = field => body.querySelector(`[data-dfd-store-field="${field}"]`);
+    model.stores = model.stores || {};
+    model.stores[node.id] = {
+      ...(model.stores[node.id] || {}),
+      data_object_ids: [...(readStore('data_object_ids')?.selectedOptions || [])].map(option => option.value),
+      readers: (readStore('readers')?.value || '').split('\n').map(value => value.trim()).filter(Boolean),
+      writers: (readStore('writers')?.value || '').split('\n').map(value => value.trim()).filter(Boolean),
+      retention: readStore('retention')?.value.trim() || null,
+      deletion: readStore('deletion')?.value.trim() || null,
+      backup: readStore('backup')?.value.trim() || null,
+      protection_controls: (readStore('protection_controls')?.value || '').split('\n').map(value => value.trim()).filter(Boolean),
+    };
   }
   const button = body.querySelector('[data-save-dfd-node]');
   if (button) button.disabled = true;
@@ -3086,8 +3414,12 @@ function showNodeInspector(node) {
 
   const canonicalNode = currentReport?.dfd_model?.nodes?.find(item => String(item.id) === String(node._elementId));
   if (canonicalNode) {
-    body.innerHTML = `${zoneSummary}${canonicalNodeEditorHtml(canonicalNode)}`;
+    body.innerHTML = `${zoneSummary}${canonicalProcessIpoHtml(canonicalNode)}${canonicalNodeEditorHtml(canonicalNode)}`;
     body.querySelector('[data-save-dfd-node]')?.addEventListener('click', () => saveCanonicalNode(canonicalNode.id, body));
+    wireDfdDeleteButton(body);
+    body.querySelectorAll('[data-dfd-ipo-flow]').forEach(button => {
+      button.addEventListener('click', () => focusDfdElement('flow', button.dataset.dfdIpoFlow));
+    });
     if (threats.length) {
       body.insertAdjacentHTML('beforeend', `<div class="inspector-findings"><strong>${threats.length} mapped finding${threats.length === 1 ? '' : 's'}</strong>${threats.map(t => `
         <div class="inspector-finding-row">${badgeHtml(t.risk_level, 'risk')}${badgeHtml(t.framework, 'framework')}<span>${escHtml(t.threat_category || 'Finding')}</span></div>`).join('')}</div>`);

@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from html import escape
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 
@@ -19,9 +19,14 @@ from backend.services.dfd_model_service import (
 )
 from backend.utils.audit import log_event
 from backend.utils.storage import get_project, get_report, save_report
+from backend.utils.access_control import get_authorized_project, workspace_access_dependency
 
 
-router = APIRouter(prefix="/api/projects", tags=["dfd"])
+router = APIRouter(
+    prefix="/api/projects",
+    tags=["dfd"],
+    dependencies=[workspace_access_dependency],
+)
 DOWNSTREAM_STAGES = ["stride", "linddun", "controls", "tests", "missing_info", "assumptions"]
 
 
@@ -49,9 +54,15 @@ def _load_model(project_id: str) -> tuple[dict, DfdModel]:
     return report, model
 
 
+def _project_for_request(project_id: str, request: Request = None) -> dict | None:
+    # Keep direct service-style calls used by the existing unit tests
+    # patchable, while HTTP requests go through the workspace guard.
+    return get_project(project_id) if request is None else get_authorized_project(project_id, request)
+
+
 @router.get("/{project_id}/dfd")
-async def get_dfd(project_id: str):
-    if not get_project(project_id):
+async def get_dfd(project_id: str, request: Request = None):
+    if not _project_for_request(project_id, request):
         raise HTTPException(status_code=404, detail="Project not found")
     report, model = _load_model(project_id)
     return {
@@ -61,9 +72,9 @@ async def get_dfd(project_id: str):
 
 
 @router.put("/{project_id}/dfd")
-async def save_dfd(project_id: str, body: dict):
+async def save_dfd(project_id: str, body: dict, request: Request = None):
     """Persist a validated semantic model without overwriting newer edits."""
-    if not get_project(project_id):
+    if not _project_for_request(project_id, request):
         raise HTTPException(status_code=404, detail="Project not found")
     if not isinstance(body, dict) or not isinstance(body.get("model"), dict):
         raise HTTPException(status_code=422, detail="Request must contain a model object")
@@ -117,9 +128,9 @@ async def save_dfd(project_id: str, body: dict):
 
 
 @router.post("/{project_id}/dfd/proposal/apply")
-async def apply_dfd_regeneration_proposal(project_id: str, body: dict):
+async def apply_dfd_regeneration_proposal(project_id: str, body: dict, request: Request = None):
     """Apply only an explicitly reviewed source-regeneration proposal."""
-    if not get_project(project_id):
+    if not _project_for_request(project_id, request):
         raise HTTPException(status_code=404, detail="Project not found")
     report, current = _load_model(project_id)
     proposal = report.get("dfd_proposal")
@@ -202,12 +213,12 @@ async def apply_dfd_regeneration_proposal(project_id: str, body: dict):
 
 
 @router.get("/{project_id}/dfd/export")
-async def export_dfd(project_id: str, format: str = "svg"):
+async def export_dfd(project_id: str, format: str = "svg", request: Request = None):
     """Export the canonical model as schema-versioned JSON or escaped SVG."""
     normalized_format = format.lower()
     if normalized_format not in {"svg", "json"}:
         raise HTTPException(status_code=400, detail="Unsupported DFD export format. Use: json or svg")
-    if not get_project(project_id):
+    if not _project_for_request(project_id, request):
         raise HTTPException(status_code=404, detail="Project not found")
     _, model = _load_model(project_id)
     validation = validate_dfd_model(model)
@@ -284,17 +295,17 @@ async def export_dfd(project_id: str, format: str = "svg"):
 
 
 @router.post("/{project_id}/dfd/import")
-async def import_dfd(project_id: str, body: dict):
+async def import_dfd(project_id: str, body: dict, request: Request = None):
     """Import a schema-validated canonical DFD through the normal save path."""
     if not isinstance(body, dict) or not isinstance(body.get("model"), dict):
         raise HTTPException(status_code=422, detail="Request must contain an exported model object")
-    return await save_dfd(project_id, body)
+    return await save_dfd(project_id, body, request=request)
 
 
 @router.post("/{project_id}/dfd/impact-preview")
-async def dfd_impact_preview(project_id: str, body: dict):
+async def dfd_impact_preview(project_id: str, body: dict, request: Request = None):
     """Return deletion dependencies without mutating the canonical model."""
-    if not get_project(project_id):
+    if not _project_for_request(project_id, request):
         raise HTTPException(status_code=404, detail="Project not found")
     report, model = _load_model(project_id)
     if not isinstance(body, dict) or not body.get("element_type") or not body.get("element_id"):

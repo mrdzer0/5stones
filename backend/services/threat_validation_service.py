@@ -50,6 +50,16 @@ LINDDUN_CATEGORY_ALIASES = {
     "Non-compliance": "Non-compliance",
 }
 
+LINDDUN_CATEGORIES = (
+    "Linking",
+    "Identifying",
+    "Non-repudiation",
+    "Detecting",
+    "Data Disclosure",
+    "Unawareness & Unintervenability",
+    "Non-compliance",
+)
+
 
 def _unique(values: Iterable[str]) -> list[str]:
     result = []
@@ -190,3 +200,96 @@ def validate_coverage(
             "reason": str(raw.get("reason") or "").strip(),
         })
     return accepted, warnings
+
+
+def complete_graph_coverage(
+    coverage: Iterable[dict],
+    threats: Iterable[dict],
+    dfd_model: dict | None,
+    framework: str,
+) -> tuple[list[dict], dict]:
+    """Make coverage explicit for every canonical element/category pair.
+
+    Missing AI coverage is represented as ``insufficient_information`` rather
+    than silently treated as a reviewed negative. A validated threat reference
+    can promote only its own element/category pair to ``candidate_identified``;
+    it never creates a threat finding by itself.
+    """
+    categories = tuple(sorted(STRIDE_CATEGORIES)) if framework == "STRIDE" else LINDDUN_CATEGORIES
+    model = dfd_model if isinstance(dfd_model, dict) else {}
+    element_items = []
+    for collection in ("nodes", "data_objects", "flows", "boundaries"):
+        for item in model.get(collection) or []:
+            if isinstance(item, dict) and item.get("id"):
+                element_items.append((str(item["id"]), collection[:-1] if collection.endswith("s") else collection))
+
+    target_categories: dict[str, set[str]] = {}
+    for threat in threats or []:
+        if not isinstance(threat, dict) or str(threat.get("framework") or framework) != framework:
+            continue
+        category = str(threat.get("threat_category") or "").strip()
+        if framework == "LINDDUN":
+            category = LINDDUN_CATEGORY_ALIASES.get(category, category)
+        if category not in categories:
+            continue
+        refs = threat.get("target_refs") or []
+        if not refs:
+            refs = [{"id": value} for value in (threat.get("affected_refs") or [])]
+        for ref in refs:
+            if isinstance(ref, dict) and ref.get("id"):
+                target_categories.setdefault(str(ref["id"]), set()).add(category)
+
+    accepted: dict[tuple[str, str], dict] = {}
+    for item in coverage or []:
+        if not isinstance(item, dict):
+            continue
+        element_ref = str(item.get("element_ref") or "").strip()
+        category = str(item.get("category") or "").strip()
+        if framework == "LINDDUN":
+            category = LINDDUN_CATEGORY_ALIASES.get(category, category)
+        if element_ref and category in categories:
+            accepted[(element_ref, category)] = {
+                "element_ref": element_ref,
+                "category": category,
+                "status": item.get("status") or "insufficient_information",
+                "reason": str(item.get("reason") or "").strip(),
+                "coverage_origin": "analysis_engine",
+            }
+
+    for element_ref, element_type in element_items:
+        for category in categories:
+            key = (element_ref, category)
+            targeted = category in target_categories.get(element_ref, set())
+            current = accepted.get(key)
+            if targeted:
+                accepted[key] = {
+                    **(current or {}),
+                    "element_ref": element_ref,
+                    "category": category,
+                    "status": "candidate_identified",
+                    "reason": (current or {}).get("reason") or "A validated threat candidate references this canonical element.",
+                    "coverage_origin": "validated_threat_reference",
+                }
+            elif current:
+                current["coverage_origin"] = current.get("coverage_origin") or "analysis_engine"
+            else:
+                accepted[key] = {
+                    "element_ref": element_ref,
+                    "category": category,
+                    "status": "insufficient_information",
+                    "reason": "No validated coverage entry was returned for this canonical element/category; absence is not evidence of no threat.",
+                    "coverage_origin": "graph_completeness_gap",
+                }
+
+    items = sorted(accepted.values(), key=lambda item: (item["element_ref"], categories.index(item["category"])))
+    summary = {
+        "framework": framework,
+        "model_revision": model.get("revision"),
+        "total": len(items),
+        "reviewed_no_candidate": sum(item["status"] == "reviewed_no_candidate" for item in items),
+        "candidate_identified": sum(item["status"] == "candidate_identified" for item in items),
+        "insufficient_information": sum(item["status"] == "insufficient_information" for item in items),
+        "complete": bool(items) and all(item["status"] != "insufficient_information" for item in items),
+        "element_types": {element_id: element_type for element_id, element_type in element_items},
+    }
+    return items, summary

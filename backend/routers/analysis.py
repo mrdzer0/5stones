@@ -1,8 +1,9 @@
 """Analysis router — runs threat modeling pipeline."""
 from __future__ import annotations
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from backend.utils.storage import get_project, save_project, save_report, get_report
 from backend.utils.audit import log_event
+from backend.utils.access_control import get_authorized_project, workspace_access_dependency
 from backend.services.trust_boundary_service import (
     TRUST_BOUNDARY_REVIEW_STATUSES,
     active_trust_boundaries,
@@ -14,7 +15,11 @@ from backend.services.trust_boundary_service import (
 from backend.services.dfd_model_service import build_dfd_model, reconcile_generated_dfd, validate_dfd_model
 from backend.services.stride_service import generate_stride_threats
 from backend.services.linddun_service import generate_linddun_threats
-from backend.services.threat_validation_service import validate_coverage, validate_generated_threats
+from backend.services.threat_validation_service import (
+    complete_graph_coverage,
+    validate_coverage,
+    validate_generated_threats,
+)
 from backend.services.control_service import map_controls
 from backend.services.test_service import (
     generate_test_scenarios,
@@ -36,7 +41,11 @@ import uuid
 import time
 from datetime import datetime, timezone
 
-router = APIRouter(prefix="/api/projects", tags=["analysis"])
+router = APIRouter(
+    prefix="/api/projects",
+    tags=["analysis"],
+    dependencies=[workspace_access_dependency],
+)
 
 BOUNDARY_DOWNSTREAM_STAGES = ["stride", "linddun", "controls", "tests", "missing_info", "assumptions"]
 
@@ -79,9 +88,9 @@ def _clear_review_visibility_stale(report: dict):
 
 
 @router.post("/{project_id}/analyze")
-async def run_full_analysis(project_id: str, body: dict = None):
+async def run_full_analysis(project_id: str, body: dict = None, request: Request = None):
     """Run full threat modeling pipeline for a project."""
-    project = get_project(project_id)
+    project = get_project(project_id) if request is None else get_authorized_project(project_id, request)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -230,7 +239,6 @@ async def run_full_analysis(project_id: str, body: dict = None):
         stride_threats, stride_warnings = validate_generated_threats(
             stride_threats, "STRIDE", report.get("dfd_model"), evidence_ids
         )
-        report.setdefault("analysis_coverage", {})["STRIDE"] = valid_stride_coverage
         report["ai_status"].setdefault("stride", {})["validation_warnings"] = [*coverage_warnings, *stride_warnings]
         stride_threats = enrich_threats(stride_threats, project, "STRIDE")
         attach_target_refs(
@@ -239,6 +247,14 @@ async def run_full_analysis(project_id: str, body: dict = None):
             report.get("trust_model", {}).get("views"),
             report.get("dfd_model"),
         )
+        completed_coverage, coverage_summary = complete_graph_coverage(
+            valid_stride_coverage,
+            stride_threats,
+            report.get("dfd_model"),
+            "STRIDE",
+        )
+        report.setdefault("analysis_coverage", {})["STRIDE"] = completed_coverage
+        report.setdefault("analysis_coverage_summary", {})["STRIDE"] = coverage_summary
 
     # 3. LINDDUN
     linddun_threats = []
@@ -270,7 +286,6 @@ async def run_full_analysis(project_id: str, body: dict = None):
         linddun_threats, linddun_warnings = validate_generated_threats(
             linddun_threats, "LINDDUN", report.get("dfd_model"), evidence_ids
         )
-        report.setdefault("analysis_coverage", {})["LINDDUN"] = valid_linddun_coverage
         report["ai_status"].setdefault("linddun", {})["validation_warnings"] = [*coverage_warnings, *linddun_warnings]
         linddun_threats = enrich_threats(linddun_threats, project, "LINDDUN")
         attach_target_refs(
@@ -279,6 +294,14 @@ async def run_full_analysis(project_id: str, body: dict = None):
             report.get("trust_model", {}).get("views"),
             report.get("dfd_model"),
         )
+        completed_coverage, coverage_summary = complete_graph_coverage(
+            valid_linddun_coverage,
+            linddun_threats,
+            report.get("dfd_model"),
+            "LINDDUN",
+        )
+        report.setdefault("analysis_coverage", {})["LINDDUN"] = completed_coverage
+        report.setdefault("analysis_coverage_summary", {})["LINDDUN"] = coverage_summary
 
     all_threats = stride_threats + linddun_threats
     if all_threats:
@@ -380,9 +403,9 @@ async def run_full_analysis(project_id: str, body: dict = None):
 
 
 @router.get("/{project_id}/report")
-async def get_project_report(project_id: str):
+async def get_project_report(project_id: str, request: Request = None):
     """Get the threat model report for a project."""
-    project = get_project(project_id)
+    project = get_project(project_id) if request is None else get_authorized_project(project_id, request)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -394,8 +417,10 @@ async def get_project_report(project_id: str):
 
 
 @router.patch("/{project_id}/threats/{threat_id}")
-async def update_threat_review(project_id: str, threat_id: str, data: dict):
+async def update_threat_review(project_id: str, threat_id: str, data: dict, request: Request = None):
     """Update review workflow fields for a generated threat."""
+    if request is not None and not get_authorized_project(project_id, request):
+        raise HTTPException(status_code=404, detail="Project not found")
     report = get_report(project_id)
     if not report:
         raise HTTPException(status_code=404, detail="No report yet — run analysis first")
@@ -409,8 +434,10 @@ async def update_threat_review(project_id: str, threat_id: str, data: dict):
 
 
 @router.patch("/{project_id}/trust-boundaries/{boundary_id}")
-async def update_trust_boundary_review(project_id: str, boundary_id: str, data: dict):
+async def update_trust_boundary_review(project_id: str, boundary_id: str, data: dict, request: Request = None):
     """Confirm, reject, or reset a grounded trust-boundary candidate."""
+    if request is not None and not get_authorized_project(project_id, request):
+        raise HTTPException(status_code=404, detail="Project not found")
     report = get_report(project_id)
     if not report:
         raise HTTPException(status_code=404, detail="No report yet — run analysis first")
@@ -463,8 +490,10 @@ async def update_trust_boundary_review(project_id: str, boundary_id: str, data: 
 
 
 @router.patch("/{project_id}/controls/{control_id}")
-async def update_control_review(project_id: str, control_id: str, data: dict):
+async def update_control_review(project_id: str, control_id: str, data: dict, request: Request = None):
     """Update checklist/review workflow fields for a mapped control."""
+    if request is not None and not get_authorized_project(project_id, request):
+        raise HTTPException(status_code=404, detail="Project not found")
     report = get_report(project_id)
     if not report:
         raise HTTPException(status_code=404, detail="No report yet — run analysis first")
@@ -478,10 +507,18 @@ async def update_control_review(project_id: str, control_id: str, data: dict):
 
 
 @router.post("/{project_id}/analyze/stride")
-async def run_stride_only(project_id: str):
-    return await run_full_analysis(project_id, {"analysis_types": ["trust_boundary", "stride", "controls", "tests"]})
+async def run_stride_only(project_id: str, request: Request = None):
+    return await run_full_analysis(
+        project_id,
+        {"analysis_types": ["trust_boundary", "stride", "controls", "tests"]},
+        request=request,
+    )
 
 
 @router.post("/{project_id}/analyze/linddun")
-async def run_linddun_only(project_id: str):
-    return await run_full_analysis(project_id, {"analysis_types": ["trust_boundary", "linddun", "controls", "tests"]})
+async def run_linddun_only(project_id: str, request: Request = None):
+    return await run_full_analysis(
+        project_id,
+        {"analysis_types": ["trust_boundary", "linddun", "controls", "tests"]},
+        request=request,
+    )

@@ -3,7 +3,11 @@ import unittest
 from backend.services.dfd_model_service import build_dfd_model
 from backend.services.linddun_service import _fallback_linddun
 from backend.services.stride_service import _fallback_stride
-from backend.services.threat_validation_service import validate_coverage, validate_generated_threats
+from backend.services.threat_validation_service import (
+    complete_graph_coverage,
+    validate_coverage,
+    validate_generated_threats,
+)
 from backend.services.trust_boundary_service import attach_target_refs, build_trust_model
 from backend.utils.redaction import redact_text
 
@@ -112,6 +116,37 @@ class DfdThreatAlignmentTests(unittest.TestCase):
         self.assertEqual(linddun[0]["status"], "Needs Info")
         self.assertTrue(stride[0]["affected_refs"])
         self.assertTrue(linddun[0]["affected_refs"])
+
+    def test_graph_coverage_makes_missing_analysis_explicit(self):
+        flow_id = self.dfd_model["flows"][0]["id"]
+        node_id = self.dfd_model["flows"][0]["target_id"]
+        threats = [{
+            "framework": "STRIDE",
+            "threat_category": "Tampering",
+            "target_refs": [{"type": "data_flow", "id": flow_id}],
+        }]
+
+        coverage, summary = complete_graph_coverage(
+            [{
+                "element_ref": node_id,
+                "category": "Spoofing",
+                "status": "reviewed_no_candidate",
+                "reason": "Identity control reviewed.",
+            }],
+            threats,
+            self.dfd_model,
+            "STRIDE",
+        )
+
+        flow_tampering = next(item for item in coverage if item["element_ref"] == flow_id and item["category"] == "Tampering")
+        node_spoofing = next(item for item in coverage if item["element_ref"] == node_id and item["category"] == "Spoofing")
+        node_tampering = next(item for item in coverage if item["element_ref"] == node_id and item["category"] == "Tampering")
+        self.assertEqual(flow_tampering["status"], "candidate_identified")
+        self.assertEqual(flow_tampering["coverage_origin"], "validated_threat_reference")
+        self.assertEqual(node_spoofing["status"], "reviewed_no_candidate")
+        self.assertEqual(node_tampering["status"], "insufficient_information")
+        self.assertGreater(summary["insufficient_information"], 0)
+        self.assertFalse(summary["complete"])
 
     def test_redaction_protects_structured_and_plain_text_secrets(self):
         content = '{"api_key":"secret-value","raw":"{\\"password\\":\\"pw\\"}","name":"safe"}'

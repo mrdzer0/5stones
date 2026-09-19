@@ -96,6 +96,20 @@
 .diagram-mapping-chip.is-warning { color: var(--yellow); border-color: var(--yellow-border); background: var(--yellow-light); }
 .diagram-mapping-help { margin-left: auto; color: var(--text-faint); }
 
+.dfd-ipo-summary { margin: var(--space-2) 0 var(--space-3); padding: 10px 12px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-2); }
+.dfd-ipo-summary h4 { margin: 0 0 8px; font-size: .78rem; }
+.dfd-ipo-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.dfd-ipo-grid > div { min-width: 0; }
+.dfd-ipo-grid strong { font-size: .72rem; color: var(--text); }
+.dfd-ipo-grid ul { margin: 4px 0 0; padding-left: 16px; font-size: .72rem; }
+.dfd-ipo-grid li + li { margin-top: 4px; }
+.dfd-ipo-grid .btn-link { padding: 0; text-align: left; font-size: .72rem; }
+.dfd-editor-fieldset { margin: var(--space-3) 0; padding: 9px 10px; border: 1px solid var(--border); border-radius: 6px; }
+.dfd-editor-fieldset legend { padding: 0 5px; color: var(--text-muted); font-size: .72rem; font-weight: 650; }
+.dfd-inventory-actions { display: flex; flex-wrap: wrap; gap: 7px; padding: 9px 0; }
+.dfd-editor-actions { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; margin-top: var(--space-2); }
+.btn-danger { color: #B42318; border-color: #F0B8B2; background: #FFF5F3; }
+
 .diagram-legend {
   display: flex;
   align-items: center;
@@ -455,6 +469,7 @@
   .diagram-level-btn { flex: 1; }
   .diagram-mode-switch { order: -1; }
   .diagram-mapping-help { width: 100%; margin-left: 0; }
+  .dfd-ipo-grid { grid-template-columns: 1fr; }
   .diagram-legend { width: 100%; overflow-x: auto; }
   .diagram-canvas-shell { height: 500px; overflow-x: auto; overflow-y: hidden; }
   #threat-diagram-canvas,

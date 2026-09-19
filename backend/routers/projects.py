@@ -1,9 +1,9 @@
 """FastAPI routers — Projects CRUD."""
 from __future__ import annotations
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from datetime import datetime
 from backend.models.schemas import ProjectCreate, Project
-from backend.utils.storage import save_project, get_project, list_projects, delete_project, REPORTS_DIR
+from backend.utils.storage import save_project, list_projects, delete_project, REPORTS_DIR
 from backend.utils.audit import log_event
 from backend.services.posture_service import compute_completeness
 from backend.services.artifact_reconciliation_service import (
@@ -12,13 +12,25 @@ from backend.services.artifact_reconciliation_service import (
     project_client_view,
     rebuild_project_from_artifacts,
 )
+from backend.utils.access_control import (
+    get_authorized_project,
+    workspace_access_dependency,
+    workspace_id_for_request,
+)
 
-router = APIRouter(prefix="/api/projects", tags=["projects"])
+router = APIRouter(
+    prefix="/api/projects",
+    tags=["projects"],
+    dependencies=[workspace_access_dependency],
+)
 
 
 @router.get("")
-async def get_projects():
+async def get_projects(request: Request = None):
     projects = list_projects()
+    workspace_id = workspace_id_for_request(request)
+    if workspace_id:
+        projects = [project for project in projects if project.get("workspace_id") == workspace_id]
     # Enrich with stats
     for p in projects:
         report_path = REPORTS_DIR / f"{p['project_id']}.json"
@@ -30,9 +42,12 @@ async def get_projects():
 
 
 @router.post("")
-async def create_project(data: ProjectCreate):
+async def create_project(data: ProjectCreate, request: Request = None):
     project = Project(**data.model_dump())
     payload = project.model_dump()
+    workspace_id = workspace_id_for_request(request)
+    if workspace_id:
+        payload["workspace_id"] = workspace_id
     capture_manual_context(payload)
     completeness = compute_completeness(payload)
     payload["completeness_score"] = completeness["score"]
@@ -43,8 +58,8 @@ async def create_project(data: ProjectCreate):
 
 
 @router.get("/{project_id}")
-async def get_project_detail(project_id: str):
-    project = get_project(project_id)
+async def get_project_detail(project_id: str, request: Request = None):
+    project = get_authorized_project(project_id, request)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     completeness = compute_completeness(project)
@@ -55,8 +70,8 @@ async def get_project_detail(project_id: str):
 
 
 @router.put("/{project_id}")
-async def update_project(project_id: str, data: dict):
-    project = get_project(project_id)
+async def update_project(project_id: str, data: dict, request: Request = None):
+    project = get_authorized_project(project_id, request)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     manual_context = capture_manual_context(project, legacy=bool(project.get("artifact_sources")))
@@ -81,8 +96,9 @@ async def update_project(project_id: str, data: dict):
 
 
 @router.delete("/{project_id}")
-async def remove_project(project_id: str):
-    if not delete_project(project_id):
+async def remove_project(project_id: str, request: Request = None):
+    project = get_authorized_project(project_id, request)
+    if not project or not delete_project(project_id):
         raise HTTPException(status_code=404, detail="Project not found")
     log_event("project.deleted", details={"project_id": project_id})
     return {"success": True, "message": "Project deleted"}

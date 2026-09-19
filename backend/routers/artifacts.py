@@ -1,10 +1,10 @@
 """Artifact upload and parsing router."""
 from __future__ import annotations
 import hashlib
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request
 from datetime import datetime
 from backend.models.schemas import ArtifactUpload
-from backend.utils.storage import get_project, save_project
+from backend.utils.storage import save_project
 from backend.services.artifact_file_service import allowed_file_policy, read_validated_artifact_file
 from backend.services.parser_service import parse_artifact
 from backend.services.artifact_reconciliation_service import (
@@ -15,8 +15,13 @@ from backend.services.artifact_reconciliation_service import (
 from backend.services.posture_service import compute_completeness
 from backend.utils.redaction import redact_text
 from backend.utils.audit import log_event
+from backend.utils.access_control import get_authorized_project, workspace_access_dependency
 
-router = APIRouter(prefix="/api/projects", tags=["artifacts"])
+router = APIRouter(
+    prefix="/api/projects",
+    tags=["artifacts"],
+    dependencies=[workspace_access_dependency],
+)
 
 
 @router.get("/artifact/policy")
@@ -145,9 +150,14 @@ def _verified_use_cases(items: list, content: str, filename: str, artifact_type:
 
 
 @router.post("/{project_id}/artifact")
-async def upload_artifact(project_id: str, data: ArtifactUpload, upload_meta: dict = None):
+async def upload_artifact(
+    project_id: str,
+    data: ArtifactUpload,
+    upload_meta: dict = None,
+    request: Request = None,
+):
     """Upload and parse an artifact for a project."""
-    project = get_project(project_id)
+    project = get_authorized_project(project_id, request)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -265,10 +275,11 @@ async def upload_artifact(project_id: str, data: ArtifactUpload, upload_meta: di
 async def upload_artifact_file(
     project_id: str,
     artifact_type: str = Form(...),
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    request: Request = None,
 ):
     """Upload a file and parse it."""
-    project = get_project(project_id)
+    project = get_authorized_project(project_id, request)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -285,6 +296,6 @@ async def upload_artifact_file(
         "truncated": extracted["truncated"],
         "structured": extracted.get("structured", False),
     }
-    result = await upload_artifact(project_id, payload, upload_meta=upload_meta)
+    result = await upload_artifact(project_id, payload, upload_meta=upload_meta, request=request)
     result["upload"] = upload_meta
     return result

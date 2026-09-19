@@ -5,10 +5,20 @@
 
 const API_BASE = '';  // Same origin (served by FastAPI)
 
+function workspaceRequestHeaders() {
+  if (typeof sessionStorage === 'undefined') return {};
+  const workspaceId = sessionStorage.getItem('workspace_id');
+  const token = sessionStorage.getItem('workspace_access_token');
+  return {
+    ...(workspaceId ? { 'X-Workspace-ID': workspaceId } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
 async function apiFetch(path, options = {}) {
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...options.headers },
     ...options,
+    headers: { 'Content-Type': 'application/json', ...workspaceRequestHeaders(), ...options.headers },
   });
   if (!res.ok) {
     let msg = `API error ${res.status}`;
@@ -36,7 +46,7 @@ const API = {
       const form = new FormData();
       form.append('artifact_type', artifactType);
       form.append('file', file);
-      return fetch(`/api/projects/${id}/artifact/file`, { method: 'POST', body: form })
+      return fetch(`/api/projects/${id}/artifact/file`, { method: 'POST', headers: workspaceRequestHeaders(), body: form })
         .then(async res => {
           if (!res.ok) {
             let msg = `API error ${res.status}`;
@@ -59,8 +69,8 @@ const API = {
   },
   dfd: {
     get:  (id) => apiFetch(`/api/projects/${id}/dfd`),
-    exportSvg: (id) => fetch(`/api/projects/${id}/dfd/export?format=svg`),
-    exportJson: (id) => fetch(`/api/projects/${id}/dfd/export?format=json`),
+    exportSvg: (id) => fetch(`/api/projects/${id}/dfd/export?format=svg`, { headers: workspaceRequestHeaders() }),
+    exportJson: (id) => fetch(`/api/projects/${id}/dfd/export?format=json`, { headers: workspaceRequestHeaders() }),
     save: (id, model, expectedRevision) => apiFetch(`/api/projects/${id}/dfd`, {
       method: 'PUT',
       body: JSON.stringify({ model, expected_revision: expectedRevision }),
@@ -73,9 +83,13 @@ const API = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+    impactPreview: (id, elementType, elementId) => apiFetch(`/api/projects/${id}/dfd/impact-preview`, {
+      method: 'POST',
+      body: JSON.stringify({ element_type: elementType, element_id: elementId }),
+    }),
   },
   export: {
-    get: (id, format)    => fetch(`/api/projects/${id}/export?format=${format}`),
+    get: (id, format)    => fetch(`/api/projects/${id}/export?format=${format}`, { headers: workspaceRequestHeaders() }),
   },
   settings: {
     get:              ()       => apiFetch('/api/settings'),

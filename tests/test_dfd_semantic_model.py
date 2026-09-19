@@ -191,6 +191,22 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertTrue(any("dangling" in error for error in validation["errors"]))
         self.assertTrue(any("cycle" in error for error in validation["errors"]))
 
+    def test_validator_reports_duplicate_display_ids(self):
+        model = DfdModel(
+            id="model-display-duplicate",
+            project_id="project-1",
+            title="Duplicate display IDs",
+            nodes=[
+                DfdNode(id="p-1", display_id="P1", type="process", name="One"),
+                DfdNode(id="p-2", display_id="P1", type="process", name="Two"),
+            ],
+        )
+
+        validation = validate_dfd_model(model)
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(any("Duplicate node display ID" in error for error in validation["errors"]))
+
     def test_unmapped_threat_does_not_fan_out_to_all_boundaries(self):
         model = build_trust_model(self.project)
         boundaries = model["boundaries"]
@@ -327,6 +343,38 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertEqual(set(report["analysis_stale"]["stages"]), {
             "stride", "linddun", "controls", "tests", "missing_info", "assumptions",
         })
+
+    def test_semantic_save_accepts_a_user_added_node(self):
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        recalculate_boundary_crossings(model)
+        current = model.model_copy(deep=True)
+        model.nodes.append(DfdNode(
+            id="E3",
+            display_id="E3",
+            type="entity",
+            name="Support operator",
+            scope="unknown",
+            ownership="organization",
+            exposure="private",
+            zone_ids=["zone-organization"],
+        ))
+        report = {"dfd_model": current.model_dump(), "dfd_validation": validate_dfd_model(current)}
+
+        with (
+            patch("backend.routers.dfd.get_project", return_value={"project_id": "fixture-customer-registration"}),
+            patch("backend.routers.dfd.get_report", return_value=report),
+            patch("backend.routers.dfd.save_report"),
+            patch("backend.routers.dfd.log_event"),
+        ):
+            response = __import__("asyncio").run(save_dfd(
+                "fixture-customer-registration",
+                {"model": model.model_dump(), "expected_revision": current.revision},
+            ))
+
+        self.assertTrue(response["success"])
+        self.assertIn("E3", {node["id"] for node in response["model"]["nodes"]})
+        self.assertTrue(response["semantic_changed"])
 
     def test_dfd_save_rejects_revision_conflict(self):
         from backend.models.dfd import DfdModel
