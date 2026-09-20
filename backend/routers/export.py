@@ -120,9 +120,9 @@ def _to_markdown(project: dict, report: dict) -> str:
         for item in c.get("checklist_items", []):
             lines.append(f"| ↳ {item} | {c.get('review_status', 'Open')} | {c.get('owner', 'N/A')} |")
 
-    lines += [f"", f"## Security Test Backlog", f"", f"| Test ID | Scenario | Priority | Owner |", f"|---------|----------|----------|-------|"]
+    lines += [f"", f"## Security Test Backlog", f"", f"| Test ID | Scenario | Priority | Owner | Applicability |", f"|---------|----------|----------|-------|--------------|"]
     for s in report.get("test_scenarios", []):
-        lines.append(f"| {s.get('test_id', 'N/A')} | {s.get('scenario_name', '')[:60]} | {s.get('priority')} | {s.get('owner', 'N/A')} |")
+        lines.append(f"| {s.get('test_id', 'N/A')} | {s.get('scenario_name', '')[:60]} | {s.get('priority')} | {s.get('owner', 'N/A')} | {s.get('applicability_status', 'applicable')} |")
 
     lines += [f"", f"## Missing Information", f"", f"| Priority | Team | Area | Question | Why It Matters |", f"|----------|------|------|----------|----------------|"]
     for m in report.get("missing_info", []):

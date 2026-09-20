@@ -4349,10 +4349,12 @@ function renderTests(tests) {
         <div><div class="threat-meta-label">Expected Result</div><div style="font-size:0.82rem;color:var(--text-2);margin-top:2px;">${escHtml(t.expected_result || '—')}</div></div>
         <div style="display:flex;gap:var(--space-4);flex-wrap:wrap;margin-top:var(--space-3);font-size:0.78rem;color:var(--text-muted);">
           <span>Execution: <strong>${escHtml(t.execution_status || 'Not Run')}</strong></span>
+          <span>Applicability: <strong>${escHtml(t.applicability_status || 'applicable')}</strong></span>
           <span>Threat: <strong class="mono">${escHtml(t.threat_id || '—')}</strong></span>
           ${t.related_control ? `<span style="color:var(--green);"><strong>Control:</strong> ${escHtml(t.related_control)}${t.related_control_id ? ` <span class="mono">(${escHtml(t.related_control_id)})</span>` : ''}</span>` : '<span>Control: <strong>Unassigned</strong></span>'}
           <span>DFD targets: <strong>${escHtml(String((t.target_refs || []).length))}</strong></span>
         </div>
+        ${t.applicability_status && t.applicability_status !== 'applicable' ? `<div style="margin-top:var(--space-3);font-size:0.78rem;color:var(--orange);"><strong>Applicability reason:</strong> ${escHtml(t.applicability_reason || 'Review required before execution.')}</div>` : ''}
         ${t.evidence_needed?.length ? `<div style="margin-top:var(--space-3);font-size:0.78rem;color:var(--text-muted);"><strong>Evidence needed:</strong> ${escHtml(t.evidence_needed.join(', '))}</div>` : ''}
         ${t.actual_result ? `<div style="margin-top:var(--space-2);font-size:0.78rem;color:var(--text-muted);"><strong>Actual result:</strong> ${escHtml(t.actual_result)}</div>` : ''}
       </div>

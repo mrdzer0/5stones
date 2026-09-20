@@ -16,9 +16,19 @@ from backend.services.generation_contracts import (
     TestScenarioGenerationItem,
     model_ids,
 )
+from backend.services.threat_validation_service import LINDDUN_CATEGORY_ALIASES
 
 SYSTEM_PROMPT = """You are a security test engineer creating security test scenarios for QA and Security teams.
 Each scenario must be actionable, specific, and executable. Return one strict JSON object."""
+
+_LINDDUN_TEST_CATEGORIES = {
+    "Linking", "Identifying", "Non-repudiation", "Detecting", "Data Disclosure",
+    "Unawareness & Unintervenability", "Non-compliance",
+}
+_STRIDE_TEST_CATEGORIES = {
+    "Spoofing", "Tampering", "Repudiation", "Information Disclosure",
+    "Denial of Service", "Elevation of Privilege",
+}
 
 
 async def generate_test_scenarios(
@@ -31,20 +41,21 @@ async def generate_test_scenarios(
 ) -> List[dict]:
     """Generate test scenarios mapped to generated threats."""
     if force_fallback:
+        fallback_warnings = _threat_quality_warnings(threats)
         return StageGenerationResult(
             normalize_test_scenarios(_fallback_scenarios(threats, controls), threats, controls, dfd_model, evidence_ids),
             assessment_status="fallback",
             response_shape="deterministic_fallback",
-            warnings=["AI test generation was bypassed; generated scenarios require review."],
+            warnings=["AI test generation was bypassed; generated scenarios require review.", *fallback_warnings],
             response_metadata={"engine": "fallback"},
         )
 
     cfg = get_active_provider_config(project.get("data_policy"))
 
+    active_threats = _active_threat_records(threats)
     threats_summary = "\n".join([
         f"- ID: {t.get('threat_id')}\n  Framework: {t.get('framework', 'unknown')}\n  Category: {t.get('threat_category', 'unknown')}\n  Description: {t.get('threat_description', '')}\n  Recommended Control: {t.get('recommended_control','')}\n  DFD targets: {t.get('target_refs') or []}"
-        for t in threats
-        if isinstance(t, dict) and t.get("threat_id")
+        for t in active_threats
     ])
     controls_summary = "\n".join([
         f"- ID: {control.get('control_id')} · {control.get('name')} · status={control.get('implementation_status') or control.get('status') or 'Unknown'} · "
@@ -95,7 +106,9 @@ Return one JSON object with a "scenarios" array:
     "dfd_semantic_hash": "current canonical DFD semantic hash",
     "execution_status": "Not Run|Passed|Failed|Blocked",
     "actual_result": "leave empty until executed",
-    "execution_evidence_refs": ["valid evidence IDs after execution"]
+    "execution_evidence_refs": ["valid evidence IDs after execution"],
+    "applicability_status": "applicable|not_applicable|blocked",
+    "applicability_reason": "required when not_applicable or blocked"
     }}
   ]
 }}"""
@@ -124,14 +137,15 @@ Return one JSON object with a "scenarios" array:
             code="test_scenarios_envelope_schema_invalid",
             metadata=response_metadata,
         )
-    if not payload["scenarios"]:
+    active_threats = _active_threat_records(threats)
+    if not payload["scenarios"] and not active_threats:
         raise GenerationContractError(
             "Analysis engine returned an empty test-scenario list",
             code="test_scenarios_empty",
             metadata=response_metadata,
         )
 
-    valid_threat_ids = {str(item.get("threat_id")) for item in threats if item.get("threat_id")}
+    valid_threat_ids = {str(item.get("threat_id")) for item in active_threats}
     valid_control_ids = {
         str(item.get("control_id")) for item in (controls or [])
         if isinstance(item, dict) and item.get("control_id")
@@ -166,7 +180,9 @@ Return one JSON object with a "scenarios" array:
         item["execution_evidence_refs"] = refs
         scenarios.append(item)
 
-    if not scenarios:
+    if not scenarios and active_threats:
+        warnings.append("Provider returned no valid scenarios; uncovered threats were retained as blocked review items.")
+    elif not scenarios:
         raise GenerationContractError(
             "Analysis engine returned no scenarios linked to active threats",
             code="test_scenarios_foreign_key_invalid",
@@ -180,10 +196,11 @@ Return one JSON object with a "scenarios" array:
             code="test_scenarios_normalization_empty",
             metadata=response_metadata,
         )
-    response_metadata["validation_status"] = "partial" if warnings else "complete"
+    partial = bool(warnings) or any(item.get("applicability_status") != "applicable" for item in normalized)
+    response_metadata["validation_status"] = "partial" if partial else "complete"
     return StageGenerationResult(
         normalized,
-        assessment_status="partial" if warnings else "complete",
+        assessment_status="partial" if partial else "complete",
         response_shape=response_shape,
         warnings=warnings,
         response_metadata=response_metadata,
@@ -229,17 +246,17 @@ def _fallback_scenarios(threats: list, controls: list | None = None) -> list:
             "owner": "Security"
         },
         "Spoofing": {
-            "scenario_name": "Webhook Spoofing — Send Callback Without Valid Signature",
-            "preconditions": "Access to webhook endpoint URL",
+            "scenario_name": "Caller Identity Spoofing — Impersonate a Trusted Principal",
+            "preconditions": "A test account, a normal authenticated request, and a representative protected endpoint",
             "steps": [
-                "Craft webhook payload mimicking legitimate provider",
-                "Send POST without signature header",
-                "Send POST with invalid signature",
-                "Observe server response and state change"
+                "Capture a valid request from the test account",
+                "Alter the caller identity, token claims, API key, or equivalent authentication material",
+                "Replay the altered request against the protected endpoint",
+                "Observe authorization response and any state change"
             ],
-            "expected_result": "Server rejects unsigned/invalid requests with 400/401",
-            "evidence_needed": ["Request-response log", "Server audit log"],
-            "related_control": "HMAC Signature Verification",
+            "expected_result": "Server rejects the impersonated identity with 401/403 and does not change protected state",
+            "evidence_needed": ["Original and altered request-response logs", "Server audit log", "State comparison"],
+            "related_control": "Authentication and Caller Identity Validation",
             "priority": "Critical",
             "owner": "Security"
         },
@@ -312,6 +329,26 @@ def _fallback_scenarios(threats: list, controls: list | None = None) -> list:
             "priority": "High",
             "owner": "QA/Security"
         },
+        "Non-repudiation": {
+            "scenario_name": "Privacy Auditability — Attribute Sensitive Actions",
+            "preconditions": "A test account, an auditable personal-data action, and access to the privacy-relevant audit trail",
+            "steps": ["Perform a sensitive read, export, change, or deletion action", "Locate the corresponding audit record", "Verify actor, action, timestamp, target, and outcome are attributable without exposing unnecessary personal data"],
+            "expected_result": "The privacy-relevant action is attributable and reviewable while audit records minimize personal data exposure.",
+            "evidence_needed": ["Action request-response", "Audit record", "Audit-data minimization review"],
+            "related_control": "Privacy-Aware Audit Logging",
+            "priority": "Medium",
+            "owner": "QA/Security"
+        },
+        "Detecting": {
+            "scenario_name": "Privacy Observability — Detect Sensitive Data Access",
+            "preconditions": "A test personal-data record, an authorized and unauthorized access path, and monitoring access",
+            "steps": ["Access the personal-data record through the expected path", "Attempt an unauthorized or anomalous access pattern", "Check monitoring and audit signals for both events", "Verify alerts do not include unnecessary personal-data values"],
+            "expected_result": "Relevant access is detectable and alertable with minimized telemetry content.",
+            "evidence_needed": ["Access logs", "Alert or detection event", "Telemetry redaction review"],
+            "related_control": "Privacy-Aware Audit Logging",
+            "priority": "Medium",
+            "owner": "QA/Security"
+        },
         "Linking": {
             "scenario_name": "Linkability — Correlate Identifiers Across Flows",
             "preconditions": "Two records or sessions that should not be linkable without a documented purpose",
@@ -363,17 +400,44 @@ def _fallback_scenarios(threats: list, controls: list | None = None) -> list:
     for i, threat in enumerate(threats or []):
         if not isinstance(threat, dict) or not threat.get("threat_id"):
             continue
-        category = threat.get("threat_category", "")
-        template = templates.get(category, {
-            "scenario_name": f"Security Test — {category}",
-            "preconditions": "Authenticated session with test data",
-            "steps": ["Setup test environment", "Execute attack scenario", "Verify defense"],
-            "expected_result": "Attack is blocked or logged appropriately",
-            "evidence_needed": ["Request-response log"],
-            "related_control": threat.get("recommended_control", "N/A"),
-            "priority": "Medium",
-            "owner": "Security"
-        })
+        category = str(threat.get("threat_category") or "").strip()
+        canonical_category = LINDDUN_CATEGORY_ALIASES.get(category, category)
+        if not category:
+            scenarios.append(_blocked_scenario_for_threat(
+                threat,
+                "Threat record has no canonical threat_category; execution is blocked until the legacy finding is reviewed.",
+                controls,
+            ))
+            continue
+        if canonical_category not in _STRIDE_TEST_CATEGORIES and canonical_category not in _LINDDUN_TEST_CATEGORIES:
+            scenarios.append(_blocked_scenario_for_threat(
+                threat,
+                f"Threat category '{category}' is not supported by the canonical test catalog.",
+                controls,
+            ))
+            continue
+        if canonical_category == "Spoofing" and _has_webhook_evidence(threat, controls):
+            template = {
+                "scenario_name": "Webhook Spoofing — Send Callback Without Valid Signature",
+                "preconditions": "Evidence-backed webhook or signed callback endpoint and a test provider secret",
+                "steps": ["Craft a callback payload mimicking the trusted provider", "Send it without a signature", "Send it with an invalid signature and stale timestamp", "Observe response, audit event, and state change"],
+                "expected_result": "The endpoint rejects unsigned, invalid, or replayed callbacks before changing application state.",
+                "evidence_needed": ["Request-response logs", "Signature verification log", "State comparison"],
+                "related_control": "Webhook Signature Verification",
+                "priority": "Critical",
+                "owner": "Security",
+            }
+        else:
+            template = templates.get(canonical_category, {
+                "scenario_name": f"Security Test — {category}",
+                "preconditions": "Authenticated session with test data",
+                "steps": ["Setup test environment", "Execute attack scenario", "Verify defense"],
+                "expected_result": "Attack is blocked or logged appropriately",
+                "evidence_needed": ["Request-response log"],
+                "related_control": threat.get("recommended_control", "N/A"),
+                "priority": "Medium",
+                "owner": "Security"
+            })
         s = dict(template)
         s["threat_id"] = threat.get("threat_id", "")
         control = control_by_name.get(str(s.get("related_control") or "").casefold())
@@ -383,6 +447,53 @@ def _fallback_scenarios(threats: list, controls: list | None = None) -> list:
         scenarios.append(s)
 
     return scenarios
+
+
+def _active_threat_records(threats: list | None) -> list[dict]:
+    """Return only threat records safe to use as downstream foreign keys."""
+    return [
+        item for item in (threats or [])
+        if isinstance(item, dict) and str(item.get("threat_id") or "").strip()
+    ]
+
+
+def _threat_quality_warnings(threats: list | None) -> list[str]:
+    dropped = sum(1 for item in (threats or []) if not isinstance(item, dict) or not str(item.get("threat_id") or "").strip())
+    return [f"Skipped {dropped} threat record(s) without a usable threat_id; they cannot be linked to a test scenario."] if dropped else []
+
+
+def _has_webhook_evidence(threat: dict, controls: list | None = None) -> bool:
+    """Require explicit callback/webhook evidence before using a webhook test."""
+    values = [
+        threat.get("threat_category"), threat.get("threat_description"), threat.get("scenario"),
+        threat.get("abuse_case"), threat.get("recommended_control"), threat.get("asset"),
+        threat.get("component"), threat.get("source"), threat.get("destination"),
+    ]
+    for control in controls or []:
+        if isinstance(control, dict) and str(threat.get("threat_id")) in {str(item) for item in (control.get("threat_ids") or [])}:
+            values.extend([control.get("name"), control.get("description"), control.get("implementation_guidance")])
+    text = " ".join(str(value or "") for value in values).casefold()
+    return any(signal in text for signal in ("webhook", "callback", "signed callback", "hmac"))
+
+
+def _blocked_scenario_for_threat(threat: dict, reason: str, controls: list | None = None) -> dict:
+    control = next((item for item in (controls or []) if isinstance(item, dict) and str(threat.get("threat_id")) in {str(ref) for ref in (item.get("threat_ids") or [])}), None)
+    return {
+        "scenario_name": "Verification blocked — review threat record",
+        "preconditions": "Threat record and canonical DFD context must be reviewed before execution",
+        "steps": ["Review the threat category and supporting evidence", "Confirm the applicable interaction and control", "Replace this blocked scenario with an executable verification case"],
+        "expected_result": "A reviewed, evidence-backed test scenario is defined before execution.",
+        "evidence_needed": ["Threat review decision", "DFD target evidence", "Applicable control evidence"],
+        "related_control": control.get("name") if control else threat.get("recommended_control"),
+        "related_control_id": control.get("control_id") if control else None,
+        "priority": "High",
+        "owner": "Security",
+        "threat_id": str(threat.get("threat_id")),
+        "target_refs": list(threat.get("target_refs") or []),
+        "execution_status": "Blocked",
+        "applicability_status": "blocked",
+        "applicability_reason": reason,
+    }
 
 
 def normalize_test_scenarios(
@@ -415,16 +526,28 @@ def normalize_test_scenarios(
         if isinstance(item, dict) and item.get("id")
     }
     normalized = []
+    normalized_threat_ids = set()
     for raw in scenarios or []:
         if not isinstance(raw, dict):
             continue
         threat_id = str(raw.get("threat_id") or "")
         threat = threat_by_id.get(threat_id)
+        if not threat:
+            continue
+        category = str(threat.get("threat_category") or "").strip()
+        if not category:
+            item = _blocked_scenario_for_threat(
+                threat,
+                "Threat record has no canonical threat_category; execution is blocked until the legacy finding is reviewed.",
+                controls,
+            )
+            item["target_refs"] = list(threat.get("target_refs") or [])
+            raw = {**item, **{key: value for key, value in raw.items() if key not in {"scenario_name", "preconditions", "steps", "expected_result", "execution_status", "applicability_status", "applicability_reason"}}}
         name = str(raw.get("scenario_name") or "").strip()
         preconditions = str(raw.get("preconditions") or "").strip()
         expected = str(raw.get("expected_result") or "").strip()
         steps = raw.get("steps")
-        if not threat or not name or not preconditions or not expected or not isinstance(steps, list) or not steps:
+        if not name or not preconditions or not expected or not isinstance(steps, list) or not steps:
             continue
         item = dict(raw)
         item["threat_id"] = threat_id
@@ -450,7 +573,17 @@ def normalize_test_scenarios(
             if isinstance(ref, dict) and ref.get("id") and (not valid_dfd_ids or str(ref["id"]) in valid_dfd_ids)
         ]
         item["target_refs"] = refs or list(threat.get("target_refs") or [])
-        item["execution_status"] = item.get("execution_status") or "Not Run"
+        applicability_status = str(item.get("applicability_status") or "applicable").strip().casefold()
+        if applicability_status not in {"applicable", "not_applicable", "blocked"}:
+            applicability_status = "applicable"
+        item["applicability_status"] = applicability_status
+        item["applicability_reason"] = str(item.get("applicability_reason") or "").strip()
+        if applicability_status in {"not_applicable", "blocked"}:
+            item["execution_status"] = "Blocked"
+            if not item["applicability_reason"]:
+                item["applicability_reason"] = "Scenario is not executable until applicability is reviewed."
+        else:
+            item["execution_status"] = item.get("execution_status") or "Not Run"
         item["actual_result"] = item.get("actual_result") or ""
         item["execution_evidence_refs"] = [
             str(ref) for ref in (item.get("execution_evidence_refs") or [])
@@ -460,10 +593,26 @@ def normalize_test_scenarios(
             item["analysis_revision"] = dfd_model.get("revision")
             item["dfd_revision"] = dfd_model.get("revision")
             item["dfd_semantic_hash"] = dfd_model.get("semantic_hash")
-        item["verification_status"] = "not_executed" if item["execution_status"] == "Not Run" else "executed"
+        item["verification_status"] = "not_executed" if item["execution_status"] in {"Not Run", "Blocked"} else "executed"
         item["test_fingerprint"] = _scenario_fingerprint(item)
         item["test_id"] = item.get("test_id") or f"TM-{item['test_fingerprint'][:10].upper()}"
         normalized.append(item)
+        normalized_threat_ids.add(threat_id)
+
+    # Preserve denominator and reviewability: a provider omission becomes an
+    # explicit blocked item instead of silently reducing test coverage.
+    for threat in _active_threat_records(threats):
+        threat_id = str(threat.get("threat_id"))
+        if threat_id in normalized_threat_ids:
+            continue
+        category = str(threat.get("threat_category") or "").strip()
+        reason = (
+            "Threat record has no canonical threat_category; execution is blocked until the legacy finding is reviewed."
+            if not category else
+            "No valid provider scenario was returned for this active threat; manual test design is required before execution."
+        )
+        blocked = _blocked_scenario_for_threat(threat, reason, controls)
+        normalized.extend(normalize_test_scenarios([blocked], [threat], controls, dfd_model, evidence_ids))
     return normalized
 
 

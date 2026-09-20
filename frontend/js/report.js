@@ -366,7 +366,7 @@ function renderTestsTable(tests) {
         ${(t.steps || []).length > 2 ? `<details class="report-row-details"><summary>Show ${t.steps.length - 2} more steps</summary><div><ol class="report-checklist">${t.steps.slice(2).map(step => `<li>${escHtml(step)}</li>`).join('')}</ol></div></details>` : ''}
       </td>
       <td data-label="Expected result"><div class="report-cell-value">${escHtml(t.expected_result || '—')}</div></td>
-      <td data-label="Priority & owner"><div class="report-cell-stack">${badgeHtml(t.priority || 'Unprioritized', 'risk')}<div class="report-cell-value">${escHtml(t.owner || 'Unassigned')}</div></div></td>
+      <td data-label="Priority & owner"><div class="report-cell-stack">${badgeHtml(t.priority || 'Unprioritized', 'risk')}<div class="report-cell-value">${escHtml(t.owner || 'Unassigned')}</div><div class="text-xs text-muted">Applicability: ${escHtml(t.applicability_status || 'applicable')}</div>${t.applicability_status && t.applicability_status !== 'applicable' ? `<div class="text-xs" style="color:var(--orange);">${escHtml(t.applicability_reason || 'Review required before execution.')}</div>` : ''}</div></td>
     </tr>
   `).join('');
 }

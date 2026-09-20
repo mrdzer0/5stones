@@ -572,6 +572,54 @@ class DfdThreatAlignmentTests(unittest.TestCase):
         self.assertTrue(all(item["execution_status"] == "Not Run" for item in scenarios))
         self.assertEqual(len({item["test_id"] for item in scenarios}), 16)
 
+    def test_f07_legacy_and_provider_omissions_are_explicit_blocked_items(self):
+        flow_id = self.dfd_model["flows"][0]["id"]
+        threats = [
+            {"threat_id": "legacy-missing-category", "framework": "STRIDE", "threat_description": "Legacy record without category.", "target_refs": [{"type": "data_flow", "id": flow_id}]},
+            {"threat_id": "provider-omitted", "framework": "LINDDUN", "threat_category": "Linking", "threat_description": "Identifiers may be correlated.", "target_refs": [{"type": "data_flow", "id": flow_id}]},
+            None,
+            {"framework": "STRIDE", "threat_category": "Tampering"},
+        ]
+        scenarios = normalize_test_scenarios([], threats, dfd_model=self.dfd_model)
+
+        self.assertEqual({item["threat_id"] for item in scenarios}, {"legacy-missing-category", "provider-omitted"})
+        self.assertTrue(all(item["execution_status"] == "Blocked" for item in scenarios))
+        self.assertTrue(all(item["applicability_status"] == "blocked" for item in scenarios))
+        self.assertTrue(all(item["applicability_reason"] for item in scenarios))
+
+    def test_f07_spoofing_template_requires_webhook_evidence(self):
+        generic = {
+            "threat_id": "spoof-generic",
+            "framework": "STRIDE",
+            "threat_category": "Spoofing",
+            "threat_description": "An attacker may impersonate a normal API caller.",
+        }
+        webhook = {
+            **generic,
+            "threat_id": "spoof-webhook",
+            "threat_description": "An attacker may forge a payment webhook callback.",
+        }
+        generic_scenario = _fallback_scenarios([generic])[0]
+        webhook_scenario = _fallback_scenarios([webhook])[0]
+
+        self.assertNotIn("Webhook", generic_scenario["scenario_name"])
+        self.assertIn("Webhook", webhook_scenario["scenario_name"])
+
+    def test_f07_fallback_has_all_canonical_linddun_templates(self):
+        categories = ["Linking", "Identifying", "Non-repudiation", "Detecting", "Data Disclosure", "Unawareness & Unintervenability", "Non-compliance"]
+        threats = [{
+            "threat_id": f"privacy-{index}",
+            "framework": "LINDDUN",
+            "threat_category": category,
+            "threat_description": f"Privacy finding for {category}.",
+        } for index, category in enumerate(categories)]
+
+        scenarios = _fallback_scenarios(threats)
+
+        self.assertEqual(len(scenarios), len(categories))
+        self.assertTrue(all(item["steps"] and item["evidence_needed"] for item in scenarios))
+        self.assertEqual({item["threat_id"] for item in scenarios}, {item["threat_id"] for item in threats})
+
     def test_control_and_test_reruns_preserve_stable_review_and_execution_state(self):
         old_control = {
             "control_id": "control-stable",

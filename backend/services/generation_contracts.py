@@ -102,6 +102,8 @@ class TestScenarioGenerationItem(BaseModel):
     execution_status: Literal["Not Run", "Passed", "Failed", "Blocked"] = "Not Run"
     actual_result: str = ""
     execution_evidence_refs: list[str] = Field(default_factory=list)
+    applicability_status: Literal["applicable", "not_applicable", "blocked"] = "applicable"
+    applicability_reason: str = ""
 
     @field_validator("steps", mode="after")
     @classmethod

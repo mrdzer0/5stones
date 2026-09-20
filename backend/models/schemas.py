@@ -217,6 +217,8 @@ class TestScenario(BaseModel):
     execution_status: Literal["Not Run", "Passed", "Failed", "Blocked"] = "Not Run"
     actual_result: Optional[str] = None
     execution_evidence_refs: List[str] = Field(default_factory=list)
+    applicability_status: Literal["applicable", "not_applicable", "blocked"] = "applicable"
+    applicability_reason: Optional[str] = None
     verification_status: Literal["not_executed", "executed"] = "not_executed"
     test_fingerprint: Optional[str] = None
     analysis_revision: Optional[int] = None
