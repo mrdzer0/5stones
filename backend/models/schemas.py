@@ -171,8 +171,14 @@ class Control(BaseModel):
     implementation_guidance: Optional[str] = None
     status: ControlStatus = "Unknown"
     implementation_status: ControlStatus = "Unknown"
+    implementation_state: Literal["unknown", "planned", "documented", "runtime_verified"] = "unknown"
+    implementation_plan: Optional[str] = None
     evidence: Optional[str] = None
+    implementation_evidence_requested: List[str] = Field(default_factory=list)
+    implementation_evidence_refs: List[str] = Field(default_factory=list)
     verification_evidence_refs: List[str] = Field(default_factory=list)
+    runtime_verification_refs: List[str] = Field(default_factory=list)
+    evidence_collected_refs: List[str] = Field(default_factory=list)
     checklist_items: List[str] = Field(default_factory=list)
     affected_components: List[str] = Field(default_factory=list)
     verification_method: Optional[str] = None

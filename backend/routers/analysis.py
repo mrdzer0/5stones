@@ -377,9 +377,10 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
         report = _empty_report(project)
 
     report["completeness"] = compute_completeness(project)
+    evidence_catalog = build_project_evidence_catalog(project)
     evidence_ids = {
         str(item.get("evidence_id"))
-        for item in build_project_evidence_catalog(project)
+        for item in evidence_catalog
         if item.get("evidence_id")
     }
     report.setdefault("ai_status", {})
@@ -720,6 +721,7 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
                 data_policy=project.get("data_policy"),
                 dfd_model=report.get("dfd_model"),
                 evidence_ids=evidence_ids,
+                evidence_catalog=evidence_catalog,
             )
             controls_status = getattr(controls, "assessment_status", "complete")
             report["ai_status"]["controls"] = {
@@ -737,6 +739,7 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
                 data_policy=project.get("data_policy"),
                 dfd_model=report.get("dfd_model"),
                 evidence_ids=evidence_ids,
+                evidence_catalog=evidence_catalog,
             )
             report["ai_status"]["controls"] = {
                 "ok": False,
@@ -986,6 +989,13 @@ async def update_control_review(project_id: str, control_id: str, data: dict, re
                 for item in build_project_evidence_catalog(project)
                 if item.get("evidence_id")
             },
+            existing_control=next(
+                (
+                    item for item in (report.get("controls") or [])
+                    if isinstance(item, dict) and str(item.get("control_id")) == str(control_id)
+                ),
+                None,
+            ),
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

@@ -56,9 +56,13 @@ class ControlGenerationItem(BaseModel):
     implementation_guidance: str = ""
     status: Literal["Implemented", "Partial", "Missing", "Unknown"] = "Unknown"
     implementation_status: Literal["Implemented", "Partial", "Missing", "Unknown"] = "Unknown"
+    implementation_state: Literal["unknown", "planned", "documented", "runtime_verified"] = "unknown"
+    implementation_plan: str = ""
     evidence: str = ""
+    implementation_evidence_requested: list[str] = Field(default_factory=list)
     verification_evidence_refs: list[str] = Field(default_factory=list)
     implementation_evidence_refs: list[str] = Field(default_factory=list)
+    runtime_verification_refs: list[str] = Field(default_factory=list)
     priority: Literal["Critical", "High", "Medium", "Low"] = "Medium"
     owner: Literal[
         "Backend", "DevOps", "QA", "Security", "Product", "Product/Legal",

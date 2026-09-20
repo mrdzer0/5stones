@@ -4302,6 +4302,7 @@ function renderControls(controls) {
           <div style="display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap;justify-content:flex-end;">
             <span class="badge badge-neutral">${escHtml(c.control_origin === 'existing' ? 'Existing control' : 'Recommendation')}</span>
             <span class="badge ${statusColor[c.implementation_status] || 'badge-neutral'}">Implementation: ${escHtml(c.implementation_status || 'Unknown')}</span>
+            <span class="badge badge-neutral">Evidence state: ${escHtml(c.implementation_state || 'unknown')}</span>
             <span class="badge badge-neutral">Review: ${escHtml(c.review_status || 'Open')}</span>
           </div>
         </div>
@@ -4315,8 +4316,10 @@ function renderControls(controls) {
           <span>Threat links: <strong>${escHtml(String((c.threat_ids || []).length))}</strong></span>
           <span>DFD targets: <strong>${escHtml(String((c.target_refs || []).length))}</strong></span>
           <span>Verification: <strong>${escHtml(c.verification_status || 'unverified')}</strong></span>
+          <span>Evidence collected: <strong>${escHtml(String((c.evidence_collected_refs || []).length))}</strong></span>
         </div>
         ${c.evidence ? `<div style="font-size:0.75rem;color:var(--text-muted);margin-top:var(--space-2);">Evidence request: ${escHtml(c.evidence)}</div>` : ''}
+        ${c.implementation_evidence_requested?.length ? `<div style="font-size:0.75rem;color:var(--text-muted);margin-top:var(--space-2);">Implementation evidence requested: ${escHtml(c.implementation_evidence_requested.join('; '))}</div>` : ''}
       </div>
     `).join('')}
   </div>`;

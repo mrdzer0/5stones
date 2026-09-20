@@ -27,6 +27,7 @@ from backend.services.posture_service import (
     reconcile_controls,
     reconcile_test_scenarios,
     replace_framework_threats,
+    validate_control_patch,
     _related_threats_by_text,
 )
 from backend.utils.redaction import redact_text
@@ -434,6 +435,76 @@ class DfdThreatAlignmentTests(unittest.TestCase):
         self.assertEqual(controls[0]["verification_status"], "unverified")
         self.assertEqual(controls[0]["mapping_status"], "mapped")
         self.assertEqual(controls[0]["analysis_revision"], self.dfd_model["revision"])
+
+    def test_control_lifecycle_separates_documented_and_runtime_verified_evidence(self):
+        flow_id = self.dfd_model["flows"][0]["id"]
+        threat = {
+            "threat_id": "threat-lifecycle-1",
+            "framework": "STRIDE",
+            "threat_category": "Tampering",
+            "threat_description": "Input can be altered.",
+            "target_refs": [{"type": "data_flow", "id": flow_id}],
+        }
+        documented = enrich_controls([{
+            "control_id": "control-documented",
+            "name": "Input validation",
+            "threat_ids": ["threat-lifecycle-1"],
+            "implementation_status": "Implemented",
+            "implementation_evidence_refs": ["EV-CODE"],
+            "verification_evidence_refs": ["EV-TEST"],
+        }], [threat], self.project, dfd_model=self.dfd_model, evidence_ids={"EV-CODE", "EV-TEST"})[0]
+        self.assertEqual(documented["implementation_status"], "Implemented")
+        self.assertEqual(documented["implementation_state"], "documented")
+        self.assertEqual(documented["verification_status"], "evidenced")
+        self.assertIn("runtime effectiveness is not verified", documented["implementation_status_reason"])
+
+        runtime = enrich_controls([{
+            "control_id": "control-runtime",
+            "name": "Input validation",
+            "threat_ids": ["threat-lifecycle-1"],
+            "implementation_status": "Implemented",
+            "implementation_evidence_refs": ["EV-CODE"],
+            "runtime_verification_refs": ["EV-RUNTIME"],
+        }], [threat], self.project, dfd_model=self.dfd_model, evidence_ids={"EV-CODE", "EV-RUNTIME"})[0]
+        self.assertEqual(runtime["implementation_state"], "runtime_verified")
+        self.assertEqual(runtime["verification_status"], "evidenced")
+
+        review_only = enrich_controls([{
+            "control_id": "control-review-only",
+            "name": "Input validation",
+            "threat_ids": ["threat-lifecycle-1"],
+            "implementation_status": "Implemented",
+            "verification_evidence_refs": ["EV-TEST"],
+        }], [threat], self.project, dfd_model=self.dfd_model, evidence_ids={"EV-TEST"})[0]
+        self.assertEqual(review_only["implementation_status"], "Unknown")
+        self.assertEqual(review_only["implementation_state"], "unknown")
+        self.assertEqual(review_only["verification_status"], "evidenced")
+
+    def test_control_status_patch_requires_evidence_and_validates_lifecycle_state(self):
+        with self.assertRaises(ValueError):
+            validate_control_patch({"implementation_status": "Implemented"}, evidence_ids={"EV-1"})
+        with self.assertRaises(ValueError):
+            validate_control_patch({"implementation_state": "runtime_verified"}, evidence_ids={"EV-1"})
+
+        patch = validate_control_patch(
+            {
+                "implementation_status": "Implemented",
+                "implementation_state": "runtime_verified",
+                "runtime_verification_refs": ["EV-1"],
+            },
+            evidence_ids={"EV-1"},
+        )
+        self.assertEqual(patch["implementation_state"], "runtime_verified")
+
+    def test_control_catalog_separates_consent_notice_and_tls_scope(self):
+        catalog = __import__("backend.utils.storage", fromlist=["get_controls_catalog"]).get_controls_catalog()
+        by_id = {item["id"]: item for item in catalog}
+        self.assertNotIn("Linkability", by_id["ctrl-012"]["mitigates"])
+        self.assertNotEqual(by_id["ctrl-015"]["name"], by_id["ctrl-016"]["name"])
+        self.assertIn("consent", by_id["ctrl-015"]["tags"])
+        self.assertIn("notice", by_id["ctrl-016"]["tags"])
+        self.assertTrue(by_id["ctrl-015"]["evidence_requirements"])
+        self.assertTrue(by_id["ctrl-016"]["evidence_requirements"])
 
     def test_fallback_controls_map_per_threat_without_first_three_fanout(self):
         threats = [

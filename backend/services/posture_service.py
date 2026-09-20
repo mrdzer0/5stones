@@ -651,17 +651,50 @@ def enrich_controls(
             str(ref) for ref in implementation_refs
             if evidence_ids is None or str(ref) in evidence_ids
         ]
-        implementation_evidence = [*c["verification_evidence_refs"], *c["implementation_evidence_refs"]]
+        runtime_refs = c.get("runtime_verification_refs") if isinstance(c.get("runtime_verification_refs"), list) else []
+        c["runtime_verification_refs"] = [
+            str(ref) for ref in runtime_refs
+            if evidence_ids is None or str(ref) in evidence_ids
+        ]
+        requested_evidence = c.get("implementation_evidence_requested")
+        if not isinstance(requested_evidence, list) or not any(str(item).strip() for item in requested_evidence):
+            requested_evidence = _control_evidence_requests(c)
+        c["implementation_evidence_requested"] = [
+            str(item).strip() for item in requested_evidence if str(item).strip()
+        ]
+
+        implementation_evidence = [*c["implementation_evidence_refs"], *c["runtime_verification_refs"]]
         reported_status = c.get("implementation_status") or c.get("status") or "Unknown"
         c["reported_implementation_status"] = reported_status
-        if reported_status != "Unknown" and not implementation_evidence:
+        requested_state = str(c.get("implementation_state") or "unknown")
+        has_plan = bool(str(c.get("implementation_plan") or "").strip())
+        if c["runtime_verification_refs"]:
+            c["implementation_state"] = "runtime_verified"
+        elif c["implementation_evidence_refs"]:
+            c["implementation_state"] = "documented"
+        elif requested_state == "planned" and has_plan:
+            c["implementation_state"] = "planned"
+        else:
+            c["implementation_state"] = "unknown"
+
+        if not implementation_evidence:
             c["implementation_status"] = "Unknown"
             c["status"] = "Unknown"
-            c["implementation_status_reason"] = "No implementation evidence reference was supplied; status requires review."
+            c["implementation_status_reason"] = (
+                "An implementation plan is recorded, but implementation evidence is not available."
+                if c["implementation_state"] == "planned"
+                else "No implementation or runtime verification evidence was supplied; status requires review."
+            )
         else:
-            c["implementation_status"] = reported_status
-            c["status"] = c.get("status") or reported_status
-        c["verification_status"] = "evidenced" if implementation_evidence else "unverified"
+            c["implementation_status"] = reported_status if reported_status in {"Implemented", "Partial", "Missing", "Unknown"} else "Unknown"
+            c["status"] = c["implementation_status"]
+            c["implementation_status_reason"] = (
+                "Runtime verification evidence is recorded."
+                if c["runtime_verification_refs"]
+                else "Implementation evidence is recorded; runtime effectiveness is not verified."
+            )
+        c["verification_status"] = "evidenced" if (c["verification_evidence_refs"] or c["runtime_verification_refs"]) else "unverified"
+        c["evidence_collected_refs"] = list(dict.fromkeys(implementation_evidence + c["verification_evidence_refs"]))
         c["control_origin"] = c.get("control_origin") or "recommended"
         c["recommendation_status"] = c.get("recommendation_status") or "recommended"
         c["mapping_status"] = "unassigned" if explicit_unassigned else ("mapped" if c["threat_ids"] else "unassigned")
@@ -742,7 +775,9 @@ def enrich_assumptions(items: Iterable[dict], threats: list, project: dict) -> l
 def update_item_by_id(items: list, id_field: str, item_id: str, patch: dict) -> bool:
     allowed = {
         "status", "implementation_status", "owner", "review_notes", "review_status",
-        "evidence", "verification_evidence_refs", "priority", "location_ref", "target_refs",
+        "evidence", "verification_evidence_refs", "implementation_evidence_refs",
+        "runtime_verification_refs", "implementation_plan", "implementation_state",
+        "priority", "location_ref", "target_refs",
     }
     for item in items:
         if item.get(id_field) == item_id:
@@ -758,6 +793,7 @@ def validate_control_patch(
     patch: dict,
     dfd_model: dict | None = None,
     evidence_ids: set[str] | None = None,
+    existing_control: dict | None = None,
 ) -> dict:
     """Validate typed control location/target/evidence refs before persistence."""
     allowed_statuses = {"Implemented", "Partial", "Missing", "Unknown"}
@@ -765,6 +801,9 @@ def validate_control_patch(
     for field in ("status", "implementation_status"):
         if field in normalized and normalized[field] not in allowed_statuses:
             raise ValueError(f"{field} is invalid")
+    allowed_states = {"unknown", "planned", "documented", "runtime_verified"}
+    if "implementation_state" in normalized and normalized["implementation_state"] not in allowed_states:
+        raise ValueError("implementation_state is invalid")
 
     valid_ids = {
         str(item.get("id"))
@@ -804,6 +843,40 @@ def validate_control_patch(
             invalid = [ref for ref in normalized["verification_evidence_refs"] if ref not in evidence_ids]
             if invalid:
                 raise ValueError(f"Unknown verification evidence refs: {', '.join(invalid)}")
+    for field in ("implementation_evidence_refs", "runtime_verification_refs"):
+        if field in normalized:
+            refs = normalized[field]
+            if not isinstance(refs, list):
+                raise ValueError(f"{field} must be a list")
+            normalized[field] = [str(ref) for ref in refs]
+            if evidence_ids is not None:
+                invalid = [ref for ref in normalized[field] if ref not in evidence_ids]
+                if invalid:
+                    raise ValueError(f"Unknown {field}: {', '.join(invalid)}")
+
+    if "implementation_plan" in normalized and not isinstance(normalized["implementation_plan"], str):
+        raise ValueError("implementation_plan must be a string")
+
+    implementation_refs = normalized.get(
+        "implementation_evidence_refs",
+        (existing_control or {}).get("implementation_evidence_refs", []),
+    )
+    runtime_refs = normalized.get(
+        "runtime_verification_refs",
+        (existing_control or {}).get("runtime_verification_refs", []),
+    )
+    requested_status = normalized.get("implementation_status")
+    if requested_status and requested_status != "Unknown" and not (implementation_refs or runtime_refs):
+        raise ValueError(
+            "implementation_status requires implementation_evidence_refs or runtime_verification_refs; use Unknown until evidence is recorded"
+        )
+    requested_state = normalized.get("implementation_state")
+    if requested_state == "documented" and not implementation_refs:
+        raise ValueError("implementation_state=documented requires implementation_evidence_refs")
+    if requested_state == "runtime_verified" and not runtime_refs:
+        raise ValueError("implementation_state=runtime_verified requires runtime_verification_refs")
+    if requested_state == "planned" and not str(normalized.get("implementation_plan") or "").strip():
+        raise ValueError("implementation_state=planned requires implementation_plan")
     return normalized
 
 
@@ -1016,6 +1089,24 @@ def _highest_priority(levels: Iterable[str]) -> str:
         if level in found:
             return level
     return "Medium"
+
+
+def _control_evidence_requests(control: dict) -> list[str]:
+    """Return evidence requests without treating recommendation text as proof."""
+    name = _normalize(control.get("name", ""))
+    if "webhook" in name or "signature" in name:
+        return ["Signature verification code/configuration", "Positive, invalid, and replayed callback test evidence"]
+    if "audit" in name or "log" in name:
+        return ["Logging or audit configuration", "Action-to-log correlation or runtime verification evidence"]
+    if "pii" in name or "privacy" in name or "mask" in name:
+        return ["Data inventory and purpose mapping", "Sanitized API/log sample or runtime verification evidence"]
+    if "rate" in name or "throttl" in name or "dos" in name:
+        return ["Rate-limit configuration", "Burst/load test evidence showing enforcement"]
+    if "tls" in name or "encrypt" in name:
+        return ["Transport/TLS configuration", "TLS scan or representative secure-transport evidence"]
+    if "consent" in name or "notice" in name or "transparency" in name:
+        return ["Published purpose/notice or consent configuration", "Consent withdrawal or individual-control evidence"]
+    return ["Implementation code, configuration, or policy reference", "Verification test or runtime evidence"]
 
 
 def _control_checklist(control: dict, related: list, project: dict) -> list:

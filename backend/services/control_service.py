@@ -46,6 +46,7 @@ async def map_controls(
     data_policy: str | None = None,
     dfd_model: dict | None = None,
     evidence_ids: set[str] | None = None,
+    evidence_catalog: list[dict] | None = None,
 ) -> List[dict]:
     """Map recommended controls from catalog or generate them using AI."""
     if not threats:
@@ -70,8 +71,16 @@ async def map_controls(
     cfg = get_active_provider_config(data_policy)
 
     catalog_summary = "\n".join([
-        f"- {c.get('name')}: {c.get('description')}" for c in catalog[:15]
+        f"- {c.get('name')}: {c.get('description')} | applicability={c.get('applicability') or []} | "
+        f"evidence_required={c.get('evidence_requirements') or []}"
+        for c in catalog
     ])
+    evidence_summary = "\n".join([
+        f"- [{item.get('evidence_id')}] {str(item.get('evidence_type') or 'unknown').upper()} · "
+        f"{item.get('source') or 'unknown source'} · {item.get('locator') or 'unknown locator'}: {item.get('snippet') or ''}"
+        for item in (evidence_catalog or [])
+        if isinstance(item, dict) and item.get("evidence_id")
+    ]) or "No project evidence catalog is available."
 
     threats_summary = "\n".join([
         f"- Threat: {t.get('threat_category')} - {t.get('threat_description')} (Component: {t.get('component')}) "
@@ -112,6 +121,16 @@ ANALYSIS SNAPSHOT PROVENANCE:
 VALID CANONICAL DFD IDS (use only these in target_refs/location_ref):
 {valid_dfd_ids}
 
+IMPLEMENTATION STATUS POLICY:
+- A recommendation is not implementation evidence.
+- Use implementation_state=unknown and implementation_status=Unknown when no valid implementation or runtime verification evidence is available.
+- Never infer Implemented, Partial, or Missing from the threat description, catalog text, or absence of an evidence reference.
+- verification_evidence_refs are evidence to review; runtime_verification_refs are only for executed verification. Use only IDs present in the supplied evidence catalog.
+
+IMPLEMENTATION EVIDENCE CATALOG:
+{evidence_summary}
+Treat these as candidate project evidence only. Do not use context, threat, or recommendation text as proof of implementation; cite an ID only when its excerpt directly supports the requested evidence.
+
 Return one JSON object with a "controls" array:
 {{
   "controls": [
@@ -121,8 +140,13 @@ Return one JSON object with a "controls" array:
     "implementation_guidance": "specific how-to guidance",
     "status": "Unknown|Partial|Implemented|Missing",
     "implementation_status": "Unknown|Partial|Implemented|Missing",
+    "implementation_state": "unknown|planned|documented|runtime_verified",
+    "implementation_plan": "planned work only; do not treat it as implementation evidence",
     "evidence": "what evidence is needed to confirm status",
+    "implementation_evidence_requested": ["specific evidence needed to assess implementation"],
     "verification_evidence_refs": ["valid evidence IDs only; leave empty unless implementation evidence exists"],
+    "implementation_evidence_refs": ["valid evidence IDs that prove implementation; leave empty if unavailable"],
+    "runtime_verification_refs": ["valid evidence IDs from executed verification; leave empty if not executed"],
     "target_refs": [{{"type": "data_flow|process|data_store|entity|boundary|data_object", "id": "valid DFD element ID"}}],
     "location_ref": {{"type": "data_flow|process|data_store|entity|boundary|data_object", "id": "primary DFD element ID"}},
     "analysis_revision": "current canonical DFD revision",
@@ -191,7 +215,7 @@ Deduplicate: one control can address multiple threats."""
         if item.get("location_ref") and valid_dfd_ids and str(item["location_ref"].get("id")) not in valid_dfd_ids:
             item["location_ref"] = None
             warnings.append(f"Control {index} contained a dangling location_ref; it was removed.")
-        for field in ("verification_evidence_refs", "implementation_evidence_refs"):
+        for field in ("verification_evidence_refs", "implementation_evidence_refs", "runtime_verification_refs"):
             refs = [str(ref) for ref in (item.get(field) or [])]
             if evidence_ids is not None:
                 filtered = [ref for ref in refs if ref in evidence_ids]
@@ -199,6 +223,11 @@ Deduplicate: one control can address multiple threats."""
                     warnings.append(f"Control {index} contained unknown {field}; they were removed.")
                 refs = filtered
             item[field] = refs
+        item["implementation_evidence_requested"] = [
+            str(request).strip()
+            for request in (item.get("implementation_evidence_requested") or [])
+            if str(request).strip()
+        ]
         controls.append(item)
 
     for c in controls:
@@ -332,7 +361,10 @@ def _catalog_fallback(threats: list, catalog: list) -> list:
                 "implementation_guidance": ctrl.get("implementation_guidance", ""),
                 "status": "Unknown",
                 "implementation_status": "Unknown",
+                "implementation_state": "unknown",
                 "evidence": "Implementation evidence is required before status can be confirmed.",
+                "implementation_evidence_requested": ctrl.get("evidence_requirements") or [],
+                "verification_method": ctrl.get("verification_method") or "Review implementation evidence and execute the listed verification checks.",
                 "owner": ctrl.get("owner", "Backend"),
                 "threat_ids": [],
                 "control_origin": "recommended",
