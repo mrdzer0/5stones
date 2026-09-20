@@ -455,16 +455,37 @@ def replace_framework_threats(
         "evidence_refs",
     ]
     replaced = []
+    matched_keys = set()
     for raw in normalized_incoming:
         item = dict(raw)
         key = item.get("fingerprint") or threat_fingerprint(item)
         old = prior_by_key.get(key)
         if old:
+            matched_keys.add(key)
             for field in review_fields:
                 if field in old and old.get(field) not in (None, [], ""):
                     item[field] = old[field]
             item["threat_id"] = old.get("threat_id") or item.get("threat_id")
         replaced.append(item)
+
+    # A valid rerun must not make a previously reviewed decision disappear
+    # merely because the provider omitted the candidate. Keep same-revision
+    # reviewed findings active as preserved decisions; unreviewed omissions
+    # are handled by the caller's quarantine/history path.
+    for key, old in prior_by_key.items():
+        if key in matched_keys:
+            continue
+        reviewed = bool(
+            old.get("reviewed_at")
+            or old.get("review_notes")
+            or old.get("status") in {"Reviewed", "Accepted", "Mitigated", "Verified"}
+        )
+        if not reviewed:
+            continue
+        preserved = dict(old)
+        preserved["preserved_from_previous_assessment"] = True
+        preserved["assessment_status"] = "review_preserved"
+        replaced.append(preserved)
 
     other_frameworks = [
         dict(item) for item in (existing or [])

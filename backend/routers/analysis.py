@@ -158,6 +158,39 @@ def _append_invalid_generation_quarantine(report: dict, framework: str, revision
     _append_analysis_quarantine(report, records)
 
 
+def _append_preserved_framework_result(
+    report: dict,
+    framework: str,
+    revision: str | None,
+    status: str,
+    raw_items: list,
+):
+    """Record provider output that was intentionally not allowed to replace a valid snapshot."""
+    records = []
+    items = list(raw_items or [])
+    if not items:
+        items = [{"raw_count": 0}]
+    for index, item in enumerate(items):
+        summary = {}
+        if isinstance(item, dict):
+            for key in ("threat_id", "threat_category", "title", "threat_description"):
+                if item.get(key):
+                    summary[key] = str(item[key])[:240]
+            if "raw_count" in item:
+                summary["raw_count"] = item["raw_count"]
+        else:
+            summary["raw_type"] = type(item).__name__
+        records.append({
+            "quarantine_id": f"preserved-{framework.lower()}-{index}-{uuid.uuid4().hex[:8]}",
+            "captured_at": _utc_now(),
+            "framework": framework,
+            "model_revision": revision,
+            "reasons": [f"{status}_result_preserved_prior_snapshot"],
+            "item": summary,
+        })
+    _append_analysis_quarantine(report, records)
+
+
 def _quarantine_superseded_framework_items(
     report: dict,
     incoming: list[dict],
@@ -176,6 +209,13 @@ def _quarantine_superseded_framework_items(
             continue
         key = item.get("fingerprint") or threat_fingerprint(item)
         if key in incoming_keys:
+            continue
+        reviewed = bool(
+            item.get("reviewed_at")
+            or item.get("review_notes")
+            or item.get("status") in {"Reviewed", "Accepted", "Mitigated", "Verified"}
+        )
+        if reviewed:
             continue
         records.append({
             "quarantine_id": f"superseded-{framework.lower()}-{item.get('threat_id') or uuid.uuid4().hex[:8]}",
@@ -424,6 +464,10 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
     # 2. STRIDE
     stride_threats = []
     if "stride" in types:
+        prior_stride_threats = [
+            dict(item) for item in (report.get("threats") or [])
+            if isinstance(item, dict) and item.get("framework") == "STRIDE"
+        ]
         stride_generation_status = "complete"
         try:
             stride_threats = await generate_stride_threats(
@@ -476,15 +520,26 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
             report.get("trust_model", {}).get("views"),
             report.get("dfd_model"),
         )
+        preserve_prior_stride = stride_generation_status in {"fallback", "partial"} and bool(prior_stride_threats)
+        coverage_threats = prior_stride_threats if preserve_prior_stride else stride_threats
         completed_coverage, coverage_summary = complete_graph_coverage(
             valid_stride_coverage,
-            stride_threats,
+            coverage_threats,
             report.get("dfd_model"),
             "STRIDE",
         )
         report.setdefault("analysis_coverage", {})["STRIDE"] = completed_coverage
         report.setdefault("analysis_coverage_summary", {})["STRIDE"] = coverage_summary
-        if stride_generation_status != "invalid":
+        if preserve_prior_stride:
+            _append_preserved_framework_result(
+                report,
+                "STRIDE",
+                (report.get("dfd_model") or {}).get("revision"),
+                stride_generation_status,
+                raw_stride_threats,
+            )
+            stride_deduped = 0
+        elif stride_generation_status != "invalid":
             _quarantine_superseded_framework_items(
                 report,
                 stride_threats,
@@ -500,6 +555,10 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
     # 3. LINDDUN
     linddun_threats = []
     if "linddun" in types:
+        prior_linddun_threats = [
+            dict(item) for item in (report.get("threats") or [])
+            if isinstance(item, dict) and item.get("framework") == "LINDDUN"
+        ]
         linddun_generation_status = "complete"
         try:
             linddun_threats = await generate_linddun_threats(
@@ -553,15 +612,26 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
             report.get("dfd_model"),
         )
         linddun_threats = annotate_privacy_threats(linddun_threats, report.get("dfd_model"))
+        preserve_prior_linddun = linddun_generation_status in {"fallback", "partial"} and bool(prior_linddun_threats)
+        coverage_threats = prior_linddun_threats if preserve_prior_linddun else linddun_threats
         completed_coverage, coverage_summary = complete_graph_coverage(
             valid_linddun_coverage,
-            linddun_threats,
+            coverage_threats,
             report.get("dfd_model"),
             "LINDDUN",
         )
         report.setdefault("analysis_coverage", {})["LINDDUN"] = completed_coverage
         report.setdefault("analysis_coverage_summary", {})["LINDDUN"] = coverage_summary
-        if linddun_generation_status != "invalid":
+        if preserve_prior_linddun:
+            _append_preserved_framework_result(
+                report,
+                "LINDDUN",
+                (report.get("dfd_model") or {}).get("revision"),
+                linddun_generation_status,
+                raw_linddun_threats,
+            )
+            linddun_deduped = 0
+        elif linddun_generation_status != "invalid":
             _quarantine_superseded_framework_items(
                 report,
                 linddun_threats,

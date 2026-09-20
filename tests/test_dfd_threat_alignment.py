@@ -135,6 +135,8 @@ class DfdThreatAlignmentTests(unittest.TestCase):
             "threat_description": "Current finding.",
             "affected_refs": [flow_id],
             "analysis_revision": self.dfd_model["revision"],
+            "analyzed_revision": self.dfd_model["revision"],
+            "taxonomy_version": "stride-v1",
         }
         stale = {**current, "threat_id": "stale", "analysis_revision": "old-revision"}
         active, quarantined = quarantine_report_threats([current, stale], self.dfd_model)
@@ -142,6 +144,33 @@ class DfdThreatAlignmentTests(unittest.TestCase):
         self.assertEqual([item["threat_id"] for item in active], ["current"])
         self.assertEqual(quarantined[0]["item"]["threat_id"], "stale")
         self.assertIn("stale_analysis_revision", quarantined[0]["reasons"])
+
+    def test_legacy_malformed_threats_are_quarantined_before_downstream_use(self):
+        flow_id = self.dfd_model["flows"][0]["id"]
+        legacy = {
+            "threat_id": "legacy-stride",
+            "framework": "STRIDE",
+            "threat_category": "Tampering",
+            "threat_description": "Legacy finding without provenance.",
+            "affected_refs": [flow_id],
+        }
+        malformed = {
+            "threat_id": "malformed-linddun",
+            "framework": "LINDDUN",
+            "threat_category": "Data Disclosure",
+            "threat_description": "Mismatched revisions must not reach controls.",
+            "affected_refs": [flow_id],
+            "analysis_revision": self.dfd_model["revision"],
+            "analyzed_revision": "different-revision",
+            "taxonomy_version": "linddun-v1",
+        }
+
+        active, quarantined = quarantine_report_threats([legacy, malformed], self.dfd_model)
+
+        self.assertEqual(active, [])
+        self.assertEqual({item["item"]["threat_id"] for item in quarantined}, {"legacy-stride", "malformed-linddun"})
+        self.assertTrue(any("missing_or_unsupported_taxonomy_version" in item["reasons"] for item in quarantined))
+        self.assertTrue(any("analysis_revision_mismatch" in item["reasons"] for item in quarantined))
 
     def test_framework_rerun_preserves_matching_reviewer_decision(self):
         flow_id = self.dfd_model["flows"][0]["id"]
@@ -162,6 +191,25 @@ class DfdThreatAlignmentTests(unittest.TestCase):
         self.assertEqual(merged[0]["threat_id"], "reviewed-threat")
         self.assertEqual(merged[0]["status"], "Confirmed")
         self.assertEqual(merged[0]["review_notes"], "Keep this risk visible.")
+
+    def test_framework_rerun_preserves_unmatched_reviewed_finding(self):
+        flow_id = self.dfd_model["flows"][0]["id"]
+        old = {
+            "threat_id": "reviewed-threat",
+            "framework": "LINDDUN",
+            "threat_category": "Linking",
+            "threat_description": "Persistent identifier links sessions.",
+            "affected_refs": [flow_id],
+            "status": "Reviewed",
+            "review_notes": "Keep this privacy risk visible.",
+            "reviewed_at": "2026-09-19T00:00:00Z",
+        }
+
+        merged, _ = replace_framework_threats([old], [], "LINDDUN")
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["threat_id"], "reviewed-threat")
+        self.assertEqual(merged[0]["assessment_status"], "review_preserved")
 
     def test_affected_refs_become_semantic_target_refs(self):
         flow_id = self.dfd_model["flows"][0]["id"]

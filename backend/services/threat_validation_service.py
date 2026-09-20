@@ -414,31 +414,79 @@ def quarantine_report_threats(
     active: list[dict] = []
     quarantined: list[dict] = []
     allowed_frameworks = {"STRIDE", "LINDDUN"}
+    allowed_statuses = {"Open", "Needs Info", "Reviewed", "Accepted", "Mitigation Planned", "Mitigated", "Verified"}
+    canonical_target_types = {
+        "entity", "external_entity", "external_system", "process", "data_store",
+        "data_flow", "flow", "boundary", "trust_boundary", "data_object",
+    }
+    seen_threat_ids: set[str] = set()
 
     for index, raw in enumerate(threats or []):
         reasons: list[str] = []
         item = dict(raw) if isinstance(raw, dict) else {"raw_type": type(raw).__name__}
-        framework = str(item.get("framework") or "").strip()
+        framework = str(item.get("framework") or "").strip().upper()
+        threat_id = str(item.get("threat_id") or "").strip()
+        if not threat_id:
+            reasons.append("missing_threat_id")
+        elif threat_id in seen_threat_ids:
+            reasons.append("duplicate_threat_id")
+        else:
+            seen_threat_ids.add(threat_id)
         if framework not in allowed_frameworks:
             reasons.append("unsupported_framework")
+        else:
+            item["framework"] = framework
         if not str(item.get("threat_category") or "").strip():
             reasons.append("missing_threat_category")
+        elif framework in allowed_frameworks:
+            allowed_categories = STRIDE_CATEGORIES if framework == "STRIDE" else set(LINDDUN_CATEGORY_ALIASES)
+            if item.get("threat_category") not in allowed_categories:
+                reasons.append("unsupported_threat_category")
+            elif framework == "LINDDUN":
+                item["threat_category"] = LINDDUN_CATEGORY_ALIASES[item["threat_category"]]
         if not str(item.get("threat_description") or "").strip():
             reasons.append("missing_threat_description")
-        revision = item.get("analysis_revision") or item.get("analyzed_revision")
+        affected_refs = item.get("affected_refs")
+        if affected_refs is not None and not isinstance(affected_refs, list):
+            reasons.append("malformed_affected_refs")
+            affected_refs = []
+        if isinstance(affected_refs, list) and any(not isinstance(ref, (str, int)) or not str(ref).strip() for ref in affected_refs):
+            reasons.append("malformed_affected_refs")
+        typed_refs = item.get("target_refs")
+        if typed_refs is not None and not isinstance(typed_refs, list):
+            reasons.append("malformed_target_refs")
+            typed_refs = []
+        if isinstance(typed_refs, list) and any(
+            not isinstance(ref, dict) or not ref.get("id") or not ref.get("type")
+            for ref in typed_refs
+        ):
+            reasons.append("malformed_target_refs")
+        analysis_revision = item.get("analysis_revision")
+        analyzed_revision = item.get("analyzed_revision")
+        revision = analysis_revision if analysis_revision is not None else analyzed_revision
+        if analysis_revision is None or analyzed_revision is None:
+            reasons.append("missing_analysis_provenance")
         if model_revision and revision != model_revision:
             reasons.append("missing_or_stale_analysis_revision" if not revision else "stale_analysis_revision")
-        refs = item.get("affected_refs") or []
-        typed_refs = item.get("target_refs") or []
-        ref_ids = {
+        if analysis_revision is not None and analyzed_revision is not None and analysis_revision != analyzed_revision:
+            reasons.append("analysis_revision_mismatch")
+        expected_taxonomy = "stride-v1" if framework == "STRIDE" else "linddun-v1"
+        if framework in allowed_frameworks and item.get("taxonomy_version") != expected_taxonomy:
+            reasons.append("missing_or_unsupported_taxonomy_version")
+        if item.get("status") and item.get("status") not in allowed_statuses:
+            reasons.append("unsupported_threat_status")
+        refs = affected_refs or []
+        typed_refs = typed_refs or []
+        canonical_typed_refs = {
             str(ref.get("id")) for ref in typed_refs
-            if isinstance(ref, dict) and ref.get("id")
+            if isinstance(ref, dict) and ref.get("id") and str(ref.get("type") or "") in canonical_target_types
         }
-        ref_ids.update(str(ref) for ref in refs if ref)
-        if valid_ids and not ref_ids:
-            reasons.append("missing_dfd_refs")
-        elif valid_ids and any(ref_id not in valid_ids for ref_id in ref_ids):
+        ref_ids = {str(ref) for ref in refs if ref}
+        unknown_refs = [ref_id for ref_id in ref_ids.union(canonical_typed_refs) if ref_id not in valid_ids]
+        if valid_ids and unknown_refs:
             reasons.append("dangling_dfd_refs")
+        if valid_ids and not ref_ids and not (canonical_typed_refs & valid_ids):
+            reasons.append("missing_dfd_refs")
         if reasons:
             quarantined.append({
                 "quarantine_id": f"threat-{index}-{str(item.get('threat_id') or 'unknown')}",

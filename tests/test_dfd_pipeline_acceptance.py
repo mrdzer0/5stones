@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 from backend.services.threat_validation_service import ThreatGenerationResult
 from backend.services.trust_boundary_service import build_trust_model
 from backend.services.dfd_model_service import build_dfd_model
-from backend.routers.analysis import run_full_analysis
+from backend.routers.analysis import _run_analysis_pipeline, run_full_analysis
 
 
 class DfdPipelineAcceptanceTests(unittest.TestCase):
@@ -160,6 +160,71 @@ class DfdPipelineAcceptanceTests(unittest.TestCase):
         self.assertEqual(result["ai_status"]["stride"]["assessment_status"], "invalid")
         self.assertEqual(result["threats"], [])
         self.assertTrue(any("invalid_generated_output" in item.get("reasons", []) for item in result["analysis_quarantine"]))
+
+    def test_legacy_stride_is_quarantined_and_reviewed_linddun_survives_fallback(self):
+        trust_model = build_trust_model(self.project)
+        model = build_dfd_model(self.project, trust_model)
+        flow_id = model.flows[0].id
+        prior_report = {
+            "project_id": self.project["project_id"],
+            "dfd_model": model.model_dump(),
+            "trust_boundaries": trust_model["boundaries"],
+            "trust_model": trust_model,
+            "threats": [
+                {
+                    "threat_id": "legacy-stride",
+                    "framework": "STRIDE",
+                    "threat_category": "Tampering",
+                    "threat_description": "Old unpinned finding.",
+                    "affected_refs": [flow_id],
+                },
+                {
+                    "threat_id": "reviewed-linddun",
+                    "framework": "LINDDUN",
+                    "threat_category": "Data Disclosure",
+                    "threat_description": "Reviewed privacy finding must remain visible.",
+                    "affected_refs": [flow_id],
+                    "analysis_revision": model.revision,
+                    "analyzed_revision": model.revision,
+                    "taxonomy_version": "linddun-v1",
+                    "status": "Reviewed",
+                    "review_notes": "Privacy review decision is authoritative until a valid replacement exists.",
+                    "reviewed_at": "2026-09-19T00:00:00Z",
+                },
+            ],
+        }
+        fallback_stride = ThreatGenerationResult([], [], assessment_status="fallback", warnings=["provider unavailable"])
+        fallback_linddun = ThreatGenerationResult([], [], assessment_status="fallback", warnings=["provider unavailable"])
+        saved_reports = []
+        saved_projects = []
+
+        with (
+            patch("backend.routers.analysis.get_project", return_value=copy.deepcopy(self.project)),
+            patch("backend.routers.analysis.get_report", return_value=copy.deepcopy(prior_report)),
+            patch("backend.routers.analysis.save_report", side_effect=lambda project_id, report: saved_reports.append(copy.deepcopy(report))),
+            patch("backend.routers.analysis.save_project", side_effect=lambda project: saved_projects.append(copy.deepcopy(project))),
+            patch("backend.routers.analysis.generate_stride_threats", new=AsyncMock(return_value=fallback_stride)),
+            patch("backend.routers.analysis.generate_linddun_threats", new=AsyncMock(return_value=fallback_linddun)),
+        ):
+            result = asyncio.run(_run_analysis_pipeline(self.project["project_id"], {
+                "analysis_types": ["stride", "linddun"],
+            }))
+
+        active_ids = {item.get("threat_id") for item in result["threats"]}
+        self.assertNotIn("legacy-stride", active_ids)
+        self.assertIn("reviewed-linddun", active_ids)
+        preserved = next(item for item in result["threats"] if item.get("threat_id") == "reviewed-linddun")
+        self.assertEqual(preserved["status"], "Reviewed")
+        self.assertTrue(any(
+            item.get("item", {}).get("threat_id") == "legacy-stride"
+            and "missing_or_unsupported_taxonomy_version" in item.get("reasons", [])
+            for item in result["analysis_quarantine"]
+        ))
+        self.assertTrue(any(
+            item.get("framework") == "LINDDUN"
+            and "fallback_result_preserved_prior_snapshot" in item.get("reasons", [])
+            for item in result["analysis_quarantine"]
+        ))
 
 
 if __name__ == "__main__":
