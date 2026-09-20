@@ -1,5 +1,6 @@
 """Analysis router — runs threat modeling pipeline."""
 from __future__ import annotations
+import copy
 from fastapi import APIRouter, HTTPException, Request
 from backend.utils.storage import get_project, save_dfd_model, save_project, save_report, get_report, get_dfd_model
 from backend.utils.audit import log_event
@@ -76,6 +77,10 @@ ANALYSIS_STAGE_DEPENDENCIES = {
     "assumptions": ["stride", "linddun"],
 }
 _ACTIVE_ANALYSIS_RUNS: set[str] = set()
+
+
+class AnalysisPublishConflict(RuntimeError):
+    """Raised when a run would publish over a newer canonical/report state."""
 
 
 def _utc_now() -> str:
@@ -360,6 +365,299 @@ def _empty_report(project: dict) -> dict:
     }
 
 
+def _capture_recovery_snapshot(report: dict) -> dict | None:
+    """Capture the last persisted result before a run can quarantine it.
+
+    A failed or contract-invalid rerun must not turn a previously useful
+    report into an empty report.  The snapshot is kept in memory during the
+    run; the resulting report stores the recovered items plus a compact audit
+    record, so a later retry has an explicit provenance trail.
+    """
+    if not isinstance(report, dict):
+        return None
+    collections = {
+        key: copy.deepcopy(report.get(key) or [])
+        for key in (
+            "threats", "controls", "test_scenarios", "missing_info",
+            "assumptions", "trust_boundaries", "data_flows",
+        )
+    }
+    dfd_model = copy.deepcopy(report.get("dfd_model")) if isinstance(report.get("dfd_model"), dict) else None
+    # Only a finding that still satisfies the canonical DFD contract is a
+    # recoverable baseline. Legacy/stale items remain quarantine evidence and
+    # must not be promoted into the visible report during recovery.
+    if collections["threats"] and dfd_model:
+        validated_threats, _ = quarantine_report_threats(collections["threats"], dfd_model)
+        collections["threats"] = copy.deepcopy(validated_threats)
+    if not any(collections.values()) and not dfd_model:
+        return None
+    snapshot_id = f"recovery-{uuid.uuid4().hex[:12]}"
+    snapshot = {
+        "snapshot_id": snapshot_id,
+        "captured_at": _utc_now(),
+        **collections,
+        "dfd_model": dfd_model,
+        "dfd_validation": copy.deepcopy(report.get("dfd_validation") or {}),
+        "trust_model": copy.deepcopy(report.get("trust_model") or {}),
+        "risk_summary": copy.deepcopy(report.get("risk_summary") or {}),
+    }
+    history = report.setdefault("analysis_history", [])
+    if isinstance(history, list):
+        history.append({
+            "snapshot_id": snapshot_id,
+            "captured_at": snapshot["captured_at"],
+            "dfd_revision": (dfd_model or {}).get("revision"),
+            "dfd_semantic_hash": (dfd_model or {}).get("semantic_hash"),
+            "threat_count": len(collections["threats"]),
+            "control_count": len(collections["controls"]),
+            "test_count": len(collections["test_scenarios"]),
+        })
+        report["analysis_history"] = history[-10:]
+    return snapshot
+
+
+def _mark_historical_items(items: list, snapshot_id: str, reason: str) -> list:
+    marked = []
+    for raw in items or []:
+        if not isinstance(raw, dict):
+            continue
+        item = copy.deepcopy(raw)
+        item["analysis_state"] = "historical"
+        item["historical_reason"] = reason
+        item["recovery_snapshot_id"] = snapshot_id
+        item["needs_human_review"] = True
+        marked.append(item)
+    return marked
+
+
+def _apply_recovery_snapshot(
+    report: dict,
+    snapshot: dict | None,
+    requested_types: list[str],
+) -> dict:
+    """Restore collections whose replacement was not validated.
+
+    The active report remains usable, but every recovered item is explicitly
+    marked historical so downstream consumers cannot mistake it for a fresh
+    assessment of the current DFD revision.
+    """
+    statuses = report.get("ai_status") if isinstance(report.get("ai_status"), dict) else {}
+    failed_stages = []
+    preserved_stages = []
+    preserved_frameworks = []
+    preserved_collections = []
+    baseline_used = False
+
+    def failed(stage: str) -> bool:
+        status = statuses.get(stage)
+        return isinstance(status, dict) and status.get("ok") is not True
+
+    def preserve_status(stage: str, preserved: bool):
+        status = statuses.get(stage)
+        if not isinstance(status, dict):
+            return
+        status["previous_results_preserved"] = bool(preserved)
+        # A deterministic fallback is only a baseline when no verified prior
+        # snapshot was available.  This keeps the UI from claiming baseline
+        # output when it is actually showing historical results.
+        status["baseline_used"] = bool(status.get("engine") == "fallback" and not preserved)
+
+    if not snapshot:
+        for stage in requested_types:
+            if failed(stage):
+                failed_stages.append(stage)
+                preserve_status(stage, False)
+                status = statuses.get(stage) or {}
+                baseline_used = baseline_used or bool(status.get("engine") == "fallback")
+        if failed_stages:
+            recovery = {
+                "state": "baseline_used" if baseline_used else "analysis_unavailable",
+                "retryable": True,
+                "baseline_used": baseline_used,
+                "previous_results_preserved": False,
+                "failed_stages": sorted(set(failed_stages)),
+                "preserved_frameworks": [],
+                "preserved_collections": [],
+                "message": "No validated replacement was produced for one or more requested stages.",
+                "updated_at": _utc_now(),
+            }
+            report["analysis_recovery"] = recovery
+            return recovery
+        report.pop("analysis_recovery", None)
+        return {}
+
+    snapshot_id = snapshot["snapshot_id"]
+    prior_threats = snapshot.get("threats") or []
+    for framework, stage in (("STRIDE", "stride"), ("LINDDUN", "linddun")):
+        if stage not in requested_types or not failed(stage):
+            continue
+        failed_stages.append(stage)
+        prior_items = [item for item in prior_threats if isinstance(item, dict) and item.get("framework") == framework]
+        status = statuses.get(stage) or {}
+        if prior_items:
+            current = [
+                item for item in (report.get("threats") or [])
+                if not isinstance(item, dict) or item.get("framework") != framework
+            ]
+            recovered = _mark_historical_items(
+                prior_items,
+                snapshot_id,
+                f"{framework} replacement was not validated for the current analysis run",
+            )
+            report["threats"] = [*current, *recovered]
+            preserved_frameworks.append(framework)
+            preserved_stages.append(stage)
+            preserve_status(stage, True)
+        else:
+            preserve_status(stage, False)
+            baseline_used = baseline_used or bool(status.get("engine") == "fallback")
+
+    for stage, collection_key in (("controls", "controls"), ("tests", "test_scenarios"), ("missing_info", "missing_info"), ("assumptions", "assumptions")):
+        if stage not in requested_types or not failed(stage):
+            continue
+        failed_stages.append(stage)
+        prior_items = snapshot.get(collection_key) or []
+        if prior_items:
+            report[collection_key] = _mark_historical_items(
+                prior_items,
+                snapshot_id,
+                f"{stage} replacement was not validated for the current analysis run",
+            )
+            preserved_collections.append(collection_key)
+            preserved_stages.append(stage)
+            preserve_status(stage, True)
+        else:
+            status = statuses.get(stage) or {}
+            preserve_status(stage, False)
+            baseline_used = baseline_used or bool(status.get("engine") == "fallback")
+
+    # A deterministic DFD/trust-boundary failure should leave the last
+    # canonical topology available for review instead of exposing an empty
+    # diagram that looks like a valid empty system.
+    if "trust_boundary" in requested_types and failed("trust_boundary"):
+        failed_stages.append("trust_boundary")
+        if snapshot.get("dfd_model"):
+            report["dfd_model"] = copy.deepcopy(snapshot["dfd_model"])
+            report["dfd_validation"] = copy.deepcopy(snapshot.get("dfd_validation") or {})
+            report["trust_model"] = copy.deepcopy(snapshot.get("trust_model") or {})
+            report["trust_boundaries"] = copy.deepcopy(snapshot.get("trust_boundaries") or [])
+            report["data_flows"] = copy.deepcopy(snapshot.get("data_flows") or [])
+            preserved_collections.append("dfd_model")
+            preserved_stages.append("trust_boundary")
+            preserve_status("trust_boundary", True)
+
+    if not failed_stages:
+        report.pop("analysis_recovery", None)
+        return {}
+
+    previous_preserved = bool(preserved_stages or preserved_frameworks or preserved_collections)
+    recovery = {
+        "state": "previous_results_preserved" if previous_preserved else ("baseline_used" if baseline_used else "analysis_unavailable"),
+        "retryable": True,
+        "baseline_used": bool(baseline_used and not previous_preserved),
+        "previous_results_preserved": previous_preserved,
+        "snapshot_id": snapshot_id,
+        "failed_stages": sorted(set(failed_stages)),
+        "preserved_stages": sorted(set(preserved_stages)),
+        "preserved_frameworks": sorted(set(preserved_frameworks)),
+        "preserved_collections": sorted(set(preserved_collections)),
+        "message": "The last validated results remain available while the failed stages are retried.",
+        "updated_at": _utc_now(),
+    }
+    report["analysis_recovery"] = recovery
+    return recovery
+
+
+def _publish_project_analysis_state(
+    project_id: str,
+    run_id: str,
+    status: str,
+    report: dict | None = None,
+    fallback_project: dict | None = None,
+) -> bool:
+    """Merge analysis fields into the latest project snapshot.
+
+    The pipeline is async and project context can change while it is running.
+    Reloading immediately before publishing prevents a stale project object
+    from erasing newer risk/completeness or artifact fields.
+    """
+    latest = get_project(project_id) or copy.deepcopy(fallback_project or {})
+    latest_run_id = latest.get("analysis_run_id")
+    if latest_run_id and latest_run_id != run_id and latest.get("analysis_status") == "running":
+        return False
+    latest["analysis_status"] = status
+    latest["analysis_run_id"] = run_id
+    if isinstance(report, dict):
+        if isinstance(report.get("risk_summary"), dict):
+            latest["risk_summary"] = copy.deepcopy(report["risk_summary"])
+        completeness = report.get("completeness") if isinstance(report.get("completeness"), dict) else {}
+        latest["completeness_score"] = completeness.get("score", latest.get("completeness_score", 0))
+        latest["completeness_level"] = completeness.get("level", latest.get("completeness_level", ""))
+    save_project(latest)
+    return True
+
+
+def _project_run_is_current(project_id: str, run_id: str) -> bool:
+    latest = get_project(project_id)
+    latest_run_id = latest.get("analysis_run_id") if isinstance(latest, dict) else None
+    return not latest_run_id or latest_run_id == run_id
+
+
+def _merge_latest_review_state(result: dict, latest: dict) -> None:
+    """Carry reviewer edits made while the provider was running into result."""
+    review_fields = (
+        "status", "owner", "review_notes", "reviewed_at", "needs_human_review",
+        "review_status", "implementation_status", "implementation_state",
+        "verification_evidence_refs", "implementation_evidence_refs",
+        "execution_status", "actual_result", "execution_evidence_refs",
+    )
+    for collection, identity in (
+        ("threats", "threat_id"),
+        ("controls", "control_id"),
+        ("test_scenarios", "test_id"),
+    ):
+        latest_items = {
+            str(item.get(identity)): item
+            for item in (latest.get(collection) or [])
+            if isinstance(item, dict) and item.get(identity)
+        }
+        for item in result.get(collection) or []:
+            if not isinstance(item, dict) or not item.get(identity):
+                continue
+            current = latest_items.get(str(item.get(identity)))
+            if not current:
+                continue
+            for field in review_fields:
+                if field in current and current.get(field) not in (None, [], ""):
+                    item[field] = copy.deepcopy(current[field])
+
+
+def _assert_analysis_publish_safe(report: dict, project_id: str) -> None:
+    """Reject a publish that targets a newer report or canonical DFD revision."""
+    manifest = report.get("analysis_run_manifest") if isinstance(report, dict) else {}
+    base_revision = manifest.get("base_report_revision") if isinstance(manifest, dict) else None
+    latest = get_report(project_id)
+    if not isinstance(latest, dict) or base_revision is None:
+        return
+    try:
+        latest_revision = int(latest.get("report_revision", 0) or 0)
+        base_revision = int(base_revision or 0)
+    except (TypeError, ValueError):
+        return
+    if latest_revision == base_revision:
+        return
+    latest_dfd = get_dfd_model(project_id) or latest.get("dfd_model") or {}
+    result_dfd = report.get("dfd_model") or {}
+    if (
+        latest_dfd.get("revision") != result_dfd.get("revision")
+        or latest_dfd.get("semantic_hash") != result_dfd.get("semantic_hash")
+    ):
+        raise AnalysisPublishConflict(
+            "The canonical DFD changed while analysis was running. The run was not published; retry against the latest revision."
+        )
+    _merge_latest_review_state(report, latest)
+
+
 def _requested_analysis_types(body: dict | None) -> list[str]:
     requested = (body or {}).get("analysis_types")
     if not isinstance(requested, list) or not requested:
@@ -395,6 +693,7 @@ async def run_full_analysis(project_id: str, body: dict = None, request: Request
     previous_report["analysis_status"] = "running"
     save_report(project_id, previous_report)
     project["analysis_status"] = "running"
+    project["analysis_run_id"] = run_state["run_id"]
     save_project(project)
 
     try:
@@ -407,6 +706,10 @@ async def run_full_analysis(project_id: str, body: dict = None, request: Request
         )
     except Exception as exc:
         safe_error = redact_text(str(exc))[:1000] or "Analysis pipeline failed"
+        latest_project = get_project(project_id)
+        if isinstance(latest_project, dict) and latest_project.get("analysis_run_id") not in (None, run_state["run_id"]):
+            log_event("analysis.superseded", details={"project_id": project_id, "run_id": run_state["run_id"]})
+            raise HTTPException(status_code=409, detail="A newer analysis run owns this project; the older result was not published.") from exc
         failed_report = get_report(project_id) or previous_report
         failed_report["analysis_run"] = {
             **run_state,
@@ -417,8 +720,13 @@ async def run_full_analysis(project_id: str, body: dict = None, request: Request
         }
         failed_report["analysis_status"] = "failed"
         save_report(project_id, failed_report)
-        project["analysis_status"] = "failed"
-        save_project(project)
+        _publish_project_analysis_state(
+            project_id,
+            run_state["run_id"],
+            "failed",
+            report=failed_report,
+            fallback_project=project,
+        )
         log_event("analysis.failed", details={"project_id": project_id, "run_id": run_state["run_id"], "error": safe_error})
         raise HTTPException(status_code=500, detail="Analysis failed; the previous saved model remains available and can be retried.") from exc
     finally:
@@ -439,9 +747,16 @@ async def run_full_analysis(project_id: str, body: dict = None, request: Request
         "retryable": bool(warning_stages),
     }
     result["analysis_status"] = result["analysis_run"]["status"]
+    if not _project_run_is_current(project_id, run_state["run_id"]):
+        return get_report(project_id) or result
     save_report(project_id, result)
-    project["analysis_status"] = result["analysis_status"]
-    save_project(project)
+    _publish_project_analysis_state(
+        project_id,
+        run_state["run_id"],
+        result["analysis_status"],
+        report=result,
+        fallback_project=project,
+    )
     return result
 
 
@@ -488,6 +803,11 @@ async def _run_analysis_pipeline(
     else:
         report = _empty_report(project)
 
+    recovery_snapshot = _capture_recovery_snapshot(report)
+    # A new run starts with a clean recovery marker. If this run cannot
+    # replace a stage, _apply_recovery_snapshot will add a new, truthful one.
+    report.pop("analysis_recovery", None)
+
     report["completeness"] = compute_completeness(project)
     evidence_catalog = build_project_evidence_catalog(project)
     evidence_ids = {
@@ -505,6 +825,7 @@ async def _run_analysis_pipeline(
         "run_id": run_id,
         "requested_types": list(types),
         "input_snapshot": dict(input_snapshot),
+        "base_report_revision": report.get("report_revision", 0),
         "stage_dependencies": {stage: ANALYSIS_STAGE_DEPENDENCIES.get(stage, []) for stage in types},
     }
 
@@ -680,6 +1001,8 @@ async def _run_analysis_pipeline(
             "assessment_status": stride_generation_status,
             "response_shape": stride_response_shape,
             "validation_warnings": [*coverage_warnings, *stride_warnings],
+            "baseline_used": False,
+            "previous_results_preserved": False,
             **({"error": stride_generation_error} if stride_generation_error else {}),
         }
         stride_threats = enrich_threats(stride_threats, project, "STRIDE")
@@ -794,6 +1117,8 @@ async def _run_analysis_pipeline(
             "assessment_status": linddun_generation_status,
             "response_shape": linddun_response_shape,
             "validation_warnings": [*coverage_warnings, *linddun_warnings],
+            "baseline_used": False,
+            "previous_results_preserved": False,
             **({"error": linddun_generation_error} if linddun_generation_error else {}),
         }
         linddun_threats = enrich_threats(linddun_threats, project, "LINDDUN")
@@ -861,6 +1186,8 @@ async def _run_analysis_pipeline(
                 "ok": controls_status == "complete",
                 "engine": "AI",
                 "assessment_status": controls_status,
+                "baseline_used": False,
+                "previous_results_preserved": False,
                 "response_shape": getattr(controls, "response_shape", "unknown"),
                 "warnings": getattr(controls, "generation_warnings", []),
                 "response_metadata": getattr(controls, "response_metadata", {}),
@@ -880,6 +1207,8 @@ async def _run_analysis_pipeline(
                 "error_code": getattr(exc, "code", "stage_generation_error"),
                 "engine": "fallback",
                 "assessment_status": "fallback",
+                "baseline_used": True,
+                "previous_results_preserved": False,
                 "response_shape": getattr(controls, "response_shape", "deterministic_fallback"),
                 "warnings": getattr(controls, "generation_warnings", []),
                 "response_metadata": getattr(exc, "response_metadata", {}),
@@ -896,6 +1225,17 @@ async def _run_analysis_pipeline(
             mapped_controls,
             (report.get("dfd_model") or {}).get("revision"),
         )
+    elif "controls" in types:
+        report["ai_status"]["controls"] = {
+            **report["ai_status"].get("controls", {}),
+            "ok": False,
+            "engine": "blocked",
+            "assessment_status": "blocked",
+            "blocked_by": ["stride", "linddun"],
+            "error": "Controls were not generated because no validated threat findings were available.",
+            "baseline_used": False,
+            "previous_results_preserved": False,
+        }
     if finish_controls:
         finish_controls()
 
@@ -916,6 +1256,8 @@ async def _run_analysis_pipeline(
                 "ok": tests_status == "complete",
                 "engine": "AI",
                 "assessment_status": tests_status,
+                "baseline_used": False,
+                "previous_results_preserved": False,
                 "response_shape": getattr(tests, "response_shape", "unknown"),
                 "warnings": getattr(tests, "generation_warnings", []),
                 "response_metadata": getattr(tests, "response_metadata", {}),
@@ -935,6 +1277,8 @@ async def _run_analysis_pipeline(
                 "error_code": getattr(exc, "code", "stage_generation_error"),
                 "engine": "fallback",
                 "assessment_status": "fallback",
+                "baseline_used": True,
+                "previous_results_preserved": False,
                 "response_shape": getattr(tests, "response_shape", "deterministic_fallback"),
                 "warnings": getattr(tests, "generation_warnings", []),
                 "response_metadata": getattr(exc, "response_metadata", {}),
@@ -944,6 +1288,17 @@ async def _run_analysis_pipeline(
             tests,
             (report.get("dfd_model") or {}).get("revision"),
         )
+    elif "tests" in types:
+        report["ai_status"]["tests"] = {
+            **report["ai_status"].get("tests", {}),
+            "ok": False,
+            "engine": "blocked",
+            "assessment_status": "blocked",
+            "blocked_by": ["controls"],
+            "error": "Test scenarios were not generated because no validated threat findings were available.",
+            "baseline_used": False,
+            "previous_results_preserved": False,
+        }
     if finish_tests:
         finish_tests()
 
@@ -969,14 +1324,19 @@ async def _run_analysis_pipeline(
     if finish_assumptions:
         finish_assumptions()
 
+    recovery = _apply_recovery_snapshot(report, recovery_snapshot, types)
+
     # Risk summary
     threats = report.get("threats", [])
+    historical_count = sum(1 for item in threats if item.get("analysis_state") == "historical")
     report["risk_summary"] = {
         "critical": sum(1 for t in threats if t.get("risk_level") == "Critical"),
         "high": sum(1 for t in threats if t.get("risk_level") == "High"),
         "medium": sum(1 for t in threats if t.get("risk_level") == "Medium"),
         "low": sum(1 for t in threats if t.get("risk_level") == "Low"),
         "total": len(threats),
+        "current_total": len(threats) - historical_count,
+        "historical_total": historical_count,
         "stride_count": sum(1 for t in threats if t.get("framework") == "STRIDE"),
         "linddun_count": sum(1 for t in threats if t.get("framework") == "LINDDUN"),
         "needs_review": sum(1 for t in threats if t.get("needs_human_review")),
@@ -1021,16 +1381,25 @@ async def _run_analysis_pipeline(
         "final_snapshot": dict(final_snapshot),
         "completed_stages": completed_stages,
         "stage_timings": {stage: round(float(value), 3) for stage, value in stage_timings.items()},
+        "recovery": copy.deepcopy(recovery),
     }
 
+    if not _project_run_is_current(project_id, run_id):
+        raise AnalysisPublishConflict(
+            "A newer analysis run owns this project. The current run was not published; retry against the latest run state."
+        )
+    _assert_analysis_publish_safe(report, project_id)
     save_report(project_id, report)
 
-    # Update project status
-    project["analysis_status"] = "completed"
-    project["risk_summary"] = report["risk_summary"]
-    project["completeness_score"] = report["completeness"].get("score", 0)
-    project["completeness_level"] = report["completeness"].get("level", "")
-    save_project(project)
+    # Update only the latest project snapshot so an artifact edit made while
+    # this async run was in flight is not overwritten by the stale input copy.
+    _publish_project_analysis_state(
+        project_id,
+        run_id,
+        "completed",
+        report=report,
+        fallback_project=project,
+    )
 
     log_event("analysis.completed", details={
         "project_id": project_id,

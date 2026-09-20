@@ -226,6 +226,10 @@ function setupOverviewActions() {
 
 function openOverviewAction(action) {
   if (!currentReport) return;
+  if (action === 'retry') {
+    retryPersistedAnalysis();
+    return;
+  }
   if (action === 'boundaries') {
     switchTab('trust-boundaries');
     document.getElementById('tab-trust-boundaries')?.scrollIntoView({ behavior: reducedMotionBehavior(), block: 'start' });
@@ -649,21 +653,32 @@ function renderAnalysisRunState(report) {
   const retry = document.getElementById('btn-retry-persisted-analysis');
   if (!panel || !title || !message) return;
   const run = report?.analysis_run;
-  if (!run?.status || run.status === 'completed') {
+  const recovery = report?.analysis_recovery;
+  const hasRecovery = ['previous_results_preserved', 'baseline_used', 'analysis_unavailable'].includes(recovery?.state);
+  if ((!run?.status || run.status === 'completed') && !hasRecovery) {
     panel.style.display = 'none';
     return;
   }
-  const status = String(run.status);
+  const status = String(run?.status || 'recovery');
   const failed = status === 'failed';
   const warning = status === 'completed_with_warnings';
   const running = status === 'running';
   panel.style.display = 'flex';
-  panel.classList.toggle('is-error', failed);
-  title.textContent = failed ? 'Analysis failed safely' : warning ? 'Analysis completed with review warnings' : 'Analysis run was interrupted';
-  const detail = run.error || (run.warning_stages?.length ? `Stages using baseline results: ${run.warning_stages.join(', ')}.` : 'The saved model remains available.');
-  message.textContent = `${detail} ${running || failed ? 'The previous saved model was preserved.' : ''}`.trim();
+  panel.classList.toggle('is-error', failed || recovery?.state === 'analysis_unavailable');
+  if (recovery?.state === 'previous_results_preserved') {
+    title.textContent = 'Previous validated results preserved';
+  } else if (recovery?.state === 'analysis_unavailable') {
+    title.textContent = 'Analysis requires retry';
+  } else {
+    title.textContent = failed ? 'Analysis failed safely' : warning ? 'Analysis completed with review warnings' : 'Analysis run was interrupted';
+  }
+  const detail = recovery?.message
+    || run?.error
+    || (run?.warning_stages?.length ? `Stages requiring review: ${run.warning_stages.join(', ')}.` : 'The saved model remains available.');
+  const failedStageText = recovery?.failed_stages?.length ? ` Failed stages: ${recovery.failed_stages.join(', ')}.` : '';
+  message.textContent = `${detail}${failedStageText} ${running || failed ? 'The previous saved model was preserved.' : ''}`.trim();
   if (retry) {
-    retry.style.display = failed || running || warning ? '' : 'none';
+    retry.style.display = failed || running || warning || hasRecovery ? '' : 'none';
     retry.disabled = analysisIsRunning;
   }
 }
@@ -791,6 +806,22 @@ function userFacingAnalysisError(error) {
     return 'The analysis engine could not be reached.';
   }
   return message;
+}
+
+function stageOutcomeMessage(aiStatus = {}) {
+  if (aiStatus.previous_results_preserved) {
+    return 'Previous validated results preserved while this phase is retried.';
+  }
+  if (aiStatus.assessment_status === 'blocked') {
+    return 'Not run because a required upstream phase did not produce validated findings.';
+  }
+  if (aiStatus.assessment_status === 'invalid') {
+    return 'No validated result was produced by the selected analysis engine.';
+  }
+  if (aiStatus.baseline_used || aiStatus.engine === 'fallback') {
+    return `Baseline framework results used. ${escHtml(userFacingAnalysisError(aiStatus.error))}`;
+  }
+  return escHtml(userFacingAnalysisError(aiStatus.error || 'The phase requires review.'));
 }
 
 function stageIdsForTypes(types) {
@@ -982,7 +1013,7 @@ async function runAnalysis(types) {
             </button>
           </div>
           <div class="step-subtext" style="font-size:0.72rem;color:var(--orange);margin-top:2px;line-height:1.2;">
-            Baseline framework results used. ${escHtml(userFacingAnalysisError(aiStatus.error))}
+            ${stageOutcomeMessage(aiStatus)}
           </div>
         </div>
       `;
@@ -1055,13 +1086,24 @@ async function runAnalysis(types) {
     currentReport = report;
 
     if (anyFailed) {
-      finishAnalysisProgress('Review ready · baseline results used');
-      if (titleEl) titleEl.textContent = 'Analysis prepared with baseline results';
+      const recovery = report.analysis_recovery || {};
+      const preserved = recovery.state === 'previous_results_preserved';
+      const unavailable = recovery.state === 'analysis_unavailable';
+      finishAnalysisProgress(preserved ? 'Previous results preserved · retry available' : unavailable ? 'Retry required · no validated replacement' : 'Review ready · baseline results used');
+      if (titleEl) titleEl.textContent = preserved ? 'Previous results preserved for review' : unavailable ? 'Analysis requires a retry' : 'Analysis prepared with baseline results';
       document.getElementById('analyzing-actions').style.display = 'block';
       document.body.classList.add('analysis-has-report');
       pendingArtifactAnalysisTypes = [];
       setAnalysisRunning(false);
-      showToast('Some stages used baseline framework results and still require review.', 'warn');
+      renderResults(report);
+      showToast(
+        preserved
+          ? 'Previous validated findings remain available while the failed stages are retried.'
+          : unavailable
+            ? 'No validated replacement was produced. Retry the affected stages.'
+            : 'Some stages used baseline framework results and still require review.',
+        'warn'
+      );
     } else {
       finishAnalysisProgress('All phases complete');
       document.getElementById('analyzing-card').style.display = 'none';
@@ -1139,7 +1181,7 @@ window.retryStage = async function(stepId) {
               </button>
             </div>
             <div class="step-subtext" style="font-size:0.72rem;color:var(--orange);margin-top:2px;line-height:1.2;">
-              Baseline framework results used. ${escHtml(userFacingAnalysisError(aiStat.error))}
+              ${stageOutcomeMessage(aiStat)}
             </div>
           </div>
         `;
@@ -1170,7 +1212,12 @@ window.retryStage = async function(stepId) {
         document.getElementById('btn-view-report').style.display = '';
       }
     } else {
-      showToast('Stage evaluation could not complete; baseline results remain available.', 'warn');
+      showToast(
+        report.analysis_recovery?.state === 'previous_results_preserved'
+          ? 'Previous validated results remain available while this stage is retried.'
+          : 'Stage evaluation could not complete; retry is available.',
+        'warn'
+      );
     }
   } catch (err) {
     showToast('Stage evaluation failed: ' + err.message, 'error');
@@ -1189,7 +1236,7 @@ window.retryStage = async function(stepId) {
             </button>
           </div>
           <div class="step-subtext" style="font-size:0.72rem;color:var(--orange);margin-top:2px;line-height:1.2;">
-            Baseline framework results used. ${escHtml(userFacingAnalysisError(err.message))}
+            ${stageOutcomeMessage({ ok: false, error: err.message })}
           </div>
         </div>
       `;
@@ -1308,9 +1355,16 @@ function renderAnalysisOverview(report, visibility = analysisVisibility(report))
 
   const guidance = document.getElementById('analysis-overview-guidance');
   const primary = document.getElementById('overview-primary-action');
+  const recovery = report.analysis_recovery || {};
   let action = 'gaps';
   let label = 'Review evidence gaps';
-  if (visibility.allRejected) {
+  if (recovery.state === 'previous_results_preserved' || recovery.state === 'analysis_unavailable') {
+    action = 'retry';
+    label = 'Retry affected stages';
+    if (guidance) guidance.textContent = recovery.state === 'previous_results_preserved'
+      ? 'Previous validated findings remain visible and are marked historical until the affected stages succeed.'
+      : 'The latest run did not produce a validated replacement. Retry the affected stages before relying on the result.';
+  } else if (visibility.allRejected) {
     action = 'boundaries';
     label = 'Review rejected boundary';
     if (guidance) guidance.textContent = 'Dependent findings are safely retained but hidden while every grounded boundary is rejected.';
@@ -4051,6 +4105,7 @@ function showNodeInspector(node) {
         <div style="display:flex;gap:var(--space-2);align-items:center;margin-bottom:4px;">
           ${badgeHtml(t.risk_level, 'risk')}
           ${badgeHtml(t.framework, 'framework')}
+          ${t.analysis_state === 'historical' ? '<span class="badge badge-medium">Previous snapshot · revalidate</span>' : ''}
           <span style="font-size:0.78rem;font-weight:500;">${escHtml(t.threat_category)}</span>
         </div>
         <div style="font-size:0.8rem;color:var(--text-2);">${escHtml((t.threat_description || '').substring(0, 120))}…</div>
@@ -4167,6 +4222,7 @@ function renderThreats(containerId, prefix, threats) {
         <span class="threat-header-badges">
           ${badgeHtml(t.risk_level, 'risk')}
           ${badgeHtml(t.framework, 'framework')}
+          ${t.analysis_state === 'historical' ? '<span class="badge badge-medium">Previous snapshot · revalidate</span>' : ''}
         </span>
         <span class="threat-item-title">${escHtml(t.threat_category)} — ${escHtml((t.threat_description || '').substring(0, 90))}${(t.threat_description || '').length > 90 ? '…' : ''}</span>
         <span class="threat-header-signals">

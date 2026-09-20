@@ -34,8 +34,12 @@ def _read_json(path: Path) -> Optional[dict]:
 
 def _write_json(path: Path, data: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    temporary_path = path.with_name(f".{path.name}.tmp")
+    with open(temporary_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(temporary_path, path)
 
 
 # ── Projects ─────────────────────────────────────────────────────────────────
@@ -79,6 +83,13 @@ def delete_project(project_id: str) -> bool:
 
 def save_report(project_id: str, report: dict) -> dict:
     path = REPORTS_DIR / f"{project_id}.json"
+    previous = _read_json(path) or {}
+    try:
+        previous_revision = int(previous.get("report_revision", 0) or 0)
+    except (TypeError, ValueError):
+        previous_revision = 0
+    report["report_revision"] = max(previous_revision + 1, int(report.get("report_revision", 0) or 0))
+    report["report_updated_at"] = datetime.utcnow().isoformat()
     _write_json(path, report)
     return report
 
