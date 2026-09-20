@@ -9,6 +9,12 @@ from backend.services.privacy_service import assess_privacy_metadata, annotate_p
 
 
 EVIDENCE_TYPES = {"direct", "context", "inference"}
+_MAPPING_STOPWORDS = {
+    "the", "and", "for", "with", "may", "can", "from", "this", "that",
+    "before", "after", "into", "when", "where", "user", "data", "system",
+    "critical", "endpoint", "request", "response", "application", "service",
+    "ensure", "every", "using", "required", "sensitive", "all", "use",
+}
 _EVIDENCE_STOPWORDS = {
     "about", "after", "against", "also", "from", "into", "through", "using", "with",
     "data", "system", "service", "application", "component", "project", "threat", "user",
@@ -582,6 +588,8 @@ def enrich_controls(
 
     for control in controls:
         c = dict(control)
+        explicit_unassigned = c.get("mapping_status") == "unassigned"
+        existing_mapping_basis = c.get("mapping_basis")
         raw_threat_ids = [str(tid) for tid in (c.get("threat_ids") or [])]
         c["threat_ids"] = [
             str(tid) for tid in (c.get("threat_ids") or [])
@@ -590,11 +598,11 @@ def enrich_controls(
         related = [threat_by_id[tid] for tid in c["threat_ids"]]
         if not related and not raw_threat_ids:
             related = _related_threats_by_text(c, threats)
-            c["mapping_basis"] = "semantic_text_inference" if related else "unassigned"
+            c["mapping_basis"] = existing_mapping_basis or ("semantic_text_inference" if related else "unassigned")
         elif related:
-            c["mapping_basis"] = "explicit_threat_ids"
+            c["mapping_basis"] = existing_mapping_basis or "explicit_threat_ids"
         else:
-            c["mapping_basis"] = "unassigned_invalid_threat_ids"
+            c["mapping_basis"] = existing_mapping_basis or "unassigned_invalid_threat_ids"
 
         raw_refs = c.get("target_refs") if isinstance(c.get("target_refs"), list) else []
         target_refs = []
@@ -656,7 +664,7 @@ def enrich_controls(
         c["verification_status"] = "evidenced" if implementation_evidence else "unverified"
         c["control_origin"] = c.get("control_origin") or "recommended"
         c["recommendation_status"] = c.get("recommendation_status") or "recommended"
-        c["mapping_status"] = "mapped" if c["threat_ids"] else "unassigned"
+        c["mapping_status"] = "unassigned" if explicit_unassigned else ("mapped" if c["threat_ids"] else "unassigned")
         c["review_status"] = c.get("review_status") or "Open"
         c["checklist_items"] = c.get("checklist_items") or _control_checklist(c, related, project)
         c["verification_method"] = c.get("verification_method") or _verification_method(c)
@@ -954,16 +962,51 @@ def _needs_review(threat: dict) -> bool:
 
 
 def _related_threats_by_text(control: dict, threats: list) -> list:
-    text = _normalize(" ".join([control.get("name", ""), control.get("description", ""), control.get("implementation_guidance", "")]))
-    if not text:
+    """Infer a text mapping only when there is a non-empty, specific signal.
+
+    This is deliberately conservative: substring matches and one generic
+    token can connect a control to an unrelated threat. Explicit threat IDs
+    remain the preferred mapping path.
+    """
+    control_text = _normalize(" ".join([
+        str(control.get("name") or ""),
+        str(control.get("description") or ""),
+        str(control.get("implementation_guidance") or ""),
+    ]))
+    if not control_text:
         return []
-    related = []
-    for threat in threats:
+
+    def tokens(value: object) -> set[str]:
+        return {
+            token for token in re.findall(r"[a-z0-9-]+", str(value or "").casefold())
+            if len(token) >= 3 and token not in _MAPPING_STOPWORDS
+        }
+
+    control_tokens = tokens(control_text)
+    ranked = []
+    for threat in threats or []:
+        if not isinstance(threat, dict) or not threat.get("threat_id"):
+            continue
         category = _normalize(threat.get("threat_category", ""))
         recommendation = _normalize(threat.get("recommended_control", ""))
-        if (category and category in text) or (recommendation and recommendation in text):
-            related.append(threat)
-    return related[:5]
+        if not category and not recommendation:
+            continue
+        category_tokens = tokens(category)
+        recommendation_tokens = tokens(recommendation)
+        category_match = bool(category_tokens and category_tokens.issubset(control_tokens))
+        recommendation_match = bool(recommendation_tokens and recommendation_tokens.issubset(control_tokens))
+        threat_tokens = tokens(" ".join([
+            str(threat.get("threat_description") or ""),
+            str(threat.get("asset") or ""),
+            str(threat.get("component") or ""),
+        ]))
+        overlap = control_tokens.intersection(threat_tokens)
+        score = (3 if category_match else 0) + (3 if recommendation_match else 0) + min(len(overlap), 3)
+        if score < 2:
+            continue
+        ranked.append((score, str(threat.get("threat_id")), threat))
+
+    return [threat for _, _, threat in sorted(ranked, key=lambda item: (-item[0], item[1]))]
 
 
 def _highest_priority(levels: Iterable[str]) -> str:

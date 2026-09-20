@@ -21,10 +21,22 @@ from backend.services.generation_contracts import (
 
 CONTROL_CATEGORY_ALIASES = {
     "Linking": ["Linkability"],
+    "Linkability": ["Linking"],
     "Identifying": ["Identifiability"],
+    "Identifiability": ["Identifying"],
     "Detecting": ["Detectability"],
+    "Detectability": ["Detecting"],
     "Data Disclosure": ["Disclosure of Information", "Information Disclosure"],
+    "Disclosure of Information": ["Data Disclosure", "Information Disclosure"],
     "Unawareness & Unintervenability": ["Unawareness"],
+    "Unawareness": ["Unawareness & Unintervenability"],
+}
+
+_MATCH_STOPWORDS = {
+    "the", "and", "for", "with", "may", "can", "from", "this", "that",
+    "before", "after", "into", "when", "where", "user", "data", "system",
+    "critical", "endpoint", "request", "response", "application", "service",
+    "ensure", "every", "using", "required", "sensitive", "all", "use",
 }
 
 
@@ -223,52 +235,94 @@ def _unpack_structured_result(result) -> tuple[object, dict]:
 
 
 def _catalog_fallback(threats: list, catalog: list) -> list:
-    """Match catalog controls per threat without fan-out or generic guessing."""
+    """Match catalog controls per threat with explicit applicability evidence.
+
+    A control is eligible through an exact category/alias match, or through at
+    least two meaningful keyword signals. A single generic word is not enough.
+    Threats without an eligible catalog control receive an explicit unassigned
+    review record instead of being silently connected to an unrelated control.
+    """
     grouped: dict[str, dict] = {}
 
     def tokens(value: object) -> set[str]:
-        stopwords = {
-            "the", "and", "for", "with", "may", "can", "from", "this", "that",
-            "before", "after", "into", "when", "where", "user", "data", "system",
-            "critical", "endpoint", "request", "response",
-        }
         return {
             token for token in re.findall(r"[a-z0-9-]+", str(value or "").lower())
-            if len(token) >= 3 and token not in stopwords
+            if len(token) >= 3 and token not in _MATCH_STOPWORDS
         }
 
     for threat in threats or []:
         if not isinstance(threat, dict) or not threat.get("threat_id"):
             continue
+        threat_id = str(threat["threat_id"])
         category = str(threat.get("threat_category") or "")
         aliases = [category, *CONTROL_CATEGORY_ALIASES.get(category, [])]
         threat_tokens = tokens(" ".join([
-            category,
-            *aliases,
             str(threat.get("threat_description") or ""),
             str(threat.get("recommended_control") or ""),
+            str(threat.get("asset") or ""),
+            str(threat.get("component") or ""),
         ]))
         ranked = []
         for ctrl in catalog or []:
+            ctrl_id = str(ctrl.get("id") or ctrl.get("name") or "")
             ctrl_tokens = tokens(" ".join([
                 str(ctrl.get("name") or ""),
                 str(ctrl.get("description") or ""),
+                str(ctrl.get("implementation_guidance") or ""),
                 " ".join(str(value) for value in (ctrl.get("tags") or [])),
                 " ".join(str(value) for value in (ctrl.get("mitigates") or [])),
             ]))
-            score = len(threat_tokens.intersection(ctrl_tokens))
-            category_match = any(
-                str(value).strip().casefold() in {
-                    str(item).strip().casefold() for item in (ctrl.get("mitigates") or [])
-                }
-                for value in aliases
+            mitigates = {
+                str(value).strip().casefold()
+                for value in (ctrl.get("mitigates") or [])
                 if str(value).strip()
-            )
-            if category_match:
-                score += 5
-            if score:
-                ranked.append((score, ctrl))
-        for _, ctrl in sorted(ranked, key=lambda pair: (-pair[0], str(pair[1].get("id"))))[:3]:
+            }
+            category_hits = [
+                alias for alias in aliases
+                if str(alias).strip() and str(alias).strip().casefold() in mitigates
+            ]
+            keyword_hits = sorted(threat_tokens.intersection(ctrl_tokens))
+            if category_hits:
+                match_type = "category_applicability"
+                score = 100 + len(keyword_hits)
+                signals = category_hits + keyword_hits
+            elif len(keyword_hits) >= 2:
+                match_type = "keyword_applicability"
+                score = len(keyword_hits)
+                signals = keyword_hits
+            else:
+                continue
+            ranked.append((score, ctrl_id, ctrl, match_type, signals))
+
+        if not ranked:
+            key = f"UNASSIGNED-{threat_id}"
+            grouped[key] = {
+                "control_id": key,
+                "catalog_id": None,
+                "name": "Control mapping requires review",
+                "description": "No catalog control met the applicability threshold for this threat.",
+                "implementation_guidance": "Review the threat and define or add an applicable control.",
+                "status": "Unknown",
+                "implementation_status": "Unknown",
+                "evidence": "Threat-specific control applicability review is required.",
+                "owner": "Security",
+                "threat_ids": [threat_id],
+                "control_origin": "inferred",
+                "recommendation_status": "needs_review",
+                "mapping_status": "unassigned",
+                "mapping_basis": "no_catalog_applicability_match",
+                "mapping_rationale": "No exact category/alias match or two-signal keyword match was found.",
+                "threat_mappings": [{
+                    "threat_id": threat_id,
+                    "match_type": "unassigned",
+                    "score": 0,
+                    "matched_signals": [],
+                    "rationale": "No catalog control met the applicability threshold.",
+                }],
+            }
+            continue
+
+        for score, _, ctrl, match_type, signals in sorted(ranked, key=lambda pair: (-pair[0], pair[1]))[:3]:
             key = str(ctrl.get("id") or ctrl.get("name"))
             item = grouped.setdefault(key, {
                 "control_id": f"CAT-{key}",
@@ -283,9 +337,25 @@ def _catalog_fallback(threats: list, catalog: list) -> list:
                 "threat_ids": [],
                 "control_origin": "recommended",
                 "recommendation_status": "recommended",
-                "mapping_basis": "catalog_category_and_keyword_match",
+                "mapping_status": "mapped",
+                "mapping_basis": match_type,
+                "mapping_rationale": "",
+                "threat_mappings": [],
             })
-            if threat["threat_id"] not in item["threat_ids"]:
-                item["threat_ids"].append(threat["threat_id"])
+            if threat_id not in item["threat_ids"]:
+                item["threat_ids"].append(threat_id)
+            if match_type != item.get("mapping_basis"):
+                item["mapping_basis"] = "category_and_keyword_applicability"
+            rationale = f"{match_type.replace('_', ' ')} matched: {', '.join(signals)}."
+            item["threat_mappings"].append({
+                "threat_id": threat_id,
+                "match_type": match_type,
+                "score": score,
+                "matched_signals": signals,
+                "rationale": rationale,
+            })
+            item["mapping_rationale"] = " ".join(
+                mapping["rationale"] for mapping in item["threat_mappings"]
+            )
 
     return list(grouped.values())

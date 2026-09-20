@@ -27,6 +27,7 @@ from backend.services.posture_service import (
     reconcile_controls,
     reconcile_test_scenarios,
     replace_framework_threats,
+    _related_threats_by_text,
 )
 from backend.utils.redaction import redact_text
 
@@ -447,6 +448,35 @@ class DfdThreatAlignmentTests(unittest.TestCase):
         self.assertTrue(all(set(control["threat_ids"]).issubset({"t1", "t2", "t3", "t4"}) for control in controls))
         self.assertFalse(any(set(control["threat_ids"]).issuperset({"t1", "t2", "t3"}) for control in controls))
         self.assertTrue(all(control["control_id"].startswith("CAT-") for control in controls))
+
+    def test_fallback_controls_keep_unsupported_threats_explicitly_unassigned(self):
+        threats = [{
+            "threat_id": "unsupported-threat",
+            "threat_category": "Unknown Category",
+            "threat_description": "The attacker can rotate a color palette.",
+        }]
+        catalog = __import__("backend.utils.storage", fromlist=["get_controls_catalog"]).get_controls_catalog()
+        controls = _catalog_fallback(threats, catalog)
+
+        self.assertEqual(len(controls), 1)
+        self.assertEqual(controls[0]["mapping_status"], "unassigned")
+        self.assertEqual(controls[0]["mapping_basis"], "no_catalog_applicability_match")
+        self.assertEqual(controls[0]["threat_ids"], ["unsupported-threat"])
+        self.assertEqual(controls[0]["threat_mappings"][0]["match_type"], "unassigned")
+
+        enriched = enrich_controls(controls, threats, self.project, dfd_model=self.dfd_model)
+        self.assertEqual(enriched[0]["mapping_status"], "unassigned")
+        self.assertEqual(enriched[0]["mapping_basis"], "no_catalog_applicability_match")
+
+    def test_text_mapping_requires_specific_nonempty_signals(self):
+        threats = [
+            {"threat_id": "t-empty", "threat_category": "", "recommended_control": ""},
+            {"threat_id": "t-weak", "threat_category": "Tampering", "threat_description": "The response may be affected."},
+            {"threat_id": "t-specific", "threat_category": "Tampering", "threat_description": "Validate tampered amount input."},
+        ]
+        self.assertEqual(_related_threats_by_text({"name": "", "description": ""}, threats), [])
+        related = _related_threats_by_text({"name": "Amount validation", "description": "Reject tampered amount input."}, threats)
+        self.assertEqual([item["threat_id"] for item in related], ["t-specific"])
 
     def test_test_scenarios_cover_all_frameworks_and_validate_foreign_keys(self):
         flow_id = self.dfd_model["flows"][0]["id"]
