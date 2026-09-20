@@ -7,8 +7,11 @@ from backend.services.control_service import _catalog_fallback
 from backend.services.test_service import _fallback_scenarios, normalize_test_scenarios
 from backend.services.threat_validation_service import (
     complete_graph_coverage,
+    normalize_generation_result,
     parse_generation_payload,
     quarantine_report_threats,
+    ThreatGenerationContractError,
+    ThreatGenerationResult,
     validate_coverage,
     validate_generated_threats,
 )
@@ -92,6 +95,24 @@ class DfdThreatAlignmentTests(unittest.TestCase):
         self.assertEqual(list(result), [])
         self.assertEqual(result.assessment_status, "valid_empty")
         self.assertEqual(result.response_shape, "object")
+
+    def test_empty_list_compatible_result_is_normalized_to_valid_empty(self):
+        result = normalize_generation_result([], "LINDDUN")
+
+        self.assertEqual(list(result), [])
+        self.assertEqual(result.assessment_status, "valid_empty")
+        self.assertEqual(result.response_shape, "legacy_list")
+
+    def test_invalid_provider_envelope_is_a_contract_error(self):
+        with self.assertRaises(ThreatGenerationContractError):
+            parse_generation_payload({"coverage": []}, "LINDDUN")
+
+        contradictory = normalize_generation_result(
+            ThreatGenerationResult([], [], assessment_status="provider_success"),
+            "STRIDE",
+        )
+        self.assertEqual(contradictory.assessment_status, "invalid")
+        self.assertTrue(contradictory.generation_warnings)
 
     def test_linddun_non_compliance_requires_each_claim_side_independently(self):
         base = {

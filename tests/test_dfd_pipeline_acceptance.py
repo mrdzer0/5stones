@@ -4,8 +4,10 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from backend.services.threat_validation_service import ThreatGenerationResult
+from backend.services.threat_validation_service import ThreatGenerationContractError
 from backend.services.trust_boundary_service import build_trust_model
 from backend.services.dfd_model_service import build_dfd_model
+from backend.services.ai_service import AnalysisResponseError
 from backend.routers.analysis import _run_analysis_pipeline, run_full_analysis
 
 
@@ -126,6 +128,44 @@ class DfdPipelineAcceptanceTests(unittest.TestCase):
         self.assertEqual(result["ai_status"]["linddun"]["assessment_status"], "valid_empty")
         self.assertEqual(result["threats"], [])
         self.assertFalse(any(item.get("is_fallback") for item in result["threats"]))
+
+    def test_provider_contract_failure_is_invalid_not_fallback_for_both_frameworks(self):
+        saved_reports = []
+        saved_projects = []
+
+        async def assumptions(project, threats):
+            return []
+
+        with (
+            patch("backend.routers.analysis.get_project", return_value=copy.deepcopy(self.project)),
+            patch("backend.routers.analysis.get_report", return_value=None),
+            patch("backend.routers.analysis.save_report", side_effect=lambda project_id, report: saved_reports.append(copy.deepcopy(report))),
+            patch("backend.routers.analysis.save_project", side_effect=lambda project: saved_projects.append(copy.deepcopy(project))),
+            patch(
+                "backend.routers.analysis.generate_stride_threats",
+                new=AsyncMock(side_effect=AnalysisResponseError("Analysis engine returned unstructured response")),
+            ),
+            patch(
+                "backend.routers.analysis.generate_linddun_threats",
+                new=AsyncMock(side_effect=ThreatGenerationContractError("LINDDUN response must contain a threats array")),
+            ),
+            patch("backend.routers.analysis.generate_assumptions", new=assumptions),
+        ):
+            result = asyncio.run(run_full_analysis(self.project["project_id"], {
+                "analysis_types": ["trust_boundary", "stride", "linddun", "assumptions"],
+            }))
+
+        self.assertEqual(result["analysis_run"]["status"], "completed_with_warnings")
+        for framework in ("stride", "linddun"):
+            self.assertFalse(result["ai_status"][framework]["ok"])
+            self.assertEqual(result["ai_status"][framework]["engine"], "AI")
+            self.assertEqual(result["ai_status"][framework]["assessment_status"], "invalid")
+            self.assertNotEqual(result["ai_status"][framework]["engine"], "fallback")
+        self.assertEqual(result["threats"], [])
+        self.assertTrue(any(
+            "provider_contract_invalid" in item.get("reasons", [])
+            for item in result["analysis_quarantine"]
+        ))
 
     def test_malformed_candidate_is_quarantined_and_not_sent_downstream(self):
         malformed = ThreatGenerationResult([{

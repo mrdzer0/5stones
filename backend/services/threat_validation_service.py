@@ -40,6 +40,10 @@ class ThreatGenerationResult(list):
         self.generation_warnings = list(warnings or [])
 
 
+class ThreatGenerationContractError(ValueError):
+    """Raised when a provider response cannot satisfy the threat envelope."""
+
+
 VALID_ASSESSMENT_STATUSES = {
     "complete",
     "valid_empty",
@@ -47,6 +51,52 @@ VALID_ASSESSMENT_STATUSES = {
     "fallback",
     "invalid",
 }
+
+
+def normalize_generation_result(result: object, framework: str) -> ThreatGenerationResult:
+    """Normalize provider/service output before the pipeline classifies it.
+
+    Empty list-compatible results are a valid no-finding assessment. Unknown
+    result shapes or contradictory status metadata are contract failures and
+    must not be silently presented as a successful or fallback assessment.
+    """
+    if isinstance(result, ThreatGenerationResult):
+        threats = list(result)
+        coverage = result.coverage
+        status = result.assessment_status
+        response_shape = result.response_shape
+        warnings = list(result.generation_warnings)
+    elif isinstance(result, list):
+        threats = list(result)
+        coverage = []
+        status = "valid_empty" if not threats else "complete"
+        response_shape = "legacy_list"
+        warnings = []
+    else:
+        return ThreatGenerationResult(
+            [],
+            [],
+            assessment_status="invalid",
+            response_shape="invalid",
+            warnings=[f"{framework} result must be a list-compatible threat result"],
+        )
+
+    if status not in VALID_ASSESSMENT_STATUSES:
+        warnings.append(f"{framework} result used unsupported assessment status: {status}")
+        status = "invalid"
+    elif not threats and status == "complete":
+        status = "valid_empty"
+    elif threats and status == "valid_empty":
+        warnings.append(f"{framework} result marked valid_empty but contained threats")
+        status = "invalid"
+
+    return ThreatGenerationResult(
+        threats,
+        coverage,
+        assessment_status=status,
+        response_shape=response_shape,
+        warnings=warnings,
+    )
 
 
 STRIDE_CATEGORIES = {
@@ -110,11 +160,11 @@ def parse_generation_payload(payload: object, framework: str) -> ThreatGeneratio
         coverage = payload.get("coverage", [])
         response_shape = "object"
         if not isinstance(threats, list):
-            raise ValueError(f"{framework} response field 'threats' must be an array")
+            raise ThreatGenerationContractError(f"{framework} response field 'threats' must be an array")
         if not isinstance(coverage, list):
-            raise ValueError(f"{framework} response field 'coverage' must be an array")
+            raise ThreatGenerationContractError(f"{framework} response field 'coverage' must be an array")
     else:
-        raise ValueError(f"{framework} response must contain a threats array")
+        raise ThreatGenerationContractError(f"{framework} response must contain a threats array")
 
     return ThreatGenerationResult(
         threats,

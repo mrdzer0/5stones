@@ -19,10 +19,14 @@ from backend.services.linddun_service import generate_linddun_threats
 from backend.services.privacy_service import assess_privacy_metadata, annotate_privacy_threats
 from backend.services.threat_validation_service import (
     complete_graph_coverage,
+    normalize_generation_result,
     quarantine_report_threats,
+    ThreatGenerationResult,
+    ThreatGenerationContractError,
     validate_coverage,
     validate_generated_threats,
 )
+from backend.services.ai_service import AnalysisResponseError
 from backend.services.control_service import map_controls
 from backend.services.test_service import (
     generate_test_scenarios,
@@ -156,6 +160,23 @@ def _append_invalid_generation_quarantine(report: dict, framework: str, revision
             "item": summary,
         })
     _append_analysis_quarantine(report, records)
+
+
+def _append_generation_contract_quarantine(
+    report: dict,
+    framework: str,
+    revision: str | None,
+    error: str,
+):
+    """Record a provider contract failure without treating it as a fallback result."""
+    _append_analysis_quarantine(report, [{
+        "quarantine_id": f"contract-{framework.lower()}-{uuid.uuid4().hex[:8]}",
+        "captured_at": _utc_now(),
+        "framework": framework,
+        "model_revision": revision,
+        "reasons": ["provider_contract_invalid"],
+        "item": {"error": str(error or "Invalid provider response")[:240]},
+    }])
 
 
 def _append_preserved_framework_result(
@@ -469,6 +490,7 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
             if isinstance(item, dict) and item.get("framework") == "STRIDE"
         ]
         stride_generation_status = "complete"
+        stride_generation_error = None
         try:
             stride_threats = await generate_stride_threats(
                 project,
@@ -477,6 +499,24 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
                 dfd_model=report.get("dfd_model"),
             )
             stride_engine = "AI"
+        except (AnalysisResponseError, ThreatGenerationContractError) as exc:
+            # A provider response that cannot satisfy the structured contract
+            # is an invalid assessment, not a deterministic fallback.
+            stride_threats = ThreatGenerationResult(
+                [],
+                [],
+                assessment_status="invalid",
+                response_shape="invalid",
+                warnings=[str(exc)],
+            )
+            stride_engine = "AI"
+            stride_generation_error = str(exc)
+            _append_generation_contract_quarantine(
+                report,
+                "STRIDE",
+                (report.get("dfd_model") or {}).get("revision"),
+                str(exc),
+            )
         except Exception as exc:
             stride_threats = await generate_stride_threats(
                 project,
@@ -486,6 +526,7 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
             )
             stride_engine = "fallback"
             stride_generation_error = str(exc)
+        stride_threats = normalize_generation_result(stride_threats, "STRIDE")
         raw_stride_threats = list(stride_threats or [])
         stride_generation_status = getattr(stride_threats, "assessment_status", "complete")
         stride_generation_warnings = list(getattr(stride_threats, "generation_warnings", []))
@@ -511,7 +552,7 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
             "assessment_status": stride_generation_status,
             "response_shape": stride_response_shape,
             "validation_warnings": [*coverage_warnings, *stride_warnings],
-            **({"error": stride_generation_error} if stride_engine == "fallback" else {}),
+            **({"error": stride_generation_error} if stride_generation_error else {}),
         }
         stride_threats = enrich_threats(stride_threats, project, "STRIDE")
         attach_target_refs(
@@ -560,6 +601,7 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
             if isinstance(item, dict) and item.get("framework") == "LINDDUN"
         ]
         linddun_generation_status = "complete"
+        linddun_generation_error = None
         try:
             linddun_threats = await generate_linddun_threats(
                 project,
@@ -568,6 +610,24 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
                 dfd_model=report.get("dfd_model"),
             )
             linddun_engine = "AI"
+        except (AnalysisResponseError, ThreatGenerationContractError) as exc:
+            # Keep schema/contract failures distinguishable from availability
+            # failures that legitimately use the deterministic fallback.
+            linddun_threats = ThreatGenerationResult(
+                [],
+                [],
+                assessment_status="invalid",
+                response_shape="invalid",
+                warnings=[str(exc)],
+            )
+            linddun_engine = "AI"
+            linddun_generation_error = str(exc)
+            _append_generation_contract_quarantine(
+                report,
+                "LINDDUN",
+                (report.get("dfd_model") or {}).get("revision"),
+                str(exc),
+            )
         except Exception as exc:
             linddun_threats = await generate_linddun_threats(
                 project,
@@ -577,6 +637,7 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
             )
             linddun_engine = "fallback"
             linddun_generation_error = str(exc)
+        linddun_threats = normalize_generation_result(linddun_threats, "LINDDUN")
         raw_linddun_threats = list(linddun_threats or [])
         linddun_generation_status = getattr(linddun_threats, "assessment_status", "complete")
         linddun_generation_warnings = list(getattr(linddun_threats, "generation_warnings", []))
@@ -602,7 +663,7 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
             "assessment_status": linddun_generation_status,
             "response_shape": linddun_response_shape,
             "validation_warnings": [*coverage_warnings, *linddun_warnings],
-            **({"error": linddun_generation_error} if linddun_engine == "fallback" else {}),
+            **({"error": linddun_generation_error} if linddun_generation_error else {}),
         }
         linddun_threats = enrich_threats(linddun_threats, project, "LINDDUN")
         attach_target_refs(
