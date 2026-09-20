@@ -1,6 +1,7 @@
 """Artifact parsing with deterministic support for structured API artifacts."""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections import defaultdict
@@ -15,7 +16,8 @@ SYSTEM_PROMPT = """You are a security analyst specialized in extracting threat m
 Extract only what is explicitly stated or strongly implied. Do NOT hallucinate. Return strict JSON."""
 
 HTTP_METHODS = {"get", "post", "put", "patch", "delete", "head", "options", "trace"}
-PARSER_VERSION = "structured-api-v1"
+PARSER_VERSION = "structured-api-v2"
+GENERIC_CHUNK_MAX_CHARS = 6000
 SENSITIVE_FIELD_TOKENS = {
     "address", "authorization", "birth", "card", "cookie", "credential", "dob", "email",
     "jwt", "ktp", "location", "name", "password", "phone", "secret", "ssn", "token",
@@ -34,10 +36,17 @@ async def parse_artifact(artifact_type: str, content: str, data_policy: str | No
         return parse_postman_document(document)
 
     cfg = get_active_provider_config(data_policy)
-    user_prompt = f"""Analyze this {artifact_type} artifact and extract security-relevant information.
+    chunks = _document_chunks(safe_content)
+    if not chunks:
+        return _basic_extract(safe_content)
 
-ARTIFACT CONTENT:
-{safe_content[:8000]}
+    chunk_results = []
+    for chunk in chunks:
+        user_prompt = f"""Analyze chunk {chunk['index']} of {chunk['total_chunks']} from this {artifact_type} artifact and extract security-relevant information.
+
+SOURCE LOCATOR: {chunk['locator']}
+ARTIFACT CONTENT CHUNK:
+{chunk['content']}
 
 Return a JSON object with these exact keys:
 {{
@@ -70,30 +79,177 @@ Return a JSON object with these exact keys:
   "summary": "2-3 sentence summary"
 }}
 
-Return at most 12 evidence_items. Each snippet must be copied verbatim from ARTIFACT CONTENT,
+Return at most 12 evidence_items for this chunk. Each snippet must be copied verbatim from ARTIFACT CONTENT CHUNK,
 must be understandable on its own, and must be no longer than 320 characters."""
+        try:
+            result = await chat_complete_json(
+                system_prompt=SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                base_url=cfg.get("base_url"),
+                api_key=cfg.get("api_key"),
+                model=cfg.get("model"),
+                max_tokens=2500,
+            )
+            if isinstance(result, dict):
+                chunk_results.append((chunk, result, "processed", None))
+                continue
+            raise ValueError("AI parser returned a non-object response")
+        except Exception as exc:
+            # Keep the deterministic fallback on the same redacted representation
+            # as the AI path. A provider outage must not silently discard a tail
+            # section; when deterministic extraction has no signal, the section
+            # is explicitly marked deferred in the coverage manifest.
+            fallback = _basic_extract(chunk["content"])
+            has_signal = bool(
+                fallback.get("evidence_items")
+                or fallback.get("endpoints")
+                or fallback.get("has_pii")
+            )
+            status = "processed_fallback" if has_signal else "deferred"
+            reason = None if has_signal else f"AI extraction unavailable: {type(exc).__name__}"
+            chunk_results.append((chunk, fallback, status, reason))
 
-    try:
-        result = await chat_complete_json(
-            system_prompt=SYSTEM_PROMPT,
-            user_prompt=user_prompt,
-            base_url=cfg.get("base_url"),
-            api_key=cfg.get("api_key"),
-            model=cfg.get("model"),
-            max_tokens=2500,
+    return _merge_generic_results(safe_content, chunk_results)
+
+
+def _document_chunks(content: str, max_chars: int = GENERIC_CHUNK_MAX_CHARS) -> list[dict]:
+    """Split a redacted document on headings and line boundaries without gaps."""
+    if not content:
+        return []
+    headings = list(re.finditer(r"(?m)^\s{0,3}(#{1,6})\s+(.+?)\s*$", content))
+    sections = []
+    if headings:
+        if headings[0].start() > 0:
+            sections.append((0, headings[0].start(), "Document preface"))
+        for index, heading in enumerate(headings):
+            end = headings[index + 1].start() if index + 1 < len(headings) else len(content)
+            label = " ".join(heading.group(2).split())[:160] or "Untitled section"
+            sections.append((heading.start(), end, label))
+    else:
+        sections.append((0, len(content), "Document"))
+
+    chunks = []
+    for section_start, section_end, label in sections:
+        cursor = section_start
+        while cursor < section_end:
+            target = min(cursor + max_chars, section_end)
+            end = target
+            if target < section_end:
+                boundary = content.rfind("\n", cursor + max_chars // 2, target)
+                if boundary > cursor:
+                    end = boundary + 1
+            chunk_content = content[cursor:end]
+            if not chunk_content:
+                break
+            chunks.append({
+                "content": chunk_content,
+                "start_char": cursor,
+                "end_char": end,
+                "section": label,
+            })
+            cursor = end
+
+    total = len(chunks)
+    for index, chunk in enumerate(chunks, start=1):
+        chunk["index"] = index
+        chunk["total_chunks"] = total
+        chunk["chunk_id"] = f"chunk-{index:03d}"
+        chunk["locator"] = (
+            f"{chunk['section']} · characters {chunk['start_char'] + 1}-{chunk['end_char']}"
         )
-        if isinstance(result, dict):
-            result.setdefault("parser", {"kind": "ai_enrichment", "version": PARSER_VERSION})
-            result.setdefault("operations", [])
-            result.setdefault("warnings", [])
-            return result
-    except Exception:
-        pass
+    return chunks
 
-    # Keep the deterministic fallback on the same redacted representation as
-    # the AI path. Otherwise a provider outage could leak secrets into the
-    # reconciled project context even though the normal path is protected.
-    return _basic_extract(safe_content)
+
+def _merge_generic_results(content: str, chunk_results: list[tuple[dict, dict, str, str | None]]) -> dict:
+    """Merge per-section AI/fallback results and make unread coverage explicit."""
+    list_fields = (
+        "actors", "components", "endpoints", "data_fields", "external_systems",
+        "auth_methods", "critical_actions", "existing_controls", "operations", "warnings",
+    )
+    merged = {field: [] for field in list_fields}
+    merged.update({"data_flows": [], "use_cases": [], "evidence_items": []})
+    summaries = []
+    coverage_chunks = []
+
+    def append_unique(field: str, values: Any):
+        if values is None:
+            return
+        if not isinstance(values, list):
+            values = [values]
+        for value in values or []:
+            if isinstance(value, (dict, list)):
+                key = json.dumps(value, sort_keys=True, ensure_ascii=False)
+                existing = {json.dumps(item, sort_keys=True, ensure_ascii=False) for item in merged[field]}
+            else:
+                key = " ".join(str(value).split()).casefold()
+                existing = {" ".join(str(item).split()).casefold() for item in merged[field]}
+            if value and key not in existing:
+                merged[field].append(value)
+
+    for chunk, result, status, reason in chunk_results:
+        for field in list_fields:
+            append_unique(field, result.get(field))
+        append_unique("data_flows", result.get("data_flows"))
+        append_unique("use_cases", result.get("use_cases"))
+        for item in result.get("evidence_items") or []:
+            if not isinstance(item, dict):
+                continue
+            evidence = dict(item)
+            evidence["chunk_id"] = chunk["chunk_id"]
+            evidence["chunk_locator"] = chunk["locator"]
+            if not evidence.get("locator"):
+                evidence["locator"] = chunk["locator"]
+            merged["evidence_items"].append(evidence)
+        summary = " ".join(str(result.get("summary") or "").split())
+        if summary:
+            summaries.append(summary)
+        coverage_chunks.append({
+            "chunk_id": chunk["chunk_id"],
+            "section": chunk["section"],
+            "locator": chunk["locator"],
+            "start_char": chunk["start_char"],
+            "end_char": chunk["end_char"],
+            "char_count": len(chunk["content"]),
+            "status": status,
+            **({"reason": reason} if reason else {}),
+        })
+
+    processed = [item for item in coverage_chunks if item["status"] != "deferred"]
+    deferred = [item for item in coverage_chunks if item["status"] == "deferred"]
+    coverage_status = "complete" if not deferred else "partial" if processed else "deferred"
+    coverage = {
+        "status": coverage_status,
+        "source_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "total_characters": len(content),
+        "chunk_count": len(coverage_chunks),
+        "processed_chunk_count": len(processed),
+        "deferred_chunk_count": len(deferred),
+        "chunks": coverage_chunks,
+        "unread_sections": [
+            {"chunk_id": item["chunk_id"], "section": item["section"], "locator": item["locator"], "reason": item.get("reason")}
+            for item in deferred
+        ],
+    }
+    merged["has_pii"] = any(bool(result.get("has_pii")) for _, result, _, _ in chunk_results)
+    merged["summary"] = " ".join(dict.fromkeys(summaries))[:2000] or "Artifact parsed with section coverage tracking."
+    merged["stats"] = {
+        "document_characters": len(content),
+        "chunk_count": len(coverage_chunks),
+        "processed_chunk_count": len(processed),
+        "deferred_chunk_count": len(deferred),
+        "evidence_candidate_count": len(merged["evidence_items"]),
+    }
+    merged["coverage_manifest"] = coverage
+    merged["parser"] = {
+        "kind": "ai_enrichment" if any(status == "processed" for _, _, status, _ in chunk_results) else "basic",
+        "version": PARSER_VERSION,
+        "chunked": True,
+    }
+    if deferred:
+        merged["warnings"].append(
+            f"{len(deferred)} document section(s) were deferred; review the ingestion coverage manifest."
+        )
+    return merged
 
 
 def _load_structured_document(content: str, *, allow_yaml: bool) -> dict:

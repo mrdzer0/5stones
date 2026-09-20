@@ -219,7 +219,20 @@ def build_project_evidence_catalog(project: dict) -> list[dict]:
         clean_snippet = " ".join(str(snippet or "").split())[:360]
         if not clean_snippet:
             return
-        key = (evidence_type, source, locator, clean_snippet.lower())
+        document_hash = str((metadata or {}).get("document_hash") or "")
+        document_revision = str((metadata or {}).get("document_revision") or "")
+        # Direct artifact evidence is identified by the source revision/hash and
+        # normalized excerpt. Locator wording may vary between chunk passes, so
+        # it must not create duplicate evidence for the same source fact.
+        key = (
+            evidence_type,
+            source,
+            document_hash,
+            document_revision,
+            clean_snippet.casefold(),
+        ) if evidence_type == "direct" and (document_hash or document_revision) else (
+            evidence_type, source, locator, clean_snippet.casefold()
+        )
         if key in seen:
             return
         seen.add(key)

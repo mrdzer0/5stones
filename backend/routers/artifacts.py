@@ -71,7 +71,16 @@ def clean_and_merge_similar_strings(items: list[str]) -> list[str]:
     return result
 
 
-def _verified_evidence_items(items: list, content: str, filename: str, artifact_type: str) -> list[dict]:
+def _verified_evidence_items(
+    items: list,
+    content: str,
+    filename: str,
+    artifact_type: str,
+    *,
+    artifact_id: str | None = None,
+    source_revision: int | None = None,
+    source_hash: str | None = None,
+) -> list[dict]:
     """Keep only short snippets that can be found verbatim in the uploaded artifact."""
     normalized_content = " ".join(str(content or "").split()).lower()
     verified = []
@@ -82,18 +91,25 @@ def _verified_evidence_items(items: list, content: str, filename: str, artifact_
         snippet = " ".join(str(item.get("snippet") or "").split())[:320]
         if len(snippet) < 20 or snippet.lower() not in normalized_content:
             continue
-        key = snippet.lower()
+        key = (source_hash or "", source_revision or 0, snippet.casefold())
         if key in seen:
             continue
         seen.add(key)
-        verified.append({
+        evidence = {
             "artifact_type": artifact_type,
             "filename": filename,
             "snippet": snippet,
             "locator": " ".join(str(item.get("locator") or "Artifact content").split())[:160],
             "topics": [str(topic)[:80] for topic in (item.get("topics") or [])[:8] if topic],
-        })
-    return verified[:12]
+            "chunk_id": str(item.get("chunk_id") or "")[:80] or None,
+            "chunk_locator": " ".join(str(item.get("chunk_locator") or "").split())[:180] or None,
+            "document_revision": source_revision,
+            "document_hash": source_hash,
+        }
+        if artifact_id:
+            evidence["artifact_id"] = artifact_id
+        verified.append(evidence)
+    return verified
 
 
 def _verified_use_cases(items: list, content: str, filename: str, artifact_type: str) -> list[dict]:
@@ -200,24 +216,30 @@ async def upload_artifact(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     parsed["artifact_type"] = data.artifact_type
     parsed["filename"] = filename
+    artifact_id = f"artifact-{content_hash[:16]}"
+    revision = 1 + max((
+        int(source.get("revision", 1)) for source in existing_sources
+        if source.get("filename") == filename and source.get("artifact_type") == data.artifact_type
+    ), default=0)
+    coverage_manifest = parsed.get("coverage_manifest")
+    if isinstance(coverage_manifest, dict):
+        coverage_manifest.update({
+            "source_artifact_id": artifact_id,
+            "source_revision": revision,
+            "document_hash": content_hash,
+        })
     # Verify excerpts against the same redacted representation that was parsed
     # and may be sent to an AI provider. The original content hash remains the
     # source identity, but secrets never become evidence excerpts.
     verified_evidence = _verified_evidence_items(
-        parsed.get("evidence_items", []), redact_text(data.content), filename, data.artifact_type
+        parsed.get("evidence_items", []), redact_text(data.content), filename, data.artifact_type,
+        artifact_id=artifact_id, source_revision=revision, source_hash=content_hash,
     )
     parsed["evidence_items"] = verified_evidence
     parsed["use_cases"] = _verified_use_cases(
         parsed.get("use_cases", []), redact_text(data.content), filename, data.artifact_type
     )
 
-    artifact_id = f"artifact-{content_hash[:16]}"
-    for evidence in verified_evidence:
-        evidence["artifact_id"] = artifact_id
-    revision = 1 + max((
-        int(source.get("revision", 1)) for source in existing_sources
-        if source.get("filename") == filename and source.get("artifact_type") == data.artifact_type
-    ), default=0)
     replaced_count = 0
     for source in existing_sources:
         if (
@@ -233,6 +255,7 @@ async def upload_artifact(
         "actors", "components", "data_flows", "endpoints", "data_fields", "external_systems",
         "auth_methods", "critical_actions", "existing_controls", "has_pii", "summary",
         "operations", "use_cases", "warnings", "stats", "parser",
+        "coverage_manifest",
     }
     contribution = {key: parsed.get(key) for key in contribution_keys if key in parsed}
     existing_sources.append({
@@ -247,6 +270,7 @@ async def upload_artifact(
         "truncated": (upload_meta or {}).get("truncated", False),
         "structured": (upload_meta or {}).get("structured", data.artifact_type in {"openapi", "postman"}),
         "parser": parsed.get("parser", {}),
+        "coverage_manifest": coverage_manifest or {},
         "stats": parsed.get("stats", {}),
         "warnings": parsed.get("warnings", []),
         "evidence_items": verified_evidence,

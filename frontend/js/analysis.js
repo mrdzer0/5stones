@@ -515,6 +515,8 @@ function setArtifactImportStatus(kind, html) {
 function renderArtifactImportResult(response, file) {
   const parsedStats = response.parsed?.stats || {};
   const inventory = response.reconciliation || {};
+  const coverage = response.parsed?.coverage_manifest || {};
+  const unread = Array.isArray(coverage.unread_sections) ? coverage.unread_sections : [];
   const warnings = response.parsed?.warnings || [];
   const duplicate = Boolean(response.duplicate);
   const conflictCount = inventory.conflict_count || 0;
@@ -531,7 +533,9 @@ function renderArtifactImportResult(response, file) {
       <div class="artifact-result-metric"><strong>${inventory.overlap_count || 0}</strong><span>matched across sources</span></div>
       <div class="artifact-result-metric"><strong>${scenarioCount}</strong><span>request scenarios inspected</span></div>
       <div class="artifact-result-metric"><strong>${businessScenarioCount}</strong><span>evidence-backed business flows</span></div>
+      ${coverage.chunk_count ? `<div class="artifact-result-metric"><strong>${coverage.processed_chunk_count || 0}/${coverage.chunk_count}</strong><span>document sections read</span></div>` : ''}
     </div>
+    ${unread.length ? `<div class="artifact-coverage-warning"><strong>${unread.length} section${unread.length === 1 ? '' : 's'} deferred</strong><ul>${unread.map(item => `<li>${escHtml(item.locator || item.section || item.chunk_id || 'Unlocated section')}</li>`).join('')}</ul></div>` : coverage.chunk_count ? '<div class="artifact-coverage-ok">All document sections were read or deterministically processed.</div>' : ''}
     ${conflictCount ? `<div style="margin-top:8px;"><strong>${conflictCount} conflict${conflictCount === 1 ? '' : 's'}</strong> retained for review; no source was silently overwritten.</div>` : ''}
     ${warnings.length ? `<div style="margin-top:8px;">${warnings.map(warning => escHtml(warning)).join('<br>')}</div>` : ''}
   `);
@@ -581,6 +585,13 @@ function renderProjectContext(p) {
 
   const blockers = (completeness.blockers || []).slice(0, 4);
   const artifactTypes = completeness.artifact_types || [];
+  const renderCoverage = (source) => {
+    const coverage = source?.coverage_manifest || {};
+    const unread = Array.isArray(coverage.unread_sections) ? coverage.unread_sections : [];
+    if (!coverage.chunk_count) return '';
+    const state = coverage.status === 'complete' ? 'complete' : unread.length ? 'deferred' : 'partial';
+    return `<span class="artifact-source-coverage is-${state}">${coverage.processed_chunk_count || 0}/${coverage.chunk_count} sections read${unread.length ? ` · ${unread.length} deferred` : ''}${unread.length ? `<details><summary>Show deferred sections</summary><ul>${unread.map(item => `<li>${escHtml(item.locator || item.section || item.chunk_id || 'Unlocated section')}</li>`).join('')}</ul></details>` : ''}</span>`;
+  };
   const inventoryHtml = (inventory.artifact_count || operationCount || businessScenarioCount) ? `
     <div class="artifact-inventory-summary">
       <strong>${operationCount} canonical operations · ${businessScenarioCount} business flows</strong><br>
@@ -590,7 +601,7 @@ function renderProjectContext(p) {
         ${(p.artifact_sources || []).filter(source => source?.active !== false).map(source => `
           <div class="artifact-source-item">
             <span>${escHtml(source.filename || source.artifact_type || 'Artifact')}</span>
-            <small>${escHtml(String(source.artifact_type || 'source').toUpperCase())} · ${source.stats?.operation_count || 0} operations</small>
+            <small>${escHtml(String(source.artifact_type || 'source').toUpperCase())} · ${source.stats?.operation_count || 0} operations${renderCoverage(source)}</small>
           </div>`).join('')}
       </div>
     </div>` : '';
