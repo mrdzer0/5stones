@@ -719,16 +719,35 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
                 force_fallback=False,
                 data_policy=project.get("data_policy"),
                 dfd_model=report.get("dfd_model"),
+                evidence_ids=evidence_ids,
             )
-            report["ai_status"]["controls"] = {"ok": True, "engine": "AI"}
+            controls_status = getattr(controls, "assessment_status", "complete")
+            report["ai_status"]["controls"] = {
+                "ok": controls_status == "complete",
+                "engine": "AI",
+                "assessment_status": controls_status,
+                "response_shape": getattr(controls, "response_shape", "unknown"),
+                "warnings": getattr(controls, "generation_warnings", []),
+                "response_metadata": getattr(controls, "response_metadata", {}),
+            }
         except Exception as exc:
             controls = await map_controls(
                 report["threats"],
                 force_fallback=True,
                 data_policy=project.get("data_policy"),
                 dfd_model=report.get("dfd_model"),
+                evidence_ids=evidence_ids,
             )
-            report["ai_status"]["controls"] = {"ok": False, "error": str(exc), "engine": "fallback"}
+            report["ai_status"]["controls"] = {
+                "ok": False,
+                "error": str(exc),
+                "error_code": getattr(exc, "code", "stage_generation_error"),
+                "engine": "fallback",
+                "assessment_status": "fallback",
+                "response_shape": getattr(controls, "response_shape", "deterministic_fallback"),
+                "warnings": getattr(controls, "generation_warnings", []),
+                "response_metadata": getattr(exc, "response_metadata", {}),
+            }
         mapped_controls = enrich_controls(
             controls,
             report["threats"],
@@ -753,7 +772,15 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
                 dfd_model=report.get("dfd_model"),
                 evidence_ids=evidence_ids,
             )
-            report["ai_status"]["tests"] = {"ok": True, "engine": "AI"}
+            tests_status = getattr(tests, "assessment_status", "complete")
+            report["ai_status"]["tests"] = {
+                "ok": tests_status == "complete",
+                "engine": "AI",
+                "assessment_status": tests_status,
+                "response_shape": getattr(tests, "response_shape", "unknown"),
+                "warnings": getattr(tests, "generation_warnings", []),
+                "response_metadata": getattr(tests, "response_metadata", {}),
+            }
         except Exception as exc:
             tests = await generate_test_scenarios(
                 report["threats"],
@@ -763,7 +790,16 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
                 dfd_model=report.get("dfd_model"),
                 evidence_ids=evidence_ids,
             )
-            report["ai_status"]["tests"] = {"ok": False, "error": str(exc), "engine": "fallback"}
+            report["ai_status"]["tests"] = {
+                "ok": False,
+                "error": str(exc),
+                "error_code": getattr(exc, "code", "stage_generation_error"),
+                "engine": "fallback",
+                "assessment_status": "fallback",
+                "response_shape": getattr(tests, "response_shape", "deterministic_fallback"),
+                "warnings": getattr(tests, "generation_warnings", []),
+                "response_metadata": getattr(exc, "response_metadata", {}),
+            }
         report["test_scenarios"] = reconcile_test_scenarios(
             report.get("test_scenarios", []),
             tests,

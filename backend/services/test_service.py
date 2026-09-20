@@ -3,8 +3,19 @@ from __future__ import annotations
 import hashlib
 import uuid
 from typing import List
-from backend.services.ai_service import chat_complete_json, get_active_provider_config
+from pydantic import ValidationError
+from backend.services.ai_service import (
+    StageGenerationResult,
+    StructuredJSONResult,
+    chat_complete_json,
+    get_active_provider_config,
+)
 from backend.services.dfd_model_service import format_dfd_analysis_context
+from backend.services.generation_contracts import (
+    GenerationContractError,
+    TestScenarioGenerationItem,
+    model_ids,
+)
 
 SYSTEM_PROMPT = """You are a security test engineer creating security test scenarios for QA and Security teams.
 Each scenario must be actionable, specific, and executable. Return one strict JSON object."""
@@ -20,7 +31,13 @@ async def generate_test_scenarios(
 ) -> List[dict]:
     """Generate test scenarios mapped to generated threats."""
     if force_fallback:
-        return normalize_test_scenarios(_fallback_scenarios(threats, controls), threats, controls, dfd_model, evidence_ids)
+        return StageGenerationResult(
+            normalize_test_scenarios(_fallback_scenarios(threats, controls), threats, controls, dfd_model, evidence_ids),
+            assessment_status="fallback",
+            response_shape="deterministic_fallback",
+            warnings=["AI test generation was bypassed; generated scenarios require review."],
+            response_metadata={"engine": "fallback"},
+        )
 
     cfg = get_active_provider_config(project.get("data_policy"))
 
@@ -83,24 +100,100 @@ Return one JSON object with a "scenarios" array:
   ]
 }}"""
 
+    stage_budget = min(int(cfg.get("max_tokens") or 3500), 3500)
     result = await chat_complete_json(
         system_prompt=SYSTEM_PROMPT,
         user_prompt=user_prompt,
         base_url=cfg.get("base_url"),
         api_key=cfg.get("api_key"),
         model=cfg.get("model"),
-        max_tokens=3500,
+        max_tokens=stage_budget,
+        return_metadata=True,
     )
-    scenarios = result if isinstance(result, list) else result.get("scenarios", [])
-    if not isinstance(scenarios, list):
-        raise ValueError("Analysis engine returned a scenarios field that is not an array")
+    payload, response_metadata = _unpack_structured_result(result)
+    response_shape = str(response_metadata.get("response_shape") or "unknown")
+    if not isinstance(payload, dict) or "scenarios" not in payload:
+        raise GenerationContractError(
+            "Test-scenario response must contain a scenarios array envelope",
+            code="test_scenarios_envelope_invalid",
+            metadata=response_metadata,
+        )
+    if not isinstance(payload["scenarios"], list):
+        raise GenerationContractError(
+            "Test-scenario response field 'scenarios' must be an array",
+            code="test_scenarios_envelope_schema_invalid",
+            metadata=response_metadata,
+        )
+    if not payload["scenarios"]:
+        raise GenerationContractError(
+            "Analysis engine returned an empty test-scenario list",
+            code="test_scenarios_empty",
+            metadata=response_metadata,
+        )
+
+    valid_threat_ids = {str(item.get("threat_id")) for item in threats if item.get("threat_id")}
+    valid_control_ids = {
+        str(item.get("control_id")) for item in (controls or [])
+        if isinstance(item, dict) and item.get("control_id")
+    }
+    valid_dfd_ids = model_ids(dfd_model)
+    warnings = []
+    scenarios = []
+    for index, raw_item in enumerate(payload["scenarios"]):
+        try:
+            model = TestScenarioGenerationItem.model_validate(raw_item)
+        except ValidationError:
+            warnings.append(f"Scenario {index} failed item schema validation and was dropped.")
+            continue
+        item = model.model_dump(exclude_none=True)
+        if item.get("threat_id") not in valid_threat_ids:
+            warnings.append(f"Scenario {index} references an unknown threat_id and was dropped.")
+            continue
+        if item.get("related_control_id") and valid_control_ids and item["related_control_id"] not in valid_control_ids:
+            warnings.append(f"Scenario {index} references an unknown related_control_id; it was removed.")
+            item.pop("related_control_id", None)
+        refs = item.get("target_refs") or []
+        valid_refs = [ref for ref in refs if not valid_dfd_ids or str(ref.get("id")) in valid_dfd_ids]
+        if len(valid_refs) != len(refs):
+            warnings.append(f"Scenario {index} contained dangling DFD refs; they were removed.")
+        item["target_refs"] = valid_refs
+        refs = [str(ref) for ref in (item.get("execution_evidence_refs") or [])]
+        if evidence_ids is not None:
+            filtered = [ref for ref in refs if ref in evidence_ids]
+            if len(filtered) != len(refs):
+                warnings.append(f"Scenario {index} contained unknown execution evidence refs; they were removed.")
+            refs = filtered
+        item["execution_evidence_refs"] = refs
+        scenarios.append(item)
+
     if not scenarios:
-        raise ValueError("Analysis engine returned an empty or invalid test-scenario list")
+        raise GenerationContractError(
+            "Analysis engine returned no scenarios linked to active threats",
+            code="test_scenarios_foreign_key_invalid",
+            metadata=response_metadata,
+        )
 
     normalized = normalize_test_scenarios(scenarios, threats, controls, dfd_model, evidence_ids)
     if not normalized:
-        raise ValueError("Analysis engine returned no scenarios linked to active threats")
-    return normalized
+        raise GenerationContractError(
+            "Analysis engine returned no scenarios after normalization",
+            code="test_scenarios_normalization_empty",
+            metadata=response_metadata,
+        )
+    response_metadata["validation_status"] = "partial" if warnings else "complete"
+    return StageGenerationResult(
+        normalized,
+        assessment_status="partial" if warnings else "complete",
+        response_shape=response_shape,
+        warnings=warnings,
+        response_metadata=response_metadata,
+    )
+
+
+def _unpack_structured_result(result) -> tuple[object, dict]:
+    if isinstance(result, StructuredJSONResult):
+        return result.payload, dict(result.metadata)
+    return result, {"instrumentation_status": "legacy_uninstrumented"}
 
 
 def _fallback_scenarios(threats: list, controls: list | None = None) -> list:

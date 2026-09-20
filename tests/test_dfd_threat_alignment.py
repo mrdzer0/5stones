@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -7,6 +8,7 @@ from backend.services.linddun_service import _fallback_linddun
 from backend.services.stride_service import _fallback_stride
 from backend.services.control_service import _catalog_fallback
 from backend.services.control_service import map_controls
+from backend.services.ai_service import AnalysisResponseError, chat_complete_json
 from backend.services.test_service import _fallback_scenarios, normalize_test_scenarios
 from backend.services.test_service import generate_test_scenarios
 from backend.services.threat_validation_service import (
@@ -538,6 +540,100 @@ class DfdThreatAlignmentTests(unittest.TestCase):
         plain = redact_text("password=secret token: abc123")
         self.assertNotIn("secret", plain)
         self.assertNotIn("abc123", plain)
+
+    def test_control_contract_drops_invalid_items_and_records_refs_and_metadata(self):
+        flow_id = self.dfd_model["flows"][0]["id"]
+        threat = {
+            "threat_id": "f04-threat",
+            "threat_category": "Tampering",
+            "threat_description": "Input may be changed.",
+        }
+        payload = {
+            "controls": [
+                {
+                    "name": "Validate input",
+                    "status": "Unknown",
+                    "threat_ids": ["f04-threat", "missing-threat"],
+                    "target_refs": [
+                        {"type": "flow", "id": flow_id},
+                        {"type": "process", "id": "missing-dfd-id"},
+                    ],
+                    "verification_evidence_refs": ["EV-1", "EV-missing"],
+                },
+                {"name": "", "status": "not-a-control-status"},
+            ]
+        }
+        with (
+            patch("backend.services.control_service.get_active_provider_config", return_value={"base_url": "http://localhost", "model": "test", "api_key": "test", "max_tokens": 512}),
+            patch("backend.services.control_service.chat_complete_json", new=AsyncMock(return_value=payload)),
+        ):
+            controls = asyncio.run(map_controls([threat], dfd_model=self.dfd_model, evidence_ids={"EV-1"}))
+
+        self.assertEqual(len(controls), 1)
+        self.assertEqual(controls.assessment_status, "partial")
+        self.assertTrue(controls.generation_warnings)
+        self.assertEqual(controls[0]["threat_ids"], ["f04-threat"])
+        self.assertEqual(controls[0]["target_refs"], [{"type": "data_flow", "id": flow_id}])
+        self.assertEqual(controls[0]["verification_evidence_refs"], ["EV-1"])
+
+    def test_test_contract_rejects_invalid_foreign_key_items_but_keeps_valid_item(self):
+        flow_id = self.dfd_model["flows"][0]["id"]
+        threat = {"threat_id": "f04-test-threat", "threat_category": "Data Disclosure", "threat_description": "Data is over-shared."}
+        valid = {
+            "scenario_name": "Verify minimization",
+            "preconditions": "Representative response",
+            "steps": ["Capture response", "Compare fields"],
+            "expected_result": "Only necessary data is returned",
+            "threat_id": "f04-test-threat",
+            "target_refs": [{"type": "flow", "id": flow_id}, {"type": "process", "id": "unknown"}],
+            "execution_status": "Not Run",
+        }
+        payload = {"scenarios": [valid, {**valid, "scenario_name": "Bad", "priority": "Urgent", "threat_id": "missing"}]}
+        with (
+            patch("backend.services.test_service.get_active_provider_config", return_value={"base_url": "http://localhost", "model": "test", "api_key": "test", "max_tokens": 512}),
+            patch("backend.services.test_service.chat_complete_json", new=AsyncMock(return_value=payload)),
+        ):
+            scenarios = asyncio.run(generate_test_scenarios([threat], self.project, dfd_model=self.dfd_model))
+
+        self.assertEqual(len(scenarios), 1)
+        self.assertEqual(scenarios.assessment_status, "partial")
+        self.assertTrue(scenarios.generation_warnings)
+        self.assertEqual(scenarios[0]["target_refs"], [{"type": "data_flow", "id": flow_id}])
+
+    def test_structured_response_records_finish_reason_usage_and_retry_classification(self):
+        response = SimpleNamespace(
+            model="test-model",
+            usage=SimpleNamespace(prompt_tokens=11, completion_tokens=7, total_tokens=18),
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content='{"controls": []}', model_extra={}),
+            )],
+        )
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=AsyncMock(return_value=response))))
+        with patch("backend.services.ai_service._get_client", return_value=client):
+            result = asyncio.run(chat_complete_json("system", "user", base_url="http://localhost", return_metadata=True))
+
+        self.assertEqual(result.metadata["finish_reason"], "stop")
+        self.assertEqual(result.metadata["usage"]["total_tokens"], 18)
+        self.assertEqual(result.metadata["parse_status"], "valid")
+
+    def test_truncated_structured_response_is_not_accepted_after_repair(self):
+        response = SimpleNamespace(
+            model="test-model",
+            usage=None,
+            choices=[SimpleNamespace(
+                finish_reason="length",
+                message=SimpleNamespace(content='{"controls": [{"name": "partial"', model_extra={}),
+            )],
+        )
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=AsyncMock(return_value=response))))
+        with patch("backend.services.ai_service._get_client", return_value=client):
+            with self.assertRaises(AnalysisResponseError) as raised:
+                asyncio.run(chat_complete_json("system", "user", base_url="http://localhost", return_metadata=True))
+
+        self.assertEqual(raised.exception.code, "truncated_json")
+        self.assertIn("truncated_json", raised.exception.response_metadata["retry_reasons"])
+        self.assertEqual(raised.exception.response_metadata["format_retry_count"], 1)
 
 
 if __name__ == "__main__":

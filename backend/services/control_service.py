@@ -3,9 +3,20 @@ from __future__ import annotations
 import uuid
 import re
 from typing import List
+from pydantic import ValidationError
 from backend.utils.storage import get_controls_catalog
-from backend.services.ai_service import chat_complete_json, get_active_provider_config
+from backend.services.ai_service import (
+    StageGenerationResult,
+    StructuredJSONResult,
+    chat_complete_json,
+    get_active_provider_config,
+)
 from backend.services.dfd_model_service import format_dfd_analysis_context
+from backend.services.generation_contracts import (
+    ControlGenerationItem,
+    GenerationContractError,
+    model_ids,
+)
 
 
 CONTROL_CATEGORY_ALIASES = {
@@ -22,6 +33,7 @@ async def map_controls(
     force_fallback: bool = False,
     data_policy: str | None = None,
     dfd_model: dict | None = None,
+    evidence_ids: set[str] | None = None,
 ) -> List[dict]:
     """Map recommended controls from catalog or generate them using AI."""
     if not threats:
@@ -35,7 +47,13 @@ async def map_controls(
                 control["analysis_revision"] = dfd_model.get("revision")
                 control["dfd_revision"] = dfd_model.get("revision")
                 control["dfd_semantic_hash"] = dfd_model.get("semantic_hash")
-        return controls
+        return StageGenerationResult(
+            controls,
+            assessment_status="fallback",
+            response_shape="deterministic_fallback",
+            warnings=["AI control generation was bypassed; catalog candidates require review."],
+            response_metadata={"engine": "fallback"},
+        )
 
     cfg = get_active_provider_config(data_policy)
 
@@ -106,24 +124,70 @@ Return one JSON object with a "controls" array:
 
 Deduplicate: one control can address multiple threats."""
 
+    stage_budget = min(int(cfg.get("max_tokens") or 3000), 3000)
     result = await chat_complete_json(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         base_url=cfg.get("base_url"),
         api_key=cfg.get("api_key"),
         model=cfg.get("model"),
-        max_tokens=3000,
+        max_tokens=stage_budget,
+        return_metadata=True,
     )
-    controls = result if isinstance(result, list) else result.get("controls", [])
-    if not isinstance(controls, list):
-        raise ValueError("Analysis engine returned a controls field that is not an array")
+    payload, response_metadata = _unpack_structured_result(result)
+    response_shape = str(response_metadata.get("response_shape") or "unknown")
+    if not isinstance(payload, dict) or "controls" not in payload:
+        raise GenerationContractError(
+            "Controls response must contain a controls array envelope",
+            code="controls_envelope_invalid",
+            metadata=response_metadata,
+        )
+    if not isinstance(payload["controls"], list):
+        raise GenerationContractError(
+            "Controls response field 'controls' must be an array",
+            code="controls_envelope_schema_invalid",
+            metadata=response_metadata,
+        )
+    if not payload["controls"]:
+        raise GenerationContractError(
+            "Analysis engine returned an empty controls list",
+            code="controls_empty",
+            metadata=response_metadata,
+        )
 
-    controls = [
-        item for item in controls
-        if isinstance(item, dict) and str(item.get("name") or "").strip()
-    ]
-    if not controls:
-        raise ValueError("Analysis engine returned an empty or invalid controls list")
+    valid_threat_ids = {str(item.get("threat_id")) for item in threats if item.get("threat_id")}
+    valid_dfd_ids = model_ids(dfd_model)
+    warnings = []
+    controls = []
+    for index, raw_item in enumerate(payload["controls"]):
+        try:
+            model = ControlGenerationItem.model_validate(raw_item)
+        except ValidationError:
+            warnings.append(f"Control {index} failed item schema validation and was dropped.")
+            continue
+        item = model.model_dump(exclude_none=True)
+        raw_threat_ids = list(item.get("threat_ids") or [])
+        item["threat_ids"] = [tid for tid in raw_threat_ids if str(tid) in valid_threat_ids]
+        if len(item["threat_ids"]) != len(raw_threat_ids):
+            warnings.append(f"Control {index} contained unknown threat IDs; they were removed.")
+        for field in ("target_refs",):
+            refs = item.get(field) or []
+            valid_refs = [ref for ref in refs if not valid_dfd_ids or str(ref.get("id")) in valid_dfd_ids]
+            if len(valid_refs) != len(refs):
+                warnings.append(f"Control {index} contained dangling DFD refs; they were removed.")
+            item[field] = valid_refs
+        if item.get("location_ref") and valid_dfd_ids and str(item["location_ref"].get("id")) not in valid_dfd_ids:
+            item["location_ref"] = None
+            warnings.append(f"Control {index} contained a dangling location_ref; it was removed.")
+        for field in ("verification_evidence_refs", "implementation_evidence_refs"):
+            refs = [str(ref) for ref in (item.get(field) or [])]
+            if evidence_ids is not None:
+                filtered = [ref for ref in refs if ref in evidence_ids]
+                if len(filtered) != len(refs):
+                    warnings.append(f"Control {index} contained unknown {field}; they were removed.")
+                refs = filtered
+            item[field] = refs
+        controls.append(item)
 
     for c in controls:
         c["control_id"] = c.get("control_id") or str(uuid.uuid4())
@@ -134,7 +198,28 @@ Deduplicate: one control can address multiple threats."""
             c["dfd_revision"] = dfd_model.get("revision")
             c["dfd_semantic_hash"] = dfd_model.get("semantic_hash")
 
-    return controls
+    if not controls:
+        raise GenerationContractError(
+            "Analysis engine returned no schema-valid controls",
+            code="controls_items_invalid",
+            metadata=response_metadata,
+        )
+
+    response_metadata["validation_status"] = "partial" if warnings else "complete"
+    return StageGenerationResult(
+        controls,
+        assessment_status="partial" if warnings else "complete",
+        response_shape=response_shape,
+        warnings=warnings,
+        response_metadata=response_metadata,
+    )
+
+
+def _unpack_structured_result(result) -> tuple[object, dict]:
+    """Support instrumented responses and old test/provider adapters."""
+    if isinstance(result, StructuredJSONResult):
+        return result.payload, dict(result.metadata)
+    return result, {"instrumentation_status": "legacy_uninstrumented"}
 
 
 def _catalog_fallback(threats: list, catalog: list) -> list:
