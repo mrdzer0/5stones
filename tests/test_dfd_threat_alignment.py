@@ -1,10 +1,14 @@
+import asyncio
 import unittest
+from unittest.mock import AsyncMock, patch
 
 from backend.services.dfd_model_service import build_dfd_model
 from backend.services.linddun_service import _fallback_linddun
 from backend.services.stride_service import _fallback_stride
 from backend.services.control_service import _catalog_fallback
+from backend.services.control_service import map_controls
 from backend.services.test_service import _fallback_scenarios, normalize_test_scenarios
+from backend.services.test_service import generate_test_scenarios
 from backend.services.threat_validation_service import (
     complete_graph_coverage,
     normalize_generation_result,
@@ -85,6 +89,7 @@ class DfdThreatAlignmentTests(unittest.TestCase):
 
         self.assertEqual(threats[0]["taxonomy_version"], "linddun-v1")
         self.assertEqual(threats[0]["analysis_revision"], self.dfd_model["revision"])
+        self.assertEqual(threats[0]["dfd_semantic_hash"], self.dfd_model["semantic_hash"])
         self.assertEqual(threats[0]["finding_status"], "needs_context")
         self.assertEqual(threats[0]["status"], "Needs Info")
         self.assertTrue(any("non-compliance requires" in warning for warning in warnings))
@@ -158,6 +163,7 @@ class DfdThreatAlignmentTests(unittest.TestCase):
             "analysis_revision": self.dfd_model["revision"],
             "analyzed_revision": self.dfd_model["revision"],
             "taxonomy_version": "stride-v1",
+            "dfd_semantic_hash": self.dfd_model["semantic_hash"],
         }
         stale = {**current, "threat_id": "stale", "analysis_revision": "old-revision"}
         active, quarantined = quarantine_report_threats([current, stale], self.dfd_model)
@@ -184,6 +190,7 @@ class DfdThreatAlignmentTests(unittest.TestCase):
             "analysis_revision": self.dfd_model["revision"],
             "analyzed_revision": "different-revision",
             "taxonomy_version": "linddun-v1",
+            "dfd_semantic_hash": self.dfd_model["semantic_hash"],
         }
 
         active, quarantined = quarantine_report_threats([legacy, malformed], self.dfd_model)
@@ -252,6 +259,75 @@ class DfdThreatAlignmentTests(unittest.TestCase):
         self.assertIn(("data_flow", flow_id), refs)
         self.assertIn(("entity", source_id), refs)
         self.assertEqual(threat["mapping_status"], "mapped")
+
+    def test_controls_receive_the_same_canonical_dfd_snapshot_as_threats(self):
+        flow_id = self.dfd_model["flows"][0]["id"]
+        threat = {
+            "threat_id": "control-context-threat",
+            "framework": "STRIDE",
+            "threat_category": "Tampering",
+            "threat_description": "Input can be altered before validation.",
+            "target_refs": [{"type": "data_flow", "id": flow_id}],
+            "analysis_revision": self.dfd_model["revision"],
+            "evidence_refs": ["EV-1"],
+        }
+        with (
+            patch("backend.services.control_service.get_active_provider_config", return_value={"base_url": "http://localhost", "model": "test", "api_key": "test"}),
+            patch("backend.services.control_service.chat_complete_json", new=AsyncMock(return_value={"controls": [{"name": "Input validation", "threat_ids": ["control-context-threat"]}]})) as provider,
+        ):
+            controls = asyncio.run(map_controls([threat], dfd_model=self.dfd_model))
+
+        self.assertEqual(controls[0]["analysis_revision"], self.dfd_model["revision"])
+        self.assertEqual(controls[0]["dfd_semantic_hash"], self.dfd_model["semantic_hash"])
+        prompt = provider.await_args.kwargs["user_prompt"]
+        self.assertIn("CANONICAL DFD SNAPSHOT", prompt)
+        self.assertIn(f"revision: {self.dfd_model['revision']}", prompt)
+        self.assertIn(f"semantic_hash: {self.dfd_model['semantic_hash']}", prompt)
+        self.assertIn("data_object_ids=", prompt)
+        self.assertIn("authn=", prompt)
+        self.assertIn("PROCESS METADATA", prompt)
+        self.assertIn("source_zones=", prompt)
+
+    def test_tests_receive_dfd_and_mapped_control_context(self):
+        flow_id = self.dfd_model["flows"][0]["id"]
+        threat = {
+            "threat_id": "test-context-threat",
+            "framework": "LINDDUN",
+            "threat_category": "Data Disclosure",
+            "threat_description": "The response may expose unnecessary data.",
+            "target_refs": [{"type": "data_flow", "id": flow_id}],
+        }
+        controls = [{
+            "control_id": "control-context-1",
+            "name": "Data minimization",
+            "threat_ids": ["test-context-threat"],
+            "target_refs": [{"type": "data_flow", "id": flow_id}],
+            "analysis_revision": self.dfd_model["revision"],
+        }]
+        scenario = {
+            "scenario_name": "Verify data minimization",
+            "preconditions": "Representative response payload",
+            "steps": ["Capture the response", "Compare fields with purpose"],
+            "expected_result": "Only necessary data is returned",
+            "threat_id": "test-context-threat",
+            "related_control_id": "control-context-1",
+            "target_refs": [{"type": "data_flow", "id": flow_id}],
+        }
+        with (
+            patch("backend.services.test_service.get_active_provider_config", return_value={"base_url": "http://localhost", "model": "test", "api_key": "test"}),
+            patch("backend.services.test_service.chat_complete_json", new=AsyncMock(return_value={"scenarios": [scenario]})) as provider,
+        ):
+            result = asyncio.run(generate_test_scenarios([threat], self.project, controls=controls, dfd_model=self.dfd_model))
+
+        self.assertEqual(result[0]["related_control_id"], "control-context-1")
+        self.assertEqual(result[0]["analysis_revision"], self.dfd_model["revision"])
+        self.assertEqual(result[0]["dfd_semantic_hash"], self.dfd_model["semantic_hash"])
+        prompt = provider.await_args.kwargs["user_prompt"]
+        self.assertIn("MAPPED CONTROLS:", prompt)
+        self.assertIn("control-context-1", prompt)
+        self.assertIn("CANONICAL DFD SNAPSHOT", prompt)
+        self.assertIn(f"semantic_hash: {self.dfd_model['semantic_hash']}", prompt)
+        self.assertIn("authz=", prompt)
 
     def test_coverage_validator_keeps_only_current_model_ids(self):
         flow_id = self.dfd_model["flows"][0]["id"]

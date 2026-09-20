@@ -4,6 +4,7 @@ import hashlib
 import uuid
 from typing import List
 from backend.services.ai_service import chat_complete_json, get_active_provider_config
+from backend.services.dfd_model_service import format_dfd_analysis_context
 
 SYSTEM_PROMPT = """You are a security test engineer creating security test scenarios for QA and Security teams.
 Each scenario must be actionable, specific, and executable. Return one strict JSON object."""
@@ -28,6 +29,16 @@ async def generate_test_scenarios(
         for t in threats
         if isinstance(t, dict) and t.get("threat_id")
     ])
+    controls_summary = "\n".join([
+        f"- ID: {control.get('control_id')} · {control.get('name')} · status={control.get('implementation_status') or control.get('status') or 'Unknown'} · "
+        f"threat_ids={control.get('threat_ids') or []} · target_refs={control.get('target_refs') or []} · "
+        f"location_ref={control.get('location_ref') or None} · analysis_revision={control.get('analysis_revision') or control.get('dfd_revision') or 'unknown'}"
+        for control in (controls or [])
+        if isinstance(control, dict) and control.get("control_id")
+    ]) or "No mapped controls are available; make the missing mapping explicit in the scenario."
+    dfd_context = format_dfd_analysis_context(dfd_model)
+    dfd_revision = (dfd_model or {}).get("revision", "unknown")
+    dfd_hash = (dfd_model or {}).get("semantic_hash", "unknown")
 
     user_prompt = f"""Generate security test scenarios mapped to the following threat catalog.
 
@@ -36,6 +47,16 @@ PROJECT ENVIRONMENT:
 
 THREATS:
 {threats_summary}
+
+MAPPED CONTROLS:
+{controls_summary}
+
+CANONICAL DFD SNAPSHOT (the same semantic revision used by threat analysis and controls):
+{dfd_context}
+
+ANALYSIS SNAPSHOT PROVENANCE:
+- dfd_revision: {dfd_revision}
+- dfd_semantic_hash: {dfd_hash}
 
 Return one JSON object with a "scenarios" array:
 {{
@@ -52,6 +73,9 @@ Return one JSON object with a "scenarios" array:
     "owner": "QA|Security|QA/Security",
     "threat_id": "the threat_id this test covers",
     "target_refs": [{{"type": "data_flow|process|data_store|entity|boundary|data_object", "id": "canonical DFD element ID"}}],
+    "analysis_revision": "current canonical DFD revision",
+    "dfd_revision": "current canonical DFD revision",
+    "dfd_semantic_hash": "current canonical DFD semantic hash",
     "execution_status": "Not Run|Passed|Failed|Blocked",
     "actual_result": "leave empty until executed",
     "execution_evidence_refs": ["valid evidence IDs after execution"]
@@ -339,6 +363,10 @@ def normalize_test_scenarios(
             str(ref) for ref in (item.get("execution_evidence_refs") or [])
             if evidence_ids is None or str(ref) in evidence_ids
         ]
+        if isinstance(dfd_model, dict):
+            item["analysis_revision"] = dfd_model.get("revision")
+            item["dfd_revision"] = dfd_model.get("revision")
+            item["dfd_semantic_hash"] = dfd_model.get("semantic_hash")
         item["verification_status"] = "not_executed" if item["execution_status"] == "Not Run" else "executed"
         item["test_fingerprint"] = _scenario_fingerprint(item)
         item["test_id"] = item.get("test_id") or f"TM-{item['test_fingerprint'][:10].upper()}"

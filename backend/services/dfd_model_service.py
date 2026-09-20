@@ -1580,14 +1580,35 @@ def validate_dfd_model(model: DfdModel) -> dict:
     }
 
 
+def _assertion_summary(assertions: list | None) -> list[dict]:
+    """Keep uncertainty/provenance visible without embedding raw artifacts."""
+    summary = []
+    for assertion in assertions or []:
+        if not isinstance(assertion, dict):
+            continue
+        summary.append({
+            "field": assertion.get("field_path"),
+            "status": assertion.get("status"),
+            "value": str(assertion.get("value"))[:240] if assertion.get("value") is not None else None,
+            "evidence_refs": assertion.get("evidence_refs") or [],
+            "review_status": assertion.get("review_status"),
+        })
+    return summary
+
+
 def format_dfd_analysis_context(dfd_model: dict | None) -> str:
     """Format stable DFD IDs for analysis adapters without exposing raw artifacts."""
     if not isinstance(dfd_model, dict):
         return "No canonical DFD model is available. Keep affected references empty and explain the information gap."
 
     lines = [
-        f"DFD model id: {dfd_model.get('id', 'unknown')}",
+        "CANONICAL DFD SNAPSHOT:",
+        f"DFD model id: {dfd_model.get('id', 'unknown')} · project_id: {dfd_model.get('project_id', 'unknown')}",
         f"DFD schema: {dfd_model.get('schema_version', 'unknown')} · revision: {dfd_model.get('revision', 'unknown')} · layout_revision: {dfd_model.get('layout_revision', 'unknown')}",
+        f"semantic_hash: {dfd_model.get('semantic_hash') or 'unknown'} · source_semantic_hash: {dfd_model.get('source_semantic_hash') or 'unknown'}",
+        f"scope: {dfd_model.get('scope_description') or 'unknown'} · source_refs: {dfd_model.get('source_refs') or []}",
+        f"model_evidence_refs: {[item.get('id') for item in (dfd_model.get('evidence') or []) if isinstance(item, dict) and item.get('id')]}",
+        f"model_assertions: {_assertion_summary(dfd_model.get('assertions'))}",
         "NODES:",
     ]
     zone_names = {
@@ -1605,9 +1626,11 @@ def format_dfd_analysis_context(dfd_model: dict | None) -> str:
         process_metadata = node.get("process_metadata") or {}
         lines.append(
             f"- {node.get('id')} ({node.get('display_id')}) · {node.get('type')} · {node.get('name')} · "
-            f"scope={node.get('scope')} ownership={node.get('ownership')} exposure={node.get('exposure')} · "
+            f"description={node.get('description') or 'unknown'} · scope={node.get('scope')} ownership={node.get('ownership')} · "
+            f"operator={node.get('operator_control_party') or 'unknown'} exposure={node.get('exposure')} · "
             f"zones={node.get('zone_ids') or []} · parent_process={node.get('parent_process_id') or 'none'} · "
-            f"evidence={node.get('evidence_refs') or []}"
+            f"knowledge={node.get('knowledge_status')} implementation={node.get('implementation_status')} · "
+            f"evidence={node.get('evidence_refs') or []} assertions={_assertion_summary(node.get('assertions'))}"
         )
         if node.get("type") == "process":
             lines.append(
@@ -1621,20 +1644,24 @@ def format_dfd_analysis_context(dfd_model: dict | None) -> str:
     for zone in dfd_model.get("zones", []) or []:
         lines.append(
             f"- {zone.get('id')} ({zone.get('display_id')}) · {zone.get('name')} · "
+            f"description={zone.get('description') or 'unknown'} · "
             f"parent={zone.get('parent_zone_id') or 'none'} · ownership_group={zone.get('ownership_group_id') or 'unknown'} · "
-            f"assumptions={zone.get('trust_assumptions') or []} · evidence={zone.get('evidence_refs') or []}"
+            f"assumptions={zone.get('trust_assumptions') or []} · knowledge={zone.get('knowledge_status')} · "
+            f"evidence={zone.get('evidence_refs') or []}"
         )
     lines.append("DATA OBJECTS:")
     for item in dfd_model.get("data_objects", []) or []:
         lines.append(
             f"- {item.get('id')} ({item.get('display_id')}) · {item.get('name')} · "
+            f"fields={item.get('fields') or []} · "
             f"classification={item.get('classification') or 'unknown'} · sensitivity={item.get('sensitivity') or 'unknown'} · "
             f"purpose={item.get('purpose') or 'unknown'} · subjects={item.get('data_subjects') or 'unknown'} · "
             f"identifiers={item.get('identifiers') or 'unknown'} · direct_identifiers={item.get('direct_identifiers') or 'unknown'} · "
             f"indirect_identifiers={item.get('indirect_identifiers') or 'unknown'} · recipients={item.get('recipients') or 'unknown'} · "
             f"linkability={item.get('linkability') or 'unknown'} · notice={item.get('notice') or 'unknown'} · "
             f"individual_control={item.get('individual_control') or 'unknown'} · legal_basis={item.get('legal_basis') or 'unknown'} · "
-            f"status={item.get('knowledge_status')} · evidence={item.get('evidence_refs') or []}"
+            f"transformations={item.get('transformation_refs') or []} · lineage={item.get('lineage_refs') or []} · "
+            f"status={item.get('knowledge_status')} · evidence={item.get('evidence_refs') or []} assertions={_assertion_summary(item.get('assertions'))}"
         )
     lines.append("STORES AND DATA LIFECYCLE:")
     for store_id, store in (dfd_model.get("stores") or {}).items():
@@ -1644,7 +1671,8 @@ def format_dfd_analysis_context(dfd_model: dict | None) -> str:
             f"- {store_id} ({node_names.get(str(store_id), 'data store')}) · data={store.get('data_object_ids') or []} · "
             f"readers={store.get('readers') or []} · writers={store.get('writers') or []} · "
             f"retention={store.get('retention') or 'unknown'} · deletion={store.get('deletion') or 'unknown'} · "
-            f"backup={store.get('backup') or 'unknown'} · controls={store.get('protection_controls') or []}"
+            f"backup={store.get('backup') or 'unknown'} · controls={store.get('protection_controls') or []} · "
+            f"evidence={store.get('evidence_refs') or []} assertions={_assertion_summary(store.get('assertions'))}"
         )
     lines.append("FLOWS:")
     for flow in dfd_model.get("flows", []) or []:
@@ -1665,6 +1693,8 @@ def format_dfd_analysis_context(dfd_model: dict | None) -> str:
             f"authn={flow.get('authn') or 'unknown'} · authz={flow.get('authz') or 'unknown'} · "
             f"source_zones={source_zones or ['unknown']} · target_zones={target_zones or ['unknown']} · "
             f"boundaries={flow.get('boundary_crossings') or []} · crossing={flow.get('crossing_status')} · "
+            f"origins={flow.get('crossing_origins') or {}} · rationales={flow.get('crossing_rationales') or {}} · "
+            f"knowledge={flow.get('knowledge_status')} implementation={flow.get('implementation_status')} · "
             f"evidence={flow.get('evidence_refs') or []}"
         )
     lines.append("BOUNDARIES:")
@@ -1674,14 +1704,14 @@ def format_dfd_analysis_context(dfd_model: dict | None) -> str:
             f"types={boundary.get('types') or []} · source_zones={boundary.get('source_zone_ids') or []} · "
             f"target_zones={boundary.get('target_zone_ids') or []} · scope={boundary.get('transition_scope')} · "
             f"flows={boundary.get('crossing_flow_ids') or []} · status={boundary.get('status')} · "
-            f"rationale={boundary.get('rationale') or 'unknown'}"
+            f"rationale={boundary.get('rationale') or 'unknown'} · controls={boundary.get('controls') or []} · "
+            f"derived={boundary.get('derived')} · evidence={boundary.get('evidence_refs') or []} assertions={_assertion_summary(boundary.get('assertions'))}"
         )
-    if dfd_model.get("questions"):
-        lines.append("OPEN QUESTIONS:")
-        for question in dfd_model.get("questions", []) or []:
-            lines.append(
-                f"- {question.get('id')} · status={question.get('status')} · {question.get('question')} · "
-                f"affected={question.get('affected_refs') or []} · source_refs={question.get('source_refs') or []} · "
-                f"resolution={question.get('resolution') or 'unresolved'}"
-            )
+    lines.append("OPEN QUESTIONS AND REVIEW DECISIONS:")
+    for question in dfd_model.get("questions", []) or []:
+        lines.append(
+            f"- {question.get('id')} · status={question.get('status')} · {question.get('question')} · "
+            f"affected={question.get('affected_refs') or []} · source_refs={question.get('source_refs') or []} · "
+            f"resolution={question.get('resolution') or 'unresolved'}"
+        )
     return "\n".join(lines)

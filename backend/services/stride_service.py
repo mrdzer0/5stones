@@ -79,6 +79,8 @@ EVIDENCE CATALOG:
     "destination": "target component",
     "trust_boundary": "boundary name if applicable",
     "affected_refs": ["valid DFD node/flow/boundary/data-object IDs only"],
+    "analysis_revision": "current canonical DFD revision",
+    "dfd_semantic_hash": "current canonical DFD semantic hash",
     "asset": "what asset is at risk",
     "data_classification": "Public|Internal|PII|Financial|Secret|Unknown",
     "threat_description": "specific threat description",

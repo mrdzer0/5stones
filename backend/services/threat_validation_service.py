@@ -285,6 +285,7 @@ def validate_generated_threats(
         if isinstance(dfd_model, dict):
             item["analyzed_revision"] = dfd_model.get("revision")
             item["analysis_revision"] = dfd_model.get("revision")
+            item["dfd_semantic_hash"] = dfd_model.get("semantic_hash")
         accepted.append(item)
     return accepted, warnings
 
@@ -460,6 +461,7 @@ def quarantine_report_threats(
     revision is not silently upgraded to the current DFD revision.
     """
     model_revision = (dfd_model or {}).get("revision") if isinstance(dfd_model, dict) else None
+    model_semantic_hash = (dfd_model or {}).get("semantic_hash") if isinstance(dfd_model, dict) else None
     valid_ids = _model_ids(dfd_model)
     active: list[dict] = []
     quarantined: list[dict] = []
@@ -520,6 +522,9 @@ def quarantine_report_threats(
             reasons.append("missing_or_stale_analysis_revision" if not revision else "stale_analysis_revision")
         if analysis_revision is not None and analyzed_revision is not None and analysis_revision != analyzed_revision:
             reasons.append("analysis_revision_mismatch")
+        dfd_semantic_hash = item.get("dfd_semantic_hash")
+        if model_semantic_hash and dfd_semantic_hash != model_semantic_hash:
+            reasons.append("missing_or_stale_dfd_semantic_hash" if not dfd_semantic_hash else "stale_dfd_semantic_hash")
         expected_taxonomy = "stride-v1" if framework == "STRIDE" else "linddun-v1"
         if framework in allowed_frameworks and item.get("taxonomy_version") != expected_taxonomy:
             reasons.append("missing_or_unsupported_taxonomy_version")

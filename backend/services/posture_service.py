@@ -664,6 +664,7 @@ def enrich_controls(
         if isinstance(dfd_model, dict):
             c["analysis_revision"] = dfd_model.get("revision")
             c["dfd_revision"] = dfd_model.get("revision")
+            c["dfd_semantic_hash"] = dfd_model.get("semantic_hash")
         enriched.append(c)
 
     return enriched

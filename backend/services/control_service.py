@@ -5,6 +5,7 @@ import re
 from typing import List
 from backend.utils.storage import get_controls_catalog
 from backend.services.ai_service import chat_complete_json, get_active_provider_config
+from backend.services.dfd_model_service import format_dfd_analysis_context
 
 
 CONTROL_CATEGORY_ALIASES = {
@@ -28,7 +29,13 @@ async def map_controls(
 
     catalog = get_controls_catalog()
     if force_fallback:
-        return _catalog_fallback(threats, catalog)
+        controls = _catalog_fallback(threats, catalog)
+        for control in controls:
+            if isinstance(dfd_model, dict):
+                control["analysis_revision"] = dfd_model.get("revision")
+                control["dfd_revision"] = dfd_model.get("revision")
+                control["dfd_semantic_hash"] = dfd_model.get("semantic_hash")
+        return controls
 
     cfg = get_active_provider_config(data_policy)
 
@@ -37,9 +44,16 @@ async def map_controls(
     ])
 
     threats_summary = "\n".join([
-        f"- Threat: {t.get('threat_category')} - {t.get('threat_description')} (Component: {t.get('component')}) (ID: {t.get('threat_id')}) (DFD targets: {t.get('target_refs') or t.get('affected_refs') or []})"
+        f"- Threat: {t.get('threat_category')} - {t.get('threat_description')} (Component: {t.get('component')}) "
+        f"(ID: {t.get('threat_id')}) (framework: {t.get('framework')}) "
+        f"(analysis_revision: {t.get('analysis_revision') or t.get('analyzed_revision') or 'unknown'}) "
+        f"(DFD targets: {t.get('target_refs') or t.get('affected_refs') or []}) "
+        f"(evidence: {t.get('evidence_refs') or []})"
         for t in threats
     ])
+    dfd_context = format_dfd_analysis_context(dfd_model)
+    dfd_revision = (dfd_model or {}).get("revision", "unknown")
+    dfd_hash = (dfd_model or {}).get("semantic_hash", "unknown")
     valid_dfd_ids = [
         str(item.get("id"))
         for collection in ("nodes", "data_objects", "flows", "boundaries")
@@ -58,6 +72,13 @@ CONTROL CATALOG:
 THREATS:
 {threats_summary}
 
+CANONICAL DFD SNAPSHOT (the same semantic revision used by threat analysis):
+{dfd_context}
+
+ANALYSIS SNAPSHOT PROVENANCE:
+- dfd_revision: {dfd_revision}
+- dfd_semantic_hash: {dfd_hash}
+
 VALID CANONICAL DFD IDS (use only these in target_refs/location_ref):
 {valid_dfd_ids}
 
@@ -74,6 +95,9 @@ Return one JSON object with a "controls" array:
     "verification_evidence_refs": ["valid evidence IDs only; leave empty unless implementation evidence exists"],
     "target_refs": [{{"type": "data_flow|process|data_store|entity|boundary|data_object", "id": "valid DFD element ID"}}],
     "location_ref": {{"type": "data_flow|process|data_store|entity|boundary|data_object", "id": "primary DFD element ID"}},
+    "analysis_revision": "current canonical DFD revision",
+    "dfd_revision": "current canonical DFD revision",
+    "dfd_semantic_hash": "current canonical DFD semantic hash",
     "owner": "Backend|DevOps|QA|Security|Product",
     "threat_ids": ["list of threat_ids this control addresses"]
     }}
@@ -105,6 +129,10 @@ Deduplicate: one control can address multiple threats."""
         c["control_id"] = c.get("control_id") or str(uuid.uuid4())
         c["control_origin"] = c.get("control_origin") or "recommended"
         c["recommendation_status"] = c.get("recommendation_status") or "recommended"
+        if isinstance(dfd_model, dict):
+            c["analysis_revision"] = dfd_model.get("revision")
+            c["dfd_revision"] = dfd_model.get("revision")
+            c["dfd_semantic_hash"] = dfd_model.get("semantic_hash")
 
     return controls
 

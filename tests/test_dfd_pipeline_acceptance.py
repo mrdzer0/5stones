@@ -227,6 +227,7 @@ class DfdPipelineAcceptanceTests(unittest.TestCase):
                     "analysis_revision": model.revision,
                     "analyzed_revision": model.revision,
                     "taxonomy_version": "linddun-v1",
+                    "dfd_semantic_hash": model.semantic_hash,
                     "status": "Reviewed",
                     "review_notes": "Privacy review decision is authoritative until a valid replacement exists.",
                     "reviewed_at": "2026-09-19T00:00:00Z",

@@ -96,6 +96,8 @@ risks such as excessive disclosure, linking, or unawareness.
     "destination": "data destination",
     "trust_boundary": "boundary crossed",
     "affected_refs": ["valid DFD node/flow/boundary/data-object IDs only"],
+    "analysis_revision": "current canonical DFD revision",
+    "dfd_semantic_hash": "current canonical DFD semantic hash",
     "asset": "personal data at risk",
     "data_classification": "PII|Public|Internal|Financial|Secret|Unknown",
     "threat_description": "specific privacy threat description",
