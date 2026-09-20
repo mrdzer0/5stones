@@ -10,12 +10,17 @@ import re
 from typing import Any
 
 
-TRUST_MODEL_VERSION = "grounded-v2"
+TRUST_MODEL_VERSION = "grounded-v3"
 TRUST_BOUNDARY_REVIEW_STATUSES = {"Candidate", "Confirmed", "Rejected"}
 BOUNDARY_TYPES = {"network", "identity", "privilege", "tenant", "organization", "unknown"}
 ENTITY_SCOPES = {"in_scope", "external_dependency", "unknown"}
 ENTITY_OWNERSHIPS = {"organization", "customer", "vendor", "shared", "unknown"}
 ENTITY_EXPOSURES = {"internet_facing", "private", "local", "unknown"}
+ENTITY_CONTEXT_FIELDS = ("environment", "tenant_id", "control_party", "ownership")
+KNOWN_ENVIRONMENTS = {
+    "dev", "development", "test", "testing", "qa", "sandbox", "stage", "staging",
+    "prod", "production", "preview", "local",
+}
 
 
 def _unique_strings(values) -> list[str]:
@@ -55,7 +60,80 @@ def _logical_component_label(value: Any) -> str:
     return display
 
 
-def _entity_zone(entity_type: str, label: str) -> tuple[str, str]:
+def _context_token(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", str(value or "").casefold()).strip("-")
+
+
+def _label_identity_context(label: str) -> dict[str, str]:
+    """Extract only explicit, recognizable context suffixes from an alias.
+
+    Technology parentheses such as ``Backend (FastAPI)`` remain part of the
+    alias. Environment markers are stripped only when they are unambiguous so
+    ``Payments API (prod)`` can match ``Payments API`` without merging it with
+    ``Payments API (sandbox)``.
+    """
+    text = " ".join(str(label or "").split())
+    context: dict[str, str] = {}
+    bracketed = re.findall(r"[\[(]([^\])]*)[\])]", text)
+    for value in bracketed:
+        token = _context_token(value)
+        if token in KNOWN_ENVIRONMENTS:
+            context["environment"] = token
+    suffix = re.search(r"(?:^|[\s@:/_-])(prod(?:uction)?|staging?|stage|qa|sandbox|test(?:ing)?|dev(?:elopment)?|preview|local)$", text, re.I)
+    if suffix:
+        context["environment"] = suffix.group(1).casefold()
+    tenant = re.search(r"(?:tenant|customer)[\s:_-]+([a-z0-9][a-z0-9_-]*)", text, re.I)
+    if tenant:
+        context["tenant_id"] = tenant.group(1).casefold()
+    return context
+
+
+def _identity_label_base(label: str) -> str:
+    """Remove only recognized environment markers before alias comparison."""
+    text = " ".join(str(label or "").split())
+    environments = "|".join(re.escape(value) for value in sorted(KNOWN_ENVIRONMENTS, key=len, reverse=True))
+    text = re.sub(rf"\s*[\[(](?:{environments})[\])]", "", text, flags=re.I)
+    text = re.sub(rf"(?:\s+|[@:/_-])(?:{environments})$", "", text, flags=re.I)
+    return " ".join(text.split())
+
+
+def _identity_context(metadata: dict | None = None, extra: dict | None = None, label: str = "") -> dict[str, str]:
+    """Normalize evidence-backed identity dimensions used for merge decisions."""
+    values: dict[str, str] = {}
+    for source in (metadata or {}, extra or {}, _label_identity_context(label)):
+        if not isinstance(source, dict):
+            continue
+        aliases = {
+            "environment": ("environment", "env", "deployment_environment"),
+            "tenant_id": ("tenant_id", "tenantId", "tenant", "customer_id", "customerId"),
+            "control_party": (
+                "control_party", "controlParty", "operator_control_party",
+                "operatorControlParty", "provider", "provider_id", "providerId",
+            ),
+            "ownership": ("ownership", "owner_type", "ownerType"),
+        }
+        for field, names in aliases.items():
+            if values.get(field):
+                continue
+            for name in names:
+                value = str(source.get(name) or "").strip()
+                if value and value.casefold() not in {"unknown", "n/a", "none"}:
+                    values[field] = value.casefold() if field != "control_party" else " ".join(value.split())
+                    break
+    return values
+
+
+def _contexts_compatible(left: dict | None, right: dict | None) -> bool:
+    left, right = left or {}, right or {}
+    for field in ENTITY_CONTEXT_FIELDS:
+        left_value = str(left.get(field) or "").casefold()
+        right_value = str(right.get(field) or "").casefold()
+        if left_value and right_value and left_value != right_value:
+            return False
+    return True
+
+
+def _entity_zone(entity_type: str, label: str, identity_context: dict | None = None) -> tuple[str, str]:
     lowered = label.casefold()
     if entity_type == "actor":
         if "admin" in lowered:
@@ -64,6 +142,16 @@ def _entity_zone(entity_type: str, label: str) -> tuple[str, str]:
             return "external", "Untrusted"
         return "external", "Low Trust"
     if entity_type == "external_system":
+        context = identity_context or {}
+        identity_parts = [
+            _context_token(context.get("control_party")),
+            _context_token(context.get("tenant_id")),
+            _context_token(context.get("environment")),
+        ]
+        identity_parts = [part for part in identity_parts if part]
+        if identity_parts:
+            suffix = "-".join(identity_parts)
+            return f"external-dependency-{suffix}", "External Dependency (identity-scoped)"
         return "external-dependency", "External Dependency"
     if entity_type == "data_store":
         return "data", "Sensitive Internal Store"
@@ -88,16 +176,17 @@ def _identity_tokens(label: str) -> tuple[str, ...]:
 def _same_entity_name(left: str, right: str) -> bool:
     if left.casefold() == right.casefold():
         return True
-    left_tokens, right_tokens = _identity_tokens(left), _identity_tokens(right)
+    left_base, right_base = _identity_label_base(left), _identity_label_base(right)
+    left_tokens, right_tokens = _identity_tokens(left_base), _identity_tokens(right_base)
     if len(left_tokens) >= 2 and left_tokens == right_tokens:
         return True
     # A parenthesized technology list may elaborate a declared component.
     # Require the same base name and the same first technology when both have
     # details; mere token overlap (e.g. two services using React) is not enough.
-    left_base, _, left_detail = left.partition("(")
-    right_base, _, right_detail = right.partition("(")
-    base = _identity_tokens(left_base)
-    if len(base) < 2 or base != _identity_tokens(right_base):
+    left_name, _, left_detail = left_base.partition("(")
+    right_name, _, right_detail = right_base.partition("(")
+    base = _identity_tokens(left_name)
+    if len(base) < 2 or base != _identity_tokens(right_name):
         return False
     left_first = _identity_tokens(left_detail.split(",", 1)[0])
     right_first = _identity_tokens(right_detail.split(",", 1)[0])
@@ -117,6 +206,54 @@ def _entity_metadata_index(project: dict) -> dict[str, dict]:
         if label and isinstance(metadata, dict):
             result[str(label).casefold()] = metadata
     return result
+
+
+def _metadata_for_label(label: str, metadata_index: dict[str, dict]) -> dict:
+    exact = metadata_index.get(str(label or "").casefold())
+    if exact:
+        return exact
+    matches = [
+        metadata for name, metadata in metadata_index.items()
+        if _same_entity_name(str(label or ""), name)
+    ]
+    return matches[0] if len(matches) == 1 else {}
+
+
+def _endpoint_context(flow: dict, endpoint: str) -> dict[str, str]:
+    """Read endpoint-scoped tenant/environment/control-party evidence."""
+    context: dict[str, str] = {}
+    for key in (
+        f"{endpoint}_metadata", f"{endpoint}_context", f"{endpoint}_identity",
+    ):
+        value = flow.get(key)
+        if isinstance(value, dict):
+            context.update(value)
+    for field in ENTITY_CONTEXT_FIELDS:
+        for key in (
+            f"{endpoint}_{field}",
+            f"{endpoint}{''.join(part.title() for part in field.split('_'))}",
+        ):
+            if flow.get(key) not in (None, ""):
+                context[field] = flow.get(key)
+                break
+    return context
+
+
+def _resolve_entity(registry: dict[str, dict], label: str, context: dict | None = None) -> dict | None:
+    """Resolve an alias only when its identity context is unambiguous."""
+    display = str(label or "").strip()
+    candidates = [
+        item for item in registry.values()
+        if _same_entity_name(display, str(item.get("name") or ""))
+        or any(_same_entity_name(display, alias) for alias in item.get("aliases", []))
+    ]
+    compatible = [item for item in candidates if _contexts_compatible(context, item.get("identity_context"))]
+    if len(compatible) == 1:
+        return compatible[0]
+    if not context and len(candidates) == 1:
+        return candidates[0]
+    exact = [item for item in compatible if str(item.get("name") or "").casefold() == display.casefold()]
+    return exact[0] if len(exact) == 1 else None
 
 
 def _zone_metadata_index(project: dict) -> dict[str, dict]:
@@ -211,27 +348,54 @@ def build_entity_registry(project: dict, flows: list[dict] | None = None) -> dic
     external_systems = [str(value) for value in (project.get("external_systems") or []) if value]
     type_rank = {"component": 0, "ingress": 1, "actor": 2, "data_store": 3, "external_system": 3}
 
-    def add(label: Any, entity_type: str, source: str, locator: str, confidence: str):
+    def add(
+        label: Any,
+        entity_type: str,
+        source: str,
+        locator: str,
+        confidence: str,
+        endpoint_context: dict | None = None,
+    ):
         display = _display_label(label)
         if not display:
             return
-        matches = [key for key, item in registry.items() if _same_entity_name(display, item["name"])]
-        key = matches[0] if len(matches) == 1 else display.casefold()
+        canonical_display = _identity_label_base(display) or display
         if entity_type == "component" and _composite_external_endpoint(display, external_systems):
             entity_type = "external_system"
-        metadata = metadata_index.get(display.casefold(), {})
-        if not metadata:
-            metadata = next(
-                (value for label, value in metadata_index.items() if _same_entity_name(display, label)),
-                {},
-            )
-        inferred_zone_id, trust_level = _entity_zone(entity_type, display)
+        metadata = _metadata_for_label(display, metadata_index)
+        identity_context = _identity_context(metadata, endpoint_context, display)
+        matches = [
+            (key, item) for key, item in registry.items()
+            if _same_entity_name(display, item["name"])
+            and _contexts_compatible(identity_context, item.get("identity_context"))
+        ]
+        key = matches[0][0] if len(matches) == 1 else _stable_id(
+            "entity-key", display, entity_type,
+            *(f"{field}={identity_context.get(field, '')}" for field in ENTITY_CONTEXT_FIELDS),
+        )
+        inferred_zone_id, trust_level = _entity_zone(entity_type, canonical_display, identity_context)
         explicit_zone_id = str(metadata.get("zone_id") or metadata.get("trust_zone_id") or "").strip().removeprefix("zone-")
         zone_id = explicit_zone_id or inferred_zone_id
         explicit_evidence_refs = _unique_strings(metadata.get("evidence_refs") or metadata.get("evidence") or [])
+        context_documented = bool(explicit_evidence_refs or endpoint_context)
+        grouping_status = "documented" if context_documented else "inferred" if identity_context else "unknown"
+        grouping_basis = (
+            "Explicit entity metadata identifies ownership, control party, tenant, or environment."
+            if explicit_evidence_refs else
+            "Endpoint identity context was supplied by the extracted flow."
+            if endpoint_context else
+            "Entity grouping is inferred from normalized aliases and default trust type."
+            if identity_context else None
+        )
         record = registry.setdefault(key, {
-            "entity_id": _stable_id("entity", display),
-            "name": display,
+            "entity_id": _stable_id(
+                "entity", canonical_display,
+                *(f"{field}={identity_context.get(field, '')}" for field in ENTITY_CONTEXT_FIELDS),
+            ),
+            "name": canonical_display,
+            "aliases": _unique_strings([display, canonical_display]),
+            "identity_key": key,
+            "identity_context": identity_context,
             "entity_type": entity_type,
             "zone_id": zone_id,
             "trust_level": trust_level,
@@ -239,17 +403,34 @@ def build_entity_registry(project: dict, flows: list[dict] | None = None) -> dic
             "ownership": "unknown",
             "exposure": "unknown",
             "operator_control_party": None,
+            "environment": identity_context.get("environment"),
+            "tenant_id": identity_context.get("tenant_id"),
+            "grouping_status": grouping_status,
+            "grouping_basis": grouping_basis,
             "zone_parent_id": zone_metadata.get(zone_id, {}).get("parent_zone_id"),
             "zone_metadata_source": "explicit" if explicit_zone_id or zone_id in zone_metadata else "inferred",
             "confidence": confidence,
             "evidence_refs": explicit_evidence_refs,
         })
+        record["aliases"] = _unique_strings([*record.get("aliases", []), display])
         record["evidence_refs"] = _unique_strings([*record["evidence_refs"], f"{source}:{locator}"])
+        record["identity_context"] = {
+            field: record.get("identity_context", {}).get(field) or identity_context.get(field)
+            for field in ENTITY_CONTEXT_FIELDS
+            if record.get("identity_context", {}).get(field) or identity_context.get(field)
+        }
+        record["environment"] = record["identity_context"].get("environment")
+        record["tenant_id"] = record["identity_context"].get("tenant_id")
+        if grouping_status == "documented" or record.get("grouping_status") == "unknown":
+            record["grouping_status"] = grouping_status
+            record["grouping_basis"] = grouping_basis
+        if not explicit_zone_id and record.get("zone_metadata_source") != "explicit":
+            record["zone_id"], record["trust_level"] = _entity_zone(
+                record["entity_type"], display, record["identity_context"]
+            )
+            record["zone_parent_id"] = zone_metadata.get(record["zone_id"], {}).get("parent_zone_id")
         if type_rank.get(entity_type, 0) > type_rank.get(record["entity_type"], 0):
             record.update(entity_type=entity_type, zone_id=zone_id, trust_level=trust_level)
-        if source != "flow" and record["name"] != display and type_rank.get(entity_type, 0) >= type_rank.get(record["entity_type"], 0):
-            record["name"] = display
-            record["entity_id"] = _stable_id("entity", display)
         for field, allowed in (
             ("scope", ENTITY_SCOPES),
             ("ownership", ENTITY_OWNERSHIPS),
@@ -258,9 +439,15 @@ def build_entity_registry(project: dict, flows: list[dict] | None = None) -> dic
             value = str(metadata.get(field) or "").strip().casefold()
             if value in allowed:
                 record[field] = value
-        operator = str(metadata.get("operator_control_party") or metadata.get("operatorControlParty") or "").strip()
+        operator = str(
+            metadata.get("operator_control_party")
+            or metadata.get("operatorControlParty")
+            or identity_context.get("control_party")
+            or ""
+        ).strip()
         if operator:
             record["operator_control_party"] = operator
+            record["identity_context"]["control_party"] = operator
         if explicit_zone_id or zone_id in zone_metadata:
             record["zone_parent_id"] = zone_metadata.get(zone_id, {}).get("parent_zone_id")
             record["zone_metadata_source"] = "explicit"
@@ -292,9 +479,52 @@ def build_entity_registry(project: dict, flows: list[dict] | None = None) -> dic
     for flow in flows or []:
         source_type = flow.get("source_entity_type") or "actor"
         destination_type = flow.get("destination_entity_type") or "ingress"
-        add(flow.get("source"), source_type, "flow", flow.get("flow_id", "unknown"), flow.get("confidence", "Low"))
-        add(flow.get("destination"), destination_type, "flow", flow.get("flow_id", "unknown"), flow.get("confidence", "Low"))
-    return {item["name"].casefold(): item for item in registry.values()}
+        add(
+            flow.get("source"), source_type, "flow", flow.get("flow_id", "unknown"),
+            flow.get("confidence", "Low"), _endpoint_context(flow, "source"),
+        )
+        add(
+            flow.get("destination"), destination_type, "flow", flow.get("flow_id", "unknown"),
+            flow.get("confidence", "Low"), _endpoint_context(flow, "destination"),
+        )
+
+    # If equal labels carry incompatible identity context, keep them as
+    # separate entities and expose that context in the canonical label. This
+    # prevents a vendor/tenant/environment split from becoming indistinguishable
+    # in the DFD or from being overwritten by a name-keyed dictionary.
+    groups: list[list[dict]] = []
+    for item in registry.values():
+        group = next(
+            (
+                candidate for candidate in groups
+                if any(
+                    _same_entity_name(str(item.get("name") or ""), str(member.get("name") or ""))
+                    or any(_same_entity_name(alias, member.get("name", "")) for alias in item.get("aliases", []))
+                    for member in candidate
+                )
+            ),
+            None,
+        )
+        if group is None:
+            groups.append([item])
+        else:
+            group.append(item)
+    for group in groups:
+        if len(group) < 2:
+            continue
+        for item in group:
+            context = item.get("identity_context") or {}
+            suffix = " · ".join(
+                value for value in (
+                    context.get("tenant_id"),
+                    context.get("environment"),
+                    context.get("control_party"),
+                ) if value
+            ) or item["identity_key"]
+            item["aliases"] = _unique_strings([*item.get("aliases", []), item["name"]])
+            item["name"] = f"{item['name']} [{suffix}]"
+            item["entity_id"] = _stable_id("entity", item["name"], item["identity_key"])
+    return registry
 
 
 def build_grounded_data_flows(project: dict) -> list[dict]:
@@ -390,8 +620,8 @@ def validate_boundary_candidates(boundaries: list[dict], registry: dict[str, dic
     for boundary in boundaries:
         source_key = str(boundary.get("source") or "").casefold()
         destination_key = str(boundary.get("destination") or "").casefold()
-        source_entity = registry.get(source_key)
-        destination_entity = registry.get(destination_key)
+        source_entity = _resolve_entity(registry, source_key)
+        destination_entity = _resolve_entity(registry, destination_key)
         if not source_entity or not destination_entity:
             warnings.append(f"Rejected boundary with unknown entity: {boundary.get('source')} → {boundary.get('destination')}")
             continue
@@ -540,7 +770,7 @@ def build_hierarchical_views(
     )
     context_nodes = []
     for label in context_labels:
-        entity = registry.get(label.casefold())
+        entity = _resolve_entity(registry, label)
         if not entity:
             continue
         element_type = {
@@ -1068,16 +1298,16 @@ def build_trust_model(project: dict) -> dict:
     for flow in flows:
         normalized = dict(flow)
         for endpoint, type_field in (("source", "source_entity_type"), ("destination", "destination_entity_type")):
-            matches = [item for item in registry.values() if _same_entity_name(str(flow.get(endpoint) or ""), item["name"])]
-            if len(matches) == 1:
-                normalized[endpoint] = matches[0]["name"]
-                normalized[type_field] = matches[0]["entity_type"]
+            entity = _resolve_entity(registry, str(flow.get(endpoint) or ""), _endpoint_context(flow, endpoint))
+            if entity:
+                normalized[endpoint] = entity["name"]
+                normalized[type_field] = entity["entity_type"]
         normalized_flows.append(normalized)
     flows = normalized_flows
     candidates = []
     for flow in flows:
-        source = registry.get(str(flow.get("source") or "").casefold())
-        destination = registry.get(str(flow.get("destination") or "").casefold())
+        source = _resolve_entity(registry, str(flow.get("source") or ""), _endpoint_context(flow, "source"))
+        destination = _resolve_entity(registry, str(flow.get("destination") or ""), _endpoint_context(flow, "destination"))
         if not source or not destination or not _is_zone_transition(source["zone_id"], destination["zone_id"], zone_metadata):
             continue
         boundary_metadata = _boundary_metadata_for_flow(project, flow)
@@ -1111,8 +1341,26 @@ def build_trust_model(project: dict) -> dict:
         for flow in flows
         for field in ("source", "destination")
     }
-    if declared_external and not declared_external.intersection(connected_entities):
+    declared_external_connected = any(
+        str(entity.get("name") or "").casefold() in connected_entities
+        and (
+            str(declared).casefold() == str(entity.get("name") or "").casefold()
+            or any(_same_entity_name(str(declared), alias) for alias in entity.get("aliases", []))
+        )
+        for declared in declared_external
+        for entity in registry.values()
+    )
+    if declared_external and not declared_external_connected:
         warnings.append("External systems are declared but no evidenced data flow connects them.")
+    inferred_external_groups: dict[str, list[str]] = {}
+    for entity in registry.values():
+        if entity.get("entity_type") == "external_system" and not entity.get("identity_context"):
+            inferred_external_groups.setdefault(str(entity.get("zone_id")), []).append(entity.get("name"))
+    for zone_id, names in inferred_external_groups.items():
+        if len(names) > 1:
+            warnings.append(
+                f"External dependency zone {zone_id} groups {len(names)} entities without explicit tenant, environment, or control-party evidence; review whether they share a trust zone."
+            )
     if not boundaries:
         warnings.append("No grounded cross-zone data flow is available; add or confirm architecture relationships.")
     return {

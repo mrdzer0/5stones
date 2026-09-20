@@ -81,10 +81,16 @@ class DfdNode(DfdBase):
     display_id: str
     type: NodeType
     name: str = Field(min_length=1, max_length=240)
+    identity_key: str | None = None
+    identity_aliases: list[str] = Field(default_factory=list)
+    environment: str | None = None
+    tenant_id: str | None = None
     description: str | None = None
     scope: ScopeValue = "unknown"
     ownership: OwnershipValue = "unknown"
     operator_control_party: str | None = None
+    grouping_status: Literal["documented", "inferred", "unknown"] = "unknown"
+    grouping_basis: str | None = None
     exposure: ExposureValue = "unknown"
     zone_ids: list[str] = Field(default_factory=list)
     parent_process_id: str | None = None

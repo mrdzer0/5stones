@@ -881,9 +881,15 @@ def build_dfd_model(project: dict, trust_model: dict, previous: dict | None = No
             display_id=display_by_node[node_id],
             type=raw_type,
             name=item["name"],
+            identity_key=item.get("identity_key"),
+            identity_aliases=_unique(item.get("aliases", [])),
+            environment=item.get("environment"),
+            tenant_id=item.get("tenant_id"),
             scope=item.get("scope") if item.get("scope") in {"in_scope", "external_dependency", "unknown"} else "unknown",
             ownership=item.get("ownership") if item.get("ownership") in {"organization", "customer", "vendor", "shared", "unknown"} else "unknown",
             operator_control_party=item.get("operator_control_party"),
+            grouping_status=item.get("grouping_status") if item.get("grouping_status") in {"documented", "inferred", "unknown"} else "unknown",
+            grouping_basis=item.get("grouping_basis"),
             exposure=item.get("exposure") if item.get("exposure") in {"internet_facing", "private", "local", "unknown"} else "unknown",
             zone_ids=[zone_ref[item["zone_id"]]] if item.get("zone_id") in zone_ref else [],
             knowledge_status="inferred" if item.get("confidence") != "High" else "documented",
@@ -1725,8 +1731,11 @@ def format_dfd_analysis_context(dfd_model: dict | None) -> str:
         process_metadata = node.get("process_metadata") or {}
         lines.append(
             f"- {node.get('id')} ({node.get('display_id')}) · {node.get('type')} · {node.get('name')} · "
+            f"identity_key={node.get('identity_key') or 'unknown'} aliases={node.get('identity_aliases') or []} · "
+            f"environment={node.get('environment') or 'unknown'} tenant={node.get('tenant_id') or 'unknown'} · "
             f"description={node.get('description') or 'unknown'} · scope={node.get('scope')} ownership={node.get('ownership')} · "
             f"operator={node.get('operator_control_party') or 'unknown'} exposure={node.get('exposure')} · "
+            f"grouping={node.get('grouping_status')} basis={node.get('grouping_basis') or 'unknown'} · "
             f"zones={node.get('zone_ids') or []} · parent_process={node.get('parent_process_id') or 'none'} · "
             f"knowledge={node.get('knowledge_status')} implementation={node.get('implementation_status')} · "
             f"evidence={node.get('evidence_refs') or []} assertions={_assertion_summary(node.get('assertions'))}"

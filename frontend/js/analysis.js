@@ -1840,7 +1840,7 @@ function renderDfdInventory(report) {
   const rows = [
     ...(model.nodes || []).map(node => ({
       type: 'node', id: node.id, displayId: node.display_id, name: node.name,
-      detail: `${node.type} · ${node.scope} · ${node.ownership} · ${node.exposure}`,
+      detail: `${node.type} · ${node.scope} · ${node.ownership} · ${node.exposure} · grouping ${node.grouping_status || 'unknown'}${node.tenant_id ? ` · tenant ${node.tenant_id}` : ''}${node.environment ? ` · ${node.environment}` : ''}`,
     })),
     ...(model.flows || []).map(flow => ({
       type: 'flow', id: flow.id, displayId: flow.display_id, name: flow.name,
@@ -3891,6 +3891,7 @@ function canonicalNodeEditorHtml(node) {
   return `
     <form class="dfd-node-editor" data-dfd-node-editor>
       <div class="node-model-meta">${escHtml(node.display_id || node.id)} · ${escHtml(node.type)} · semantic revision ${escHtml(model.revision)}</div>
+      <div class="node-model-meta">Canonical identity: ${escHtml(node.identity_key || 'unknown')} · grouping ${escHtml(node.grouping_status || 'unknown')} · ${escHtml(node.grouping_basis || 'identity context not documented')}</div>
       <label class="form-label" for="dfd-node-name">Name</label>
       <input class="form-input" id="dfd-node-name" data-dfd-field="name" value="${escHtml(node.name)}" maxlength="240" required />
       <div class="dfd-editor-grid">

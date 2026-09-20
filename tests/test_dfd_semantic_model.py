@@ -138,6 +138,60 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertEqual(len(next(boundary for boundary in model.boundaries if "External Dependency" in boundary.name).crossing_flow_ids), 2)
         self.assertFalse(any("Customer" in (flow["source"], flow["destination"]) for flow in trust_model["data_flows"]))
 
+    def test_f10_identity_context_splits_same_external_alias_and_boundaries(self):
+        project = {
+            "name": "Payments",
+            "actors": ["Backend"],
+            "components": ["Backend"],
+            "external_systems": ["Payments API"],
+            "manual_context": {"actors": ["Backend"], "components": ["Backend"], "external_systems": ["Payments API"]},
+            "extracted_data_flows": [
+                {"flow_id": "prod", "source": "Backend", "destination": "Payments API (production)", "source_entity_type": "component", "destination_entity_type": "external_system", "destination_environment": "production", "destination_control_party": "Acme Pay", "data": ["charge"], "evidence_refs": ["artifact:payments"], "evidence_type": "direct"},
+                {"flow_id": "sandbox", "source": "Backend", "destination": "Payments API [sandbox]", "source_entity_type": "component", "destination_entity_type": "external_system", "destination_environment": "sandbox", "destination_control_party": "Acme Pay", "data": ["test charge"], "evidence_refs": ["artifact:payments"], "evidence_type": "direct"},
+            ],
+        }
+
+        trust_model = build_trust_model(project)
+        model = build_dfd_model(project, trust_model)
+        external_entities = [item for item in trust_model["entities"] if item["entity_type"] == "external_system"]
+
+        self.assertEqual(len(external_entities), 2)
+        self.assertEqual({item["environment"] for item in external_entities}, {"production", "sandbox"})
+        self.assertEqual(len({item["zone_id"] for item in external_entities}), 2)
+        self.assertEqual(len(trust_model["boundaries"]), 2)
+        self.assertEqual(len([node for node in model.nodes if node.environment]), 2)
+        self.assertTrue(all(node.identity_key and node.identity_aliases for node in model.nodes if node.environment))
+
+    def test_f10_same_identity_context_merges_aliases_and_unknown_groups_are_reviewable(self):
+        project = {
+            "name": "Notifications",
+            "components": ["Notification API"],
+            "external_systems": ["Email provider", "SMS provider"],
+            "manual_context": {"components": ["Notification API"]},
+            "extracted_data_flows": [
+                {"flow_id": "email", "source": "Notification API", "destination": "Email provider", "source_entity_type": "component", "destination_entity_type": "external_system", "data": ["message"], "evidence_refs": ["artifact:notifications"], "evidence_type": "direct"},
+                {"flow_id": "sms", "source": "Notification API", "destination": "SMS provider", "source_entity_type": "component", "destination_entity_type": "external_system", "data": ["message"], "evidence_refs": ["artifact:notifications"], "evidence_type": "direct"},
+            ],
+        }
+        same_identity_project = {
+            **project,
+            "external_systems": ["Payments API"],
+            "extracted_data_flows": [
+                {"flow_id": "one", "source": "Notification API", "destination": "Payments API (production)", "source_entity_type": "component", "destination_entity_type": "external_system", "destination_environment": "production", "destination_control_party": "Acme Pay", "data": ["charge"], "evidence_refs": ["artifact:one"], "evidence_type": "direct"},
+                {"flow_id": "two", "source": "Notification API", "destination": "Payments API [prod]", "source_entity_type": "component", "destination_entity_type": "external_system", "destination_environment": "production", "destination_control_party": "Acme Pay", "data": ["refund"], "evidence_refs": ["artifact:two"], "evidence_type": "direct"},
+            ],
+        }
+
+        grouped = build_trust_model(project)
+        merged = build_trust_model(same_identity_project)
+
+        self.assertEqual({item["zone_id"] for item in grouped["entities"] if item["entity_type"] == "external_system"}, {"external-dependency"})
+        self.assertTrue(any("groups 2 entities" in warning for warning in grouped["warnings"]))
+        payments = [item for item in merged["entities"] if item["entity_type"] == "external_system"]
+        self.assertEqual(len(payments), 1)
+        self.assertIn("Payments API (production)", payments[0]["aliases"])
+        self.assertIn("Payments API [prod]", payments[0]["aliases"])
+
     def test_explicit_m3_classification_and_nested_zone_metadata_are_preserved(self):
         project = {
             **self.project,
@@ -184,6 +238,8 @@ class DfdSemanticModelTests(unittest.TestCase):
 
         self.assertEqual((nodes["Customer"].scope, nodes["Customer"].ownership, nodes["Customer"].exposure), ("external_dependency", "customer", "internet_facing"))
         self.assertEqual(nodes["Registration API"].operator_control_party, "Acme Security")
+        self.assertEqual(nodes["Registration API"].grouping_status, "documented")
+        self.assertIn("Registration API", nodes["Registration API"].identity_aliases)
         self.assertEqual(nodes["Customer Database"].exposure, "private")
         self.assertEqual(zones["zone-application"].parent_zone_id, "zone-organization")
         self.assertEqual(zones["zone-application"].ownership_group_id, "org-group")
