@@ -90,6 +90,84 @@ class AnalysisRunStateTests(unittest.TestCase):
 
         self.assertEqual(completed, ["trust_boundary", "stride", "missing_info", "assumptions"])
 
+    def test_f08_snapshot_and_dependency_gate_stale_clearing(self):
+        snapshot = {"dfd_revision": 12, "dfd_semantic_hash": "hash-12"}
+        current = {
+            "run_id": "run-current",
+            "ok": True,
+            "assessment_status": "complete",
+            "analysis_snapshot": snapshot,
+        }
+        stale = {
+            "run_id": "run-old",
+            "ok": True,
+            "assessment_status": "complete",
+            "analysis_snapshot": {"dfd_revision": 11, "dfd_semantic_hash": "hash-11"},
+        }
+        report = {
+            "dfd_model": {"revision": 12, "semantic_hash": "hash-12"},
+            "assumptions": [],
+            "ai_status": {
+                "trust_boundary": current,
+                "dfd_model": current,
+                "stride": current,
+                "linddun": stale,
+                "controls": current,
+                "tests": current,
+                "assumptions": current,
+            },
+        }
+
+        completed = _valid_completed_stages(
+            report,
+            ["trust_boundary", "stride", "linddun", "controls", "tests", "assumptions"],
+            run_id="run-current",
+            snapshot=snapshot,
+        )
+
+        self.assertEqual(completed, ["trust_boundary", "stride"])
+
+    def test_f08_failed_or_unrequested_stage_cannot_be_reported_as_run_warning(self):
+        saved_reports = []
+        result = {
+            **self.old_report,
+            "ai_status": {
+                "stride": {"ok": False, "engine": "fallback"},
+                "controls": {"ok": False, "engine": "fallback"},
+            },
+            "risk_summary": {"total": 1},
+        }
+        with patch("backend.routers.analysis.get_project", return_value=self.project.copy()), \
+             patch("backend.routers.analysis.get_report", return_value=self.old_report.copy()), \
+             patch("backend.routers.analysis.save_report", side_effect=lambda _, report: saved_reports.append(report.copy())), \
+             patch("backend.routers.analysis.save_project"), \
+             patch("backend.routers.analysis._run_analysis_pipeline", return_value=result):
+            completed = asyncio.run(run_full_analysis(self.project["project_id"], {"analysis_types": ["stride"]}))
+
+        self.assertEqual(completed["analysis_run"]["warning_stages"], ["stride"])
+
+    def test_f08_run_manifest_is_promoted_to_persisted_analysis_run(self):
+        result = {
+            **self.old_report,
+            "ai_status": {"stride": {"ok": True, "assessment_status": "complete"}},
+            "risk_summary": {"total": 1},
+            "analysis_run_manifest": {
+                "final_snapshot": {"dfd_revision": 4, "dfd_semantic_hash": "hash-4"},
+                "completed_stages": ["stride"],
+                "stage_timings": {"stride": 1.25},
+            },
+        }
+        with patch("backend.routers.analysis.get_project", return_value=self.project.copy()), \
+             patch("backend.routers.analysis.get_report", return_value=self.old_report.copy()), \
+             patch("backend.routers.analysis.save_report"), \
+             patch("backend.routers.analysis.save_project"), \
+             patch("backend.routers.analysis._run_analysis_pipeline", return_value=result):
+            completed = asyncio.run(run_full_analysis(self.project["project_id"], {"analysis_types": ["stride"]}))
+
+        self.assertEqual(completed["analysis_run"]["final_snapshot"]["dfd_revision"], 4)
+        self.assertEqual(completed["analysis_run"]["completed_stages"], ["stride"])
+        self.assertEqual(completed["analysis_run"]["stage_timings"]["stride"], 1.25)
+
 
 if __name__ == "__main__":
     unittest.main()

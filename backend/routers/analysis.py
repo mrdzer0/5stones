@@ -60,6 +60,15 @@ router = APIRouter(
 )
 
 BOUNDARY_DOWNSTREAM_STAGES = ["stride", "linddun", "controls", "tests", "missing_info", "assumptions"]
+ANALYSIS_STAGE_DEPENDENCIES = {
+    "trust_boundary": [],
+    "stride": ["trust_boundary"],
+    "linddun": ["trust_boundary"],
+    "controls": ["stride", "linddun"],
+    "tests": ["controls"],
+    "missing_info": ["stride", "linddun"],
+    "assumptions": ["stride", "linddun"],
+}
 _ACTIVE_ANALYSIS_RUNS: set[str] = set()
 
 
@@ -100,27 +109,105 @@ def _clear_review_visibility_stale(report: dict):
         report.pop("analysis_stale", None)
 
 
-def _valid_completed_stages(report: dict, requested: list[str]) -> list[str]:
+def _analysis_snapshot(report: dict, project: dict | None = None) -> dict:
+    dfd_model = report.get("dfd_model") if isinstance(report, dict) else {}
+    dfd_model = dfd_model if isinstance(dfd_model, dict) else {}
+    return {
+        "dfd_revision": dfd_model.get("revision"),
+        "dfd_semantic_hash": dfd_model.get("semantic_hash"),
+        "project_updated_at": (project or {}).get("updated_at"),
+    }
+
+
+def _stage_matches_snapshot(status: dict, snapshot: dict | None, run_id: str | None = None) -> bool:
+    if not isinstance(status, dict) or status.get("ok") is not True:
+        return False
+    if run_id and status.get("run_id") != run_id:
+        return False
+    if snapshot is None:
+        return True
+    recorded = status.get("analysis_snapshot")
+    if not isinstance(recorded, dict):
+        return False
+    return all(recorded.get(key) == snapshot.get(key) for key in ("dfd_revision", "dfd_semantic_hash"))
+
+
+def _valid_completed_stages(
+    report: dict,
+    requested: list[str],
+    *,
+    run_id: str | None = None,
+    snapshot: dict | None = None,
+) -> list[str]:
     """Return only stages that produced current, validated results."""
     statuses = report.get("ai_status") if isinstance(report.get("ai_status"), dict) else {}
-    completed = []
-    for stage in requested:
+    def is_valid(stage: str, seen: set[str] | None = None, require_run_id: bool = True) -> bool:
+        seen = set(seen or set())
+        if stage in seen:
+            return False
+        seen.add(stage)
+        status = statuses.get(stage)
+        if stage == "assumptions" and snapshot is None:
+            return isinstance(report.get("assumptions"), list)
+        if not _stage_matches_snapshot(status, snapshot, run_id if require_run_id else None):
+            return False
         if stage == "trust_boundary":
             dfd_status = statuses.get("dfd_model") or {}
             boundary_status = statuses.get("trust_boundary") or {}
-            if dfd_status.get("ok") and boundary_status.get("ok"):
-                completed.append(stage)
-            continue
+            dependency_run_id = run_id if require_run_id else None
+            return _stage_matches_snapshot(dfd_status, snapshot, dependency_run_id) and _stage_matches_snapshot(boundary_status, snapshot, dependency_run_id)
         if stage == "assumptions":
             # Assumptions are deterministic, but only count as complete after
             # the pipeline has materialized the stage output.
-            if isinstance(report.get("assumptions"), list):
-                completed.append(stage)
-            continue
+            return isinstance(report.get("assumptions"), list) and (
+                snapshot is None or all(is_valid(dependency, seen, False) for dependency in ANALYSIS_STAGE_DEPENDENCIES.get(stage, []))
+            )
+        if snapshot is None:
+            return True
+        return all(is_valid(dependency, seen, False) for dependency in ANALYSIS_STAGE_DEPENDENCIES.get(stage, []))
+
+    return [stage for stage in requested if is_valid(stage)]
+
+
+def _stage_status_template(run_id: str, snapshot: dict, stage: str) -> dict:
+    return {
+        "ok": False,
+        "engine": "pending",
+        "assessment_status": "not_run",
+        "run_id": run_id,
+        "analysis_snapshot": dict(snapshot),
+        "dependencies": list(ANALYSIS_STAGE_DEPENDENCIES.get(stage, [])),
+    }
+
+
+def _stamp_stage_results(
+    report: dict,
+    requested: list[str],
+    run_id: str,
+    snapshot: dict,
+    stage_timings: dict[str, float],
+):
+    statuses = report.setdefault("ai_status", {})
+    completed_at = _utc_now()
+    for stage in requested:
         status = statuses.get(stage)
-        if isinstance(status, dict) and status.get("ok") is True:
-            completed.append(stage)
-    return completed
+        if not isinstance(status, dict):
+            status = _stage_status_template(run_id, snapshot, stage)
+            statuses[stage] = status
+        status["run_id"] = run_id
+        status["analysis_snapshot"] = dict(snapshot)
+        status["dependencies"] = list(ANALYSIS_STAGE_DEPENDENCIES.get(stage, []))
+        status["duration_seconds"] = round(float(stage_timings.get(stage, 0.0)), 3)
+        status["completed_at"] = completed_at
+
+
+def _stage_timer(stage_timings: dict[str, float], stage: str):
+    started = time.perf_counter()
+
+    def finish():
+        stage_timings[stage] = time.perf_counter() - started
+
+    return finish
 
 
 def _append_analysis_quarantine(report: dict, records: list[dict]):
@@ -287,11 +374,14 @@ async def run_full_analysis(project_id: str, body: dict = None, request: Request
     _ACTIVE_ANALYSIS_RUNS.add(project_id)
     previous_report = get_report(project_id) or _empty_report(project)
     previous_run = previous_report.get("analysis_run") if isinstance(previous_report.get("analysis_run"), dict) else {}
+    input_snapshot = _analysis_snapshot(previous_report, project)
     run_state = {
         "run_id": str(uuid.uuid4()),
         "status": "running",
         "requested_types": types,
         "started_at": _utc_now(),
+        "input_snapshot": input_snapshot,
+        "stage_dependencies": {stage: ANALYSIS_STAGE_DEPENDENCIES.get(stage, []) for stage in types},
         "previous_successful_run_id": previous_run.get("run_id") if previous_run.get("status") in {"completed", "completed_with_warnings"} else None,
         "retryable": False,
     }
@@ -302,7 +392,13 @@ async def run_full_analysis(project_id: str, body: dict = None, request: Request
     save_project(project)
 
     try:
-        result = await _run_analysis_pipeline(project_id, body, request=request)
+        result = await _run_analysis_pipeline(
+            project_id,
+            body,
+            request=request,
+            run_id=run_state["run_id"],
+            input_snapshot=input_snapshot,
+        )
     except Exception as exc:
         safe_error = redact_text(str(exc))[:1000] or "Analysis pipeline failed"
         failed_report = get_report(project_id) or previous_report
@@ -324,11 +420,13 @@ async def run_full_analysis(project_id: str, body: dict = None, request: Request
 
     statuses = result.get("ai_status") if isinstance(result.get("ai_status"), dict) else {}
     warning_stages = sorted(
-        stage for stage, status in statuses.items()
-        if isinstance(status, dict) and status.get("ok") is False
+        stage for stage in {*types, *(set(["dfd_model"]) if "trust_boundary" in types else set())}
+        if isinstance(statuses.get(stage), dict) and statuses[stage].get("ok") is False
     )
+    pipeline_manifest = result.pop("analysis_run_manifest", {}) if isinstance(result, dict) else {}
     result["analysis_run"] = {
         **run_state,
+        **pipeline_manifest,
         "status": "completed_with_warnings" if warning_stages else "completed",
         "completed_at": _utc_now(),
         "warning_stages": warning_stages,
@@ -360,14 +458,22 @@ async def retry_analysis(project_id: str, request: Request = None):
     )
 
 
-async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Request = None):
+async def _run_analysis_pipeline(
+    project_id: str,
+    body: dict = None,
+    request: Request = None,
+    run_id: str | None = None,
+    input_snapshot: dict | None = None,
+):
     """Run full threat modeling pipeline for a project."""
     project = get_project(project_id) if request is None else get_authorized_project(project_id, request)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
     types = _requested_analysis_types(body)
+    run_id = run_id or str(uuid.uuid4())
     stage_started_at = time.perf_counter()
+    stage_timings: dict[str, float] = {}
     log_event("analysis.started", details={"project_id": project_id, "analysis_types": types})
 
     report = get_report(project_id)
@@ -384,9 +490,20 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
         if item.get("evidence_id")
     }
     report.setdefault("ai_status", {})
-    _clear_review_visibility_stale(report)
+    input_snapshot = dict(input_snapshot or _analysis_snapshot(report, project))
+    for stage in types:
+        # Keep previous output collections for recovery, but mark their status
+        # as not-run until this run produces a validated replacement.
+        report["ai_status"][stage] = _stage_status_template(run_id, input_snapshot, stage)
+    report["analysis_run_manifest"] = {
+        "run_id": run_id,
+        "requested_types": list(types),
+        "input_snapshot": dict(input_snapshot),
+        "stage_dependencies": {stage: ANALYSIS_STAGE_DEPENDENCIES.get(stage, []) for stage in types},
+    }
 
     # 1. Trust Boundaries
+    finish_trust_boundary = _stage_timer(stage_timings, "trust_boundary") if "trust_boundary" in types else None
     if "trust_boundary" in types:
         previous_signature = _active_topology_signature(report.get("trust_boundaries"))
         previous_dfd_hash = (report.get("dfd_model") or {}).get("semantic_hash")
@@ -457,6 +574,7 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
                 "warnings": dfd_validation["warnings"],
                 "revision": dfd_model.revision,
             }
+            report["ai_status"]["trust_boundary"]["ok"] = bool(dfd_validation["valid"])
         except Exception as exc:
             # Fail closed: an unavailable grounded model must never fall back to
             # guessed topology or re-run the same failing builder.
@@ -468,6 +586,8 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
             report["trust_boundaries"] = []
     else:
         trust_boundaries = active_trust_boundaries(report.get("trust_boundaries", []))
+    if finish_trust_boundary:
+        finish_trust_boundary()
 
     # Keep privacy/lifecycle readiness derived from the same canonical model
     # revision that feeds LINDDUN. Missing metadata remains review context; it
@@ -485,6 +605,7 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
 
     # 2. STRIDE
     stride_threats = []
+    finish_stride = _stage_timer(stage_timings, "stride") if "stride" in types else None
     if "stride" in types:
         prior_stride_threats = [
             dict(item) for item in (report.get("threats") or [])
@@ -593,9 +714,12 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
             )
         else:
             stride_deduped = 0
+    if finish_stride:
+        finish_stride()
 
     # 3. LINDDUN
     linddun_threats = []
+    finish_linddun = _stage_timer(stage_timings, "linddun") if "linddun" in types else None
     if "linddun" in types:
         prior_linddun_threats = [
             dict(item) for item in (report.get("threats") or [])
@@ -705,6 +829,8 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
             )
         else:
             linddun_deduped = 0
+    if finish_linddun:
+        finish_linddun()
 
     # Framework replacement above already reconciles each active snapshot. A
     # final empty-seed merge only removes duplicate records from legacy reports
@@ -713,6 +839,7 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
     deduped_count = final_deduped + locals().get("stride_deduped", 0) + locals().get("linddun_deduped", 0)
 
     # 4. Controls
+    finish_controls = _stage_timer(stage_timings, "controls") if "controls" in types else None
     if "controls" in types and report.get("threats"):
         try:
             controls = await map_controls(
@@ -763,8 +890,11 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
             mapped_controls,
             (report.get("dfd_model") or {}).get("revision"),
         )
+    if finish_controls:
+        finish_controls()
 
     # 5. Test Scenarios
+    finish_tests = _stage_timer(stage_timings, "tests") if "tests" in types else None
     if "tests" in types and report.get("threats"):
         try:
             tests = await generate_test_scenarios(
@@ -808,8 +938,11 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
             tests,
             (report.get("dfd_model") or {}).get("revision"),
         )
+    if finish_tests:
+        finish_tests()
 
     # 6. Missing Info
+    finish_missing_info = _stage_timer(stage_timings, "missing_info") if "missing_info" in types else None
     if "missing_info" in types:
         try:
             missing = await generate_missing_info(project, report.get("threats", []), force_fallback=False)
@@ -818,11 +951,17 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
             missing = await generate_missing_info(project, report.get("threats", []), force_fallback=True)
             report["ai_status"]["missing_info"] = {"ok": False, "error": str(exc), "engine": "fallback"}
         report["missing_info"] = enrich_missing_info(missing, project)
+    if finish_missing_info:
+        finish_missing_info()
 
     # 7. Assumptions
+    finish_assumptions = _stage_timer(stage_timings, "assumptions") if "assumptions" in types else None
     if "assumptions" in types:
         assumptions = await generate_assumptions(project, report.get("threats", []))
         report["assumptions"] = enrich_assumptions(assumptions, report.get("threats", []), project)
+        report["ai_status"]["assumptions"] = {"ok": True, "engine": "deterministic", "assessment_status": "complete"}
+    if finish_assumptions:
+        finish_assumptions()
 
     # Risk summary
     threats = report.get("threats", [])
@@ -844,21 +983,39 @@ async def _run_analysis_pipeline(project_id: str, body: dict = None, request: Re
     report["generated_at"] = datetime.utcnow().isoformat()
     propagate_target_refs(report)
 
+    final_snapshot = _analysis_snapshot(report, project)
+    stamp_types = [*types, *(["dfd_model"] if "trust_boundary" in types else [])]
+    _stamp_stage_results(report, stamp_types, run_id, final_snapshot, stage_timings)
+
     # A source change with a human-edited DFD leaves a proposal pending. Keep
-    # downstream stages stale until the reviewer applies or resolves it.
-    _clear_completed_stale_stages(
+    # downstream stages stale until the reviewer applies or resolves it. A
+    # stage can clear staleness only when its own validated result and every
+    # dependency point at this exact canonical snapshot and run.
+    completed_stages = [] if report.get("dfd_proposal") else _valid_completed_stages(
         report,
-        [] if report.get("dfd_proposal") else _valid_completed_stages(report, types),
+        types,
+        run_id=run_id,
+        snapshot=final_snapshot,
     )
+    _clear_completed_stale_stages(report, completed_stages)
 
     stage_duration = round(time.perf_counter() - stage_started_at, 2)
     stage_metrics = report.setdefault("stage_metrics", {})
     completed_at = datetime.utcnow().isoformat()
     for analysis_type in types:
         stage_metrics[analysis_type] = {
-            "duration_seconds": stage_duration,
+            "duration_seconds": round(float(stage_timings.get(analysis_type, 0.0)), 3),
             "completed_at": completed_at,
+            "run_id": run_id,
+            "analysis_snapshot": dict(final_snapshot),
         }
+
+    report["analysis_run_manifest"] = {
+        **(report.get("analysis_run_manifest") or {}),
+        "final_snapshot": dict(final_snapshot),
+        "completed_stages": completed_stages,
+        "stage_timings": {stage: round(float(value), 3) for stage, value in stage_timings.items()},
+    }
 
     save_report(project_id, report)
 

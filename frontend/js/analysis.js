@@ -954,7 +954,9 @@ async function runAnalysis(types) {
   const setStepDone = (id, aiStatus = { ok: true }) => {
     const el = document.getElementById(id);
     if (!el) return;
-    const duration = completeStageProgress(id);
+    const duration = aiStatus?.duration_seconds != null
+      ? `${Number(aiStatus.duration_seconds).toFixed(2)}s`
+      : completeStageProgress(id);
 
     if (aiStatus && aiStatus.ok === false) {
       el.className = 'analyzing-step-item error';
@@ -997,118 +999,48 @@ async function runAnalysis(types) {
   };
 
   let anyFailed = false;
+  const gapTypes = types.filter(type => type === 'missing_info' || type === 'assumptions');
+  const stageUiMap = [
+    ['trust_boundary', 'as-trust'],
+    ['stride', 'as-stride'],
+    ['linddun', 'as-linddun'],
+    ['controls', 'as-controls'],
+    ['tests', 'as-tests'],
+  ];
+  const activeUiStages = stageUiMap.filter(([stage]) => types.includes(stage));
+  if (gapTypes.length) activeUiStages.push(['gaps', 'as-gaps']);
+  const activeUiIds = new Set(activeUiStages.map(([, id]) => id));
+  stepIds.filter(id => !activeUiIds.has(id)).forEach(setStepSkipped);
+  activeUiStages.forEach(([, id]) => setActiveStep(id));
 
-  // 1. Trust Boundaries
-  if (types.includes('trust_boundary')) {
-    setActiveStep('as-trust');
-    try {
-      await API.analysis.run(projectId, ['trust_boundary']);
-      const report = await API.analysis.report(projectId);
-      const aiStatus = report.ai_status?.trust_boundary || { ok: true };
+  // One request creates one immutable backend run/snapshot. The UI still
+  // renders each stage separately from the returned per-stage status.
+  let report;
+  try {
+    report = await API.analysis.run(projectId, types);
+    currentReport = report;
+    activeUiStages.forEach(([stage, id]) => {
+      const stageStatuses = stage === 'gaps'
+        ? gapTypes.map(type => report.ai_status?.[type]).filter(Boolean)
+        : [report.ai_status?.[stage]];
+      const aiStatus = stage === 'gaps'
+        ? {
+            ok: stageStatuses.length > 0 && stageStatuses.every(status => status.ok !== false),
+            duration_seconds: stageStatuses.reduce((sum, status) => sum + Number(status.duration_seconds || 0), 0),
+            error: stageStatuses.find(status => status.ok === false)?.error,
+          }
+        : (stageStatuses[0] || { ok: false, error: 'Stage completed without a persisted status. Please retry this phase.' });
       if (!aiStatus.ok) anyFailed = true;
-      setStepDone('as-trust', aiStatus);
-    } catch (err) {
-      anyFailed = true;
-      setStepDone('as-trust', { ok: false, error: err.message });
-    }
-  } else {
-    setStepSkipped('as-trust');
-  }
-
-  // 2. STRIDE
-  if (types.includes('stride')) {
-    setActiveStep('as-stride');
-    try {
-      await API.analysis.run(projectId, ['stride']);
-      const report = await API.analysis.report(projectId);
-      const aiStatus = report.ai_status?.stride || { ok: true };
-      if (!aiStatus.ok) anyFailed = true;
-      setStepDone('as-stride', aiStatus);
-    } catch (err) {
-      anyFailed = true;
-      setStepDone('as-stride', { ok: false, error: err.message });
-    }
-  } else {
-    setStepSkipped('as-stride');
-  }
-
-  // 3. LINDDUN
-  if (types.includes('linddun')) {
-    setActiveStep('as-linddun');
-    try {
-      await API.analysis.run(projectId, ['linddun']);
-      const report = await API.analysis.report(projectId);
-      const aiStatus = report.ai_status?.linddun || {
-        ok: false,
-        error: 'The privacy review completed without a stage status. Please retry this phase.'
-      };
-      if (!aiStatus.ok) anyFailed = true;
-      setStepDone('as-linddun', aiStatus);
-    } catch (err) {
-      anyFailed = true;
-      setStepDone('as-linddun', { ok: false, error: err.message });
-    }
-  } else {
-    setStepSkipped('as-linddun');
-  }
-
-  // 4. Controls
-  if (types.includes('controls')) {
-    setActiveStep('as-controls');
-    try {
-      await API.analysis.run(projectId, ['controls']);
-      const report = await API.analysis.report(projectId);
-      const aiStatus = report.ai_status?.controls || { ok: true };
-      if (!aiStatus.ok) anyFailed = true;
-      setStepDone('as-controls', aiStatus);
-    } catch (err) {
-      anyFailed = true;
-      setStepDone('as-controls', { ok: false, error: err.message });
-    }
-  } else {
-    setStepSkipped('as-controls');
-  }
-
-  // 5. Test Scenarios
-  if (types.includes('tests')) {
-    setActiveStep('as-tests');
-    try {
-      await API.analysis.run(projectId, ['tests']);
-      const report = await API.analysis.report(projectId);
-      const aiStatus = report.ai_status?.tests || { ok: true };
-      if (!aiStatus.ok) anyFailed = true;
-      setStepDone('as-tests', aiStatus);
-    } catch (err) {
-      anyFailed = true;
-      setStepDone('as-tests', { ok: false, error: err.message });
-    }
-  } else {
-    setStepSkipped('as-tests');
-  }
-
-  // 6. Gaps (missing info + assumptions)
-  const gapTypes = [];
-  if (types.includes('missing_info')) gapTypes.push('missing_info');
-  if (types.includes('assumptions')) gapTypes.push('assumptions');
-
-  if (gapTypes.length > 0) {
-    setActiveStep('as-gaps');
-    try {
-      await API.analysis.run(projectId, gapTypes);
-      const report = await API.analysis.report(projectId);
-      const aiStatus = report.ai_status?.missing_info || { ok: true };
-      if (!aiStatus.ok) anyFailed = true;
-      setStepDone('as-gaps', aiStatus);
-    } catch (err) {
-      anyFailed = true;
-      setStepDone('as-gaps', { ok: false, error: err.message });
-    }
-  } else {
-    setStepSkipped('as-gaps');
+      setStepDone(id, aiStatus);
+    });
+  } catch (err) {
+    anyFailed = true;
+    activeUiStages.forEach(([, id]) => setStepDone(id, { ok: false, error: err.message }));
+    report = null;
   }
 
   try {
-    const report = await API.analysis.report(projectId);
+    report = report || await API.analysis.report(projectId);
     currentReport = report;
 
     if (anyFailed) {
