@@ -1198,6 +1198,10 @@ def validate_dfd_model(model: DfdModel) -> dict:
     errors: list[str] = []
     warnings: list[str] = []
     semantic_issues: list[str] = []
+    topology_issues: list[str] = []
+    knowledge_issues: list[str] = []
+    reviewer_issues: list[str] = []
+    blocking_reviewer_issues: list[str] = []
     if model.schema_version not in SUPPORTED_DFD_SCHEMA_VERSIONS:
         errors.append(
             f"Unsupported DFD schema version {model.schema_version}; "
@@ -1380,22 +1384,27 @@ def validate_dfd_model(model: DfdModel) -> dict:
                 )
                 warnings.append(message)
                 semantic_issues.append(message)
+                knowledge_issues.append(message)
             if not flow.data_object_ids:
                 message = f"Flow {flow.display_id} has no data object label and requires review"
                 warnings.append(message)
                 semantic_issues.append(message)
+                knowledge_issues.append(message)
             if not flow.data_object_ids and flow.name.casefold() in {
                 str(flow.protocol or "").casefold(), "https", "http", "post", "get", "unknown data flow"
             }:
                 message = f"Flow {flow.display_id} name is not a data label and requires review"
                 warnings.append(message)
                 semantic_issues.append(message)
+                knowledge_issues.append(message)
             if flow.crossing_status == "resolved" and (
                 not source_node.zone_ids or not target_node.zone_ids
             ):
                 errors.append(f"Flow {flow.id} is marked resolved but has incomplete zone membership")
         if flow.crossing_status == "unresolved":
-            warnings.append(f"Flow {flow.id} has unresolved zone membership or boundary crossing")
+            message = f"Flow {flow.id} has unresolved zone membership or boundary crossing"
+            warnings.append(message)
+            knowledge_issues.append(message)
 
     for boundary in model.boundaries:
         for zone_id in [*boundary.source_zone_ids, *boundary.target_zone_ids]:
@@ -1504,6 +1513,10 @@ def validate_dfd_model(model: DfdModel) -> dict:
             errors.append(f"Answered question {question.id} requires a resolution")
         if question.status in {"open", "deferred"} and str(question.resolution or "").strip():
             warnings.append(f"Question {question.id} has a resolution but remains {question.status}")
+        if question.status in {"open", "deferred"}:
+            reviewer_issues.append(
+                f"Question {question.id} is {question.status} and needs reviewer follow-up"
+            )
 
     for flow in model.flows:
         for crossing_id in [*flow.crossing_origins.keys(), *flow.crossing_rationales.keys()]:
@@ -1515,13 +1528,27 @@ def validate_dfd_model(model: DfdModel) -> dict:
                 errors.append(f"Boundary {boundary_id} and flow {flow.id} have inconsistent reverse crossing references")
             if boundary and boundary.transition_scope in {"logical", "mixed"}:
                 if flow.crossing_origins.get(boundary_id) != "reviewer":
-                    warnings.append(f"Flow {flow.id} logical boundary {boundary_id} requires reviewer confirmation")
+                    message = f"Flow {flow.id} logical boundary {boundary_id} requires reviewer confirmation"
+                    warnings.append(message)
+                    reviewer_issues.append(message)
+                    blocking_reviewer_issues.append(message)
+                    semantic_issues.append(message)
                 if not str(flow.crossing_rationales.get(boundary_id) or "").strip():
-                    warnings.append(f"Flow {flow.id} logical boundary {boundary_id} has no reviewer rationale")
+                    message = f"Flow {flow.id} logical boundary {boundary_id} has no reviewer rationale"
+                    warnings.append(message)
+                    reviewer_issues.append(message)
+                    blocking_reviewer_issues.append(message)
+                    semantic_issues.append(message)
 
     for flow in model.flows:
         if len(flow.boundary_crossings) != len(set(flow.boundary_crossings)):
             errors.append(f"Flow {flow.id} contains duplicate boundary crossings")
+
+    for boundary in model.boundaries:
+        if boundary.status in {"candidate", "unresolved"}:
+            reviewer_issues.append(
+                f"Boundary {boundary.display_id} ({boundary.name}) is {boundary.status} and needs reviewer confirmation"
+            )
 
     # Structural validity permits a partial draft. Report disconnected trust
     # zones separately so a green schema check cannot imply a usable topology.
@@ -1529,7 +1556,9 @@ def validate_dfd_model(model: DfdModel) -> dict:
     connected_zones: set[str] = set()
     connected_nodes: set[str] = set()
     if not model.nodes and not model.flows and not model.data_objects and not model.zones:
-        semantic_issues.append("Canonical DFD has no semantic elements")
+        message = "Canonical DFD has no semantic elements"
+        semantic_issues.append(message)
+        topology_issues.append(message)
     for flow in model.flows:
         if flow.source_id not in node_by_id or flow.target_id not in node_by_id:
             continue
@@ -1540,35 +1569,105 @@ def validate_dfd_model(model: DfdModel) -> dict:
             message = f"Flow {flow.display_id} has unresolved zone membership"
             warnings.append(message)
             semantic_issues.append(message)
+            topology_issues.append(message)
+            knowledge_issues.append(message)
         if _zone_transition(source_zones, target_zones):
             connected_zones.update(source_zones | target_zones)
             if not flow.boundary_crossings:
                 message = f"Flow {flow.display_id} crosses zones without a trust boundary"
                 semantic_issues.append(message)
                 warnings.append(message)
+                topology_issues.append(message)
     active_zone_ids = {zone_id for zone_id, members in zone_members.items() if members}
     if len(active_zone_ids) > 1:
         for zone in model.zones:
             if zone.id not in active_zone_ids:
-                semantic_issues.append(f"Zone {zone.display_id} ({zone.name}) has no nodes")
+                message = f"Zone {zone.display_id} ({zone.name}) has no nodes"
+                semantic_issues.append(message)
+                topology_issues.append(message)
                 continue
             if zone.id not in connected_zones:
-                semantic_issues.append(f"Zone {zone.display_id} ({zone.name}) has no evidenced cross-zone flow")
+                message = f"Zone {zone.display_id} ({zone.name}) has no evidenced cross-zone flow"
+                semantic_issues.append(message)
+                topology_issues.append(message)
     else:
         for zone in model.zones:
             if not zone_members.get(zone.id):
-                semantic_issues.append(f"Zone {zone.display_id} ({zone.name}) has no nodes")
+                message = f"Zone {zone.display_id} ({zone.name}) has no nodes"
+                semantic_issues.append(message)
+                topology_issues.append(message)
     isolated_nodes = [node.display_id for node in model.nodes if node.id not in connected_nodes]
     if isolated_nodes:
-        semantic_issues.append(f"Nodes without evidenced flows: {', '.join(isolated_nodes)}")
+        message = (
+            f"Nodes without evidenced flows: {', '.join(isolated_nodes)}. "
+            "Add an evidenced flow or resolve/defer each node with a scoped review question."
+        )
+        semantic_issues.append(message)
+        topology_issues.append(message)
+
+    # Keep the old flat fields for API consumers, but expose the reason for
+    # readiness explicitly. Structural validity is intentionally independent
+    # from topology coverage: a partial draft can be saved, while analysis
+    # must wait until its graph is sufficiently connected and reviewable.
+    topology_issues = _unique(topology_issues)
+    knowledge_issues = _unique(knowledge_issues)
+    reviewer_issues = _unique(reviewer_issues)
+    blocking_reviewer_issues = _unique(blocking_reviewer_issues)
+    semantic_issues = _unique([*semantic_issues, *topology_issues, *knowledge_issues, *blocking_reviewer_issues])
     warnings.extend(semantic_issues)
+    warnings.extend(reviewer_issues)
+
+    node_coverage = round(len(connected_nodes) / len(model.nodes), 3) if model.nodes else 0.0
+    active_zone_count = len(active_zone_ids)
+    connected_zone_count = len(connected_zones & active_zone_ids)
+    if not model.nodes and not model.flows and not model.data_objects and not model.zones:
+        topology_status = "empty"
+    elif topology_issues:
+        topology_status = "partial"
+    else:
+        topology_status = "complete"
+    structural_status = "valid" if not errors else "invalid"
+    knowledge_status = "complete" if not knowledge_issues else "partial"
+    reviewer_status = (
+        "blocked" if blocking_reviewer_issues else "pending" if reviewer_issues else "accepted"
+    )
+    blocking_reasons = _unique([*errors, *semantic_issues])
+    readiness = {
+        "status": "ready" if not blocking_reasons else "not_ready",
+        "blocking": bool(blocking_reasons),
+        "blocking_reasons": blocking_reasons,
+        "structural_validity": {
+            "status": structural_status,
+            "issues": _unique(errors),
+        },
+        "topology_coverage": {
+            "status": topology_status,
+            "issues": topology_issues,
+            "connected_nodes": len(connected_nodes),
+            "total_nodes": len(model.nodes),
+            "node_coverage": node_coverage,
+            "active_zones": active_zone_count,
+            "connected_zones": connected_zone_count,
+        },
+        "knowledge_completeness": {
+            "status": knowledge_status,
+            "issues": knowledge_issues,
+        },
+        "reviewer_acceptance": {
+            "status": reviewer_status,
+            "issues": reviewer_issues,
+            "blocking_issues": blocking_reviewer_issues,
+        },
+    }
 
     return {
         "valid": not errors,
-        "semantic_ready": not errors and not semantic_issues,
-        "semantic_issues": _unique(semantic_issues),
+        "semantic_ready": not blocking_reasons,
+        "semantic_issues": semantic_issues,
         "errors": _unique(errors),
         "warnings": _unique(warnings),
+        "readiness": readiness,
+        "analysis_readiness": readiness,
         "counts": {
             "nodes": len(model.nodes),
             "data_objects": len(model.data_objects),

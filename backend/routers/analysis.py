@@ -1,7 +1,7 @@
 """Analysis router — runs threat modeling pipeline."""
 from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
-from backend.utils.storage import get_project, save_dfd_model, save_project, save_report, get_report
+from backend.utils.storage import get_project, save_dfd_model, save_project, save_report, get_report, get_dfd_model
 from backend.utils.audit import log_event
 from backend.utils.access_control import get_authorized_project, workspace_access_dependency
 from backend.utils.redaction import redact_text
@@ -13,7 +13,13 @@ from backend.services.trust_boundary_service import (
     build_trust_model,
     propagate_target_refs,
 )
-from backend.services.dfd_model_service import build_dfd_model, reconcile_generated_dfd, validate_dfd_model
+from backend.services.dfd_model_service import (
+    build_dfd_model,
+    load_dfd_model,
+    recalculate_boundary_crossings,
+    reconcile_generated_dfd,
+    validate_dfd_model,
+)
 from backend.services.stride_service import generate_stride_threats
 from backend.services.linddun_service import generate_linddun_threats
 from backend.services.privacy_service import assess_privacy_metadata, annotate_privacy_threats
@@ -1050,7 +1056,27 @@ async def get_project_report(project_id: str, request: Request = None):
     if not report:
         raise HTTPException(status_code=404, detail="No report yet — run analysis first")
 
-    return normalize_report_evidence(report, project)
+    report = normalize_report_evidence(report, project)
+
+    # Reports created before the readiness contract was expanded may still
+    # contain a legacy flat ``dfd_validation`` object. Recompute the
+    # validation from the canonical persisted model on read so the Analysis
+    # page never presents an old green readiness result or stale topology
+    # warning. This is intentionally read-only; persistence remains owned by
+    # the DFD/analysis write paths.
+    dfd_payload = get_dfd_model(project_id) or report.get("dfd_model")
+    if isinstance(dfd_payload, dict):
+        try:
+            dfd_model, _migrated = load_dfd_model(dfd_payload, project_id=project_id)
+            recalculate_boundary_crossings(dfd_model)
+            report["dfd_model"] = dfd_model.model_dump()
+            report["dfd_validation"] = validate_dfd_model(dfd_model)
+        except (TypeError, ValueError):
+            # Preserve the existing report response; the dedicated /dfd
+            # endpoint will surface a malformed canonical payload explicitly.
+            pass
+
+    return report
 
 
 @router.patch("/{project_id}/threats/{threat_id}")

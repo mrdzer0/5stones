@@ -1818,11 +1818,17 @@ function renderDfdInventory(report) {
   const model = report?.dfd_model;
   if (topologyStatus) {
     const validation = report?.dfd_validation;
-    const issues = validation?.semantic_issues || [];
-    topologyStatus.hidden = !model || !issues.length;
-    topologyStatus.innerHTML = issues.length ? `
-      <strong>DFD topology needs review (${issues.length}):</strong>
-      <ul>${issues.map(issue => `<li>${escHtml(issue)}</li>`).join('')}</ul>` : '';
+    const readiness = validation?.readiness || validation?.analysis_readiness;
+    const topologyIssues = readiness?.topology_coverage?.issues || validation?.semantic_issues || [];
+    const knowledgeIssues = readiness?.knowledge_completeness?.issues || [];
+    const reviewerIssues = readiness?.reviewer_acceptance?.issues || [];
+    const issues = [...new Set([...topologyIssues, ...knowledgeIssues, ...reviewerIssues])];
+    const statusLabel = readiness?.status === 'ready' ? 'ready' : readiness?.status === 'not_ready' ? 'not ready' : (issues.length ? 'needs review' : 'not evaluated');
+    topologyStatus.hidden = !model || (!issues.length && statusLabel === 'ready');
+    topologyStatus.innerHTML = !topologyStatus.hidden ? `
+      <strong>DFD readiness: ${escHtml(statusLabel)}</strong>
+      ${readiness ? `<div class="dfd-readiness-summary">Structural: <strong>${escHtml(readiness.structural_validity?.status || 'unknown')}</strong> · Topology: <strong>${escHtml(readiness.topology_coverage?.status || 'unknown')}</strong> · Knowledge: <strong>${escHtml(readiness.knowledge_completeness?.status || 'unknown')}</strong> · Reviewer: <strong>${escHtml(readiness.reviewer_acceptance?.status || 'unknown')}</strong></div>` : ''}
+      ${issues.length ? `<ul>${issues.map(issue => `<li>${escHtml(issue)}</li>`).join('')}</ul>` : ''}` : '';
   }
   if (!panel || !container) return;
   if (!model) {

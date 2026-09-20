@@ -1,3 +1,4 @@
+import asyncio
 import json
 import unittest
 from pathlib import Path
@@ -23,6 +24,7 @@ from backend.services.dfd_model_service import (
 from backend.services.trust_boundary_service import attach_boundary_refs, attach_target_refs, build_trust_model
 from backend.services.parser_service import parse_postman_document
 from backend.models.dfd import DfdFlow, DfdModel, DfdNode, DfdZone
+from backend.routers.analysis import get_project_report
 
 
 class DfdSemanticModelTests(unittest.TestCase):
@@ -452,6 +454,71 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertTrue(validation["valid"])
         self.assertFalse(validation["semantic_ready"])
         self.assertIn("Canonical DFD has no semantic elements", validation["semantic_issues"])
+        self.assertEqual(validation["readiness"]["status"], "not_ready")
+        self.assertEqual(validation["readiness"]["structural_validity"]["status"], "valid")
+        self.assertEqual(validation["readiness"]["topology_coverage"]["status"], "empty")
+        self.assertEqual(validation["readiness"]["knowledge_completeness"]["status"], "complete")
+
+    def test_report_read_recomputes_legacy_dfd_validation(self):
+        model = DfdModel(id="legacy-read-model", project_id="project-1", title="Legacy read")
+        report = {
+            "dfd_model": model.model_dump(),
+            "dfd_validation": {
+                "valid": True,
+                "semantic_ready": True,
+                "semantic_issues": [],
+                "errors": [],
+                "warnings": [],
+                "counts": {},
+            },
+        }
+
+        with (
+            patch("backend.routers.analysis.get_project", return_value={"project_id": "project-1"}),
+            patch("backend.routers.analysis.get_report", return_value=report),
+            patch("backend.routers.analysis.get_dfd_model", return_value=model.model_dump()),
+            patch("backend.routers.analysis.normalize_report_evidence", side_effect=lambda value, _project: value),
+        ):
+            refreshed = asyncio.run(get_project_report("project-1"))
+
+        self.assertFalse(refreshed["dfd_validation"]["semantic_ready"])
+        self.assertEqual(refreshed["dfd_validation"]["readiness"]["topology_coverage"]["status"], "empty")
+
+    def test_readiness_separates_topology_and_knowledge_gaps(self):
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        model.nodes[1].zone_ids = []
+        recalculate_boundary_crossings(model)
+
+        validation = validate_dfd_model(model)
+        readiness = validation["readiness"]
+
+        self.assertTrue(validation["valid"])
+        self.assertFalse(validation["semantic_ready"])
+        self.assertEqual(readiness["structural_validity"]["status"], "valid")
+        self.assertEqual(readiness["topology_coverage"]["status"], "partial")
+        self.assertEqual(readiness["knowledge_completeness"]["status"], "partial")
+        self.assertTrue(any("unresolved zone membership" in item for item in readiness["topology_coverage"]["issues"]))
+        self.assertTrue(any("unresolved zone membership" in item for item in readiness["knowledge_completeness"]["issues"]))
+
+    def test_reviewer_acceptance_blocks_unconfirmed_logical_crossing(self):
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        boundary = next(item for item in model.boundaries if item.id == "TB3")
+        boundary.transition_scope = "logical"
+        flow = next(item for item in model.flows if item.id == "F4")
+        flow.boundary_crossings = ["TB3"]
+        flow.crossing_origins = {}
+        flow.crossing_rationales = {}
+
+        validation = validate_dfd_model(model)
+        reviewer = validation["readiness"]["reviewer_acceptance"]
+
+        self.assertTrue(validation["valid"])
+        self.assertFalse(validation["semantic_ready"])
+        self.assertEqual(reviewer["status"], "blocked")
+        self.assertTrue(reviewer["blocking_issues"])
+        self.assertTrue(any("reviewer confirmation" in item for item in reviewer["blocking_issues"]))
 
     def test_loader_migrates_legacy_envelope_and_rejects_future_schema(self):
         payload = {
@@ -572,6 +639,8 @@ class DfdSemanticModelTests(unittest.TestCase):
 
         self.assertTrue(validation["semantic_ready"], validation)
         self.assertFalse(any("Organization" in issue and "no evidenced" in issue for issue in validation["semantic_issues"]))
+        self.assertEqual(validation["readiness"]["topology_coverage"]["status"], "complete")
+        self.assertGreaterEqual(validation["readiness"]["topology_coverage"]["connected_zones"], 4)
 
     def test_process_metadata_and_lineage_refs_are_graph_checked(self):
         fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
