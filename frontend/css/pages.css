@@ -163,6 +163,7 @@
   pointer-events: none;
   overflow: hidden;
 }
+.diagram-toolbar button[hidden] { display: none; }
 
 .diagram-zone {
   position: absolute;
@@ -196,6 +197,9 @@
 .diagram-zone[data-zone-depth="1"] { --zone-accent: #6D28D9; --zone-fill: rgba(109,40,217,.04); }
 .diagram-zone[data-zone-depth="2"] { --zone-accent: #D97706; --zone-fill: rgba(217,119,6,.035); }
 .diagram-zone[data-zone-depth="3"] { --zone-accent: #DC2626; --zone-fill: rgba(220,38,38,.03); }
+.dfd-zone-interactions { margin-bottom: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; }
+.dfd-zone-interactions summary { cursor: pointer; font-size: .76rem; font-weight: 600; }
+.dfd-zone-interactions .dfd-editor-actions { margin-top: 10px; justify-content: flex-start; flex-wrap: wrap; }
 
 .diagram-explainer {
   display: flex;

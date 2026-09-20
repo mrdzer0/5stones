@@ -7,7 +7,7 @@
   <meta name="description" content="Run a structured STRIDE and LINDDUN threat analysis." />
   <link rel="stylesheet" href="/static/css/style.css" />
   <link rel="stylesheet" href="/static/css/components.css" />
-  <link rel="stylesheet" href="/static/css/pages.css?v=20260919e" />
+  <link rel="stylesheet" href="/static/css/pages.css?v=20260920ri2" />
   <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
 </head>
 <body>
@@ -408,13 +408,14 @@
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
                     Fit
                   </button>
+                  <button class="btn btn-secondary btn-sm" id="btn-diagram-reflow" title="Recalculate node positions and remove overlap" hidden>Reflow layout</button>
                   <button class="btn btn-secondary btn-sm" id="btn-dfd-undo" title="Undo last canonical DFD change" disabled>Undo</button>
                   <button class="btn btn-secondary btn-sm" id="btn-dfd-redo" title="Redo last canonical DFD change" disabled>Redo</button>
                   <button class="btn btn-secondary btn-sm" id="btn-diagram-export" title="Export as PNG">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                     Export PNG
                   </button>
-                  <button class="btn btn-secondary btn-sm" id="btn-diagram-export-svg" title="Export canonical DFD as SVG">
+                  <button class="btn btn-secondary btn-sm" id="btn-diagram-export-svg" title="Export current diagram view as SVG (includes visible zones)">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                     Export SVG
                   </button>
@@ -556,6 +557,6 @@
 
 <script src="/static/js/sidebar.js"></script>
 <script src="/static/js/api.js?v=20260920ri1"></script>
-<script src="/static/js/analysis.js?v=20260920ri1"></script>
+<script src="/static/js/analysis.js?v=20260920ri2"></script>
 </body>
 </html>

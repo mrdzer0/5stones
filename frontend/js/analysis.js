@@ -75,8 +75,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('btn-diagram-fit')?.addEventListener('click', () => {
     if (!diagramNetwork) return;
     diagramNetwork.fit({ animation: { duration: 250, easingFunction: 'easeInOutQuad' } });
-    if (currentReport?.dfd_model) scheduleCanonicalLayoutSave();
+    if (currentReport?.dfd_model) scheduleCanonicalLayoutSave({ savePositions: false });
   });
+  document.getElementById('btn-diagram-reflow')?.addEventListener('click', reflowCanonicalDiagram);
   document.getElementById('btn-diagram-unconnected')?.addEventListener('click', () => {
     canonicalShowUnconnected = !canonicalShowUnconnected;
     if (currentReport) renderDiagram(currentReport);
@@ -376,7 +377,7 @@ function syncDiagramLevelUi() {
   const trustLegend = document.getElementById('diagram-trust-legend');
   if (trustLegend) trustLegend.style.display = diagramLevel === 'context' && diagramViewMode === 'classic' ? '' : 'none';
   const mobileMap = document.getElementById('diagram-mobile-map');
-  if (mobileMap) mobileMap.classList.toggle('is-level-hidden', diagramLevel !== 'context');
+  if (mobileMap) mobileMap.classList.toggle('is-level-hidden', diagramLevel !== 'context' || Boolean(currentReport?.dfd_model?.nodes?.length));
   const title = document.querySelector('.diagram-toolbar-title');
   if (title) title.textContent = canonical
     ? (diagramLevel === 'context' ? 'Context DFD' : diagramLevel === 'services' ? 'System DFD' : 'Feature DFD')
@@ -387,8 +388,10 @@ function syncDiagramLevelUi() {
   if (unconnectedButton) unconnectedButton.hidden = !canonical || diagramLevel !== 'services';
   ['btn-diagram-fit', 'btn-diagram-export', 'btn-diagram-export-svg', 'btn-diagram-export-json', 'btn-diagram-import-json'].forEach(id => {
     const button = document.getElementById(id);
-    if (button) button.hidden = diagramLevel === 'scenarios';
+    if (button) button.hidden = diagramLevel === 'scenarios' && !canonical;
   });
+  const reflowButton = document.getElementById('btn-diagram-reflow');
+  if (reflowButton) reflowButton.hidden = !canonical;
   const subtitle = document.querySelector('.diagram-toolbar-sub');
   if (subtitle) {
     if (diagramLevel === 'services') {
@@ -2282,11 +2285,17 @@ function showZoneInspector(zone) {
   const body = document.getElementById('inspector-body');
   if (!inspector || !title || !body) return;
   const model = currentReport?.dfd_model;
+  const zoneIds = new Set(canonicalZoneDescendants(String(zone.id), new Map((model?.zones || []).map(item => [String(item.id), item]))));
+  const memberIds = new Set((model?.nodes || []).filter(node => (node.zone_ids || []).some(id => zoneIds.has(String(id)))).map(node => String(node.id)));
+  const relatedFlows = (model?.flows || []).filter(flow => memberIds.has(String(flow.source_id)) || memberIds.has(String(flow.target_id)));
+  const internalCount = relatedFlows.filter(flow => memberIds.has(String(flow.source_id)) && memberIds.has(String(flow.target_id))).length;
+  const flowList = relatedFlows.map(flow => `<button type="button" class="btn btn-ghost btn-sm" data-zone-flow-id="${escHtml(flow.id)}">${escHtml(flow.display_id || flow.id)} · ${escHtml(flow.name || 'unknown data')} · ${escHtml(flow.protocol || 'protocol unknown')}</button>`).join('');
   const parentOptions = (model?.zones || []).filter(item => item.id !== zone.id).map(item =>
     `<option value="${escHtml(item.id)}" ${item.id === zone.parent_zone_id ? 'selected' : ''}>${escHtml(`${item.display_id} ${item.name}`)}</option>`
   ).join('');
   title.textContent = `${zone.display_id || zone.id} ${zone.name}`;
   body.innerHTML = `
+    <details class="dfd-zone-interactions"><summary>${memberIds.size} member nodes · ${internalCount} internal flows · ${relatedFlows.length - internalCount} crossing flows</summary><div class="dfd-editor-actions">${flowList || '<span>No grounded flow in this zone.</span>'}</div></details>
     <form class="dfd-node-editor" data-dfd-zone-editor>
       <div class="node-model-meta">${escHtml(zone.id)} · ${zone.parent_zone_id ? `parent ${escHtml(zone.parent_zone_id)}` : 'top-level zone'}</div>
       <label class="form-label">Zone name<input class="form-input" data-dfd-zone-field="name" value="${escHtml(zone.name)}" maxlength="180" required /></label>
@@ -2297,6 +2306,10 @@ function showZoneInspector(zone) {
       <div class="dfd-editor-actions"><button type="button" class="btn btn-primary btn-sm" data-save-dfd-zone>Save zone metadata</button>${dfdDeleteButtonHtml('zone', zone.id)}</div>
     </form>`;
   body.querySelector('[data-save-dfd-zone]')?.addEventListener('click', () => saveCanonicalZone(zone.id, body));
+  body.querySelectorAll('[data-zone-flow-id]').forEach(button => button.addEventListener('click', () => {
+    const flow = model?.flows?.find(item => String(item.id) === button.dataset.zoneFlowId);
+    if (flow) showCanonicalFlowInspector(flow);
+  }));
   wireDfdDeleteButton(body);
   inspector.style.display = 'block';
   inspector.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -2396,14 +2409,14 @@ function canonicalSortKey(node) {
   return `${node.display_id || ''} ${node.name || ''}`.toLocaleLowerCase();
 }
 
-function canonicalLayoutPositions(model, visibleNodes, visibleFlows, viewKind, selectedView = null) {
+function canonicalLayoutPositions(model, visibleNodes, visibleFlows, viewKind, selectedView = null, forceReflow = false) {
   const view = selectedView || (model.views || []).find(item => item.kind === viewKind) || (model.views || []).find(item => item.kind === 'context');
   const saved = view?.positions || {};
   const hasCompleteSavedLayout = visibleNodes.length > 0 && visibleNodes.every(node => {
     const position = saved[node.id];
     return Number.isFinite(Number(position?.x)) && Number.isFinite(Number(position?.y));
   });
-  if (hasCompleteSavedLayout) {
+  if (hasCompleteSavedLayout && !forceReflow) {
     const positions = Object.fromEntries(visibleNodes.map(node => [node.id, {
       x: Number(saved[node.id].x),
       y: Number(saved[node.id].y),
@@ -2414,11 +2427,6 @@ function canonicalLayoutPositions(model, visibleNodes, visibleFlows, viewKind, s
     const minY = Math.min(...Object.values(positions).map(position => position.y), 0);
     return { positions, bounds: { width: maxX - minX + 300, height: maxY - minY + 220 } };
   }
-  if (viewKind === 'system' && visibleFlows.length) {
-    const systemLayout = canonicalSystemZoneLayout(model, visibleNodes, visibleFlows);
-    if (systemLayout) return systemLayout;
-  }
-
   const nodeById = new Map(visibleNodes.map(node => [String(node.id), node]));
   const nodeIds = visibleNodes.map(node => String(node.id));
   const adjacency = new Map(nodeIds.map(id => [id, new Set()]));
@@ -2518,7 +2526,7 @@ function canonicalLayoutPositions(model, visibleNodes, visibleFlows, viewKind, s
     nextTop += (Math.ceil(isolatedNodes.length / columns) - 1) * 112 + 180;
   }
 
-  const zoneLayout = canonicalCompactZoneLayout(model, visibleNodes, positions);
+  const zoneLayout = canonicalCompactZoneLayout(model, visibleNodes, visibleFlows, positions);
   const laidOutPositions = zoneLayout.positions;
   const values = Object.values(laidOutPositions);
   const maxX = Math.max(...values.map(position => position.x), 0);
@@ -2607,54 +2615,146 @@ function canonicalSystemZoneLayout(model, visibleNodes, visibleFlows) {
   return { positions, bounds: { width: Math.max(900, satelliteLeft + 80), height: Math.max(680, isolatedTop + 100) } };
 }
 
-function canonicalCompactZoneLayout(model, visibleNodes, basePositions) {
+function canonicalEstimatedNodeSize(node) {
+  const label = `${node.display_id || node.id} ${node.name || ''}`;
+  const lines = Math.max(1, Math.ceil(label.length / 26));
+  return { width: 280, height: Math.max(94, 48 + lines * 20) };
+}
+
+function canonicalCompactZoneLayout(model, visibleNodes, visibleFlows, basePositions) {
   const zones = model.zones || [];
   const zonesById = new Map(zones.map(zone => [String(zone.id), zone]));
   const topGroups = new Map();
+  const nodeById = new Map(visibleNodes.map(node => [String(node.id), node]));
+  const topZoneFor = node => canonicalTopZoneId(String(node.zone_ids?.[0] || ''), zonesById);
   visibleNodes.forEach(node => {
     const directZone = String(node.zone_ids?.[0] || '__unknown__');
-    const topZone = canonicalTopZoneId(directZone, zonesById);
+    const topZone = topZoneFor(node);
     if (!topGroups.has(topZone)) topGroups.set(topZone, []);
     topGroups.get(topZone).push({ node, directZone });
   });
-  const orderedTopZones = [...topGroups.keys()].sort((a, b) => {
-    const aIndex = zones.findIndex(zone => String(zone.id) === a);
-    const bIndex = zones.findIndex(zone => String(zone.id) === b);
-    return (aIndex < 0 ? Number.MAX_SAFE_INTEGER : aIndex) - (bIndex < 0 ? Number.MAX_SAFE_INTEGER : bIndex);
-  });
-  const positions = {};
-  let laneTop = 95;
-  let maxWidth = 1100;
-  orderedTopZones.forEach(topZoneId => {
+  const groups = new Map();
+  topGroups.forEach((records, topZoneId) => {
     const subGroups = new Map();
-    topGroups.get(topZoneId).forEach(record => {
+    records.forEach(record => {
       if (!subGroups.has(record.directZone)) subGroups.set(record.directZone, []);
       subGroups.get(record.directZone).push(record.node);
     });
-    let laneWidth = 0;
-    let laneHeight = 0;
-    [...subGroups.entries()].forEach(([, nodes], groupIndex) => {
+    const localPositions = {};
+    let groupTop = 10;
+    let groupWidth = 0;
+    [...subGroups.entries()].forEach(([, nodes]) => {
       nodes.sort((a, b) => {
         const left = basePositions[a.id] || { x: 0, y: 0 };
         const right = basePositions[b.id] || { x: 0, y: 0 };
         return left.y - right.y || left.x - right.x || canonicalSortKey(a).localeCompare(canonicalSortKey(b));
       });
-      const columns = Math.min(5, Math.max(1, Math.ceil(Math.sqrt(nodes.length))));
-      const groupLeft = 155 + groupIndex * 270;
+      const columns = Math.min(3, Math.max(1, Math.ceil(Math.sqrt(nodes.length))));
       const rows = Math.max(1, Math.ceil(nodes.length / columns));
+      const columnWidths = Array.from({ length: columns }, (_, column) =>
+        Math.max(...nodes.filter((_, index) => index % columns === column).map(node => canonicalEstimatedNodeSize(node).width), 0));
+      const rowHeights = Array.from({ length: rows }, (_, row) =>
+        Math.max(...nodes.slice(row * columns, (row + 1) * columns).map(node => canonicalEstimatedNodeSize(node).height), 0));
+      const columnLefts = columnWidths.map((_, column) =>
+        80 + columnWidths.slice(0, column).reduce((sum, width) => sum + width + 72, 0));
+      const rowTops = rowHeights.map((_, row) =>
+        groupTop + 80 + rowHeights.slice(0, row).reduce((sum, height) => sum + height + 62, 0));
       nodes.forEach((node, index) => {
-        positions[node.id] = {
-          x: groupLeft + (index % columns) * 220,
-          y: laneTop + 100 + Math.floor(index / columns) * 112,
+        const column = index % columns;
+        const row = Math.floor(index / columns);
+        localPositions[node.id] = {
+          x: columnLefts[column] + columnWidths[column] / 2,
+          y: rowTops[row] + rowHeights[row] / 2,
         };
       });
-      laneWidth = Math.max(laneWidth, groupLeft + Math.max(0, columns - 1) * 220 + 220);
-      laneHeight = Math.max(laneHeight, rows * 112 + 155);
+      groupWidth = Math.max(groupWidth, columnLefts[columns - 1] + columnWidths[columns - 1] + 80);
+      groupTop = rowTops[rows - 1] + rowHeights[rows - 1] + 55;
     });
-    maxWidth = Math.max(maxWidth, laneWidth);
-    laneTop += laneHeight + 70;
+    groups.set(topZoneId, { positions: localPositions, width: Math.max(360, groupWidth), height: groupTop + 40, nodeCount: records.length });
   });
-  return { positions, bounds: { width: maxWidth, height: laneTop + 80 } };
+
+  const degree = new Map([...groups.keys()].map(id => [id, 0]));
+  const crossFlows = visibleFlows.map(flow => {
+    const source = nodeById.get(String(flow.source_id));
+    const target = nodeById.get(String(flow.target_id));
+    return source && target ? { source: topZoneFor(source), target: topZoneFor(target) } : null;
+  }).filter(flow => flow && flow.source !== flow.target);
+  crossFlows.forEach(flow => {
+    degree.set(flow.source, (degree.get(flow.source) || 0) + 1);
+    degree.set(flow.target, (degree.get(flow.target) || 0) + 1);
+  });
+  const ranked = [...groups.keys()].sort((a, b) =>
+    (degree.get(b) || 0) - (degree.get(a) || 0)
+    || groups.get(b).nodeCount - groups.get(a).nodeCount
+    || a.localeCompare(b));
+  const hub = ranked[0];
+  if (!hub) return { positions: {}, bounds: { width: 900, height: 680 } };
+  const left = [], right = [], isolated = [];
+  ranked.slice(1).forEach(id => {
+    const incoming = crossFlows.filter(flow => flow.source === id && flow.target === hub).length;
+    const outgoing = crossFlows.filter(flow => flow.source === hub && flow.target === id).length;
+    if (!(degree.get(id) || 0)) isolated.push(id);
+    else if (incoming > outgoing) left.push(id);
+    else right.push(id);
+  });
+  const leftWidth = Math.max(0, ...left.map(id => groups.get(id).width));
+  const hubX = 100 + (left.length ? leftWidth + 170 : 0);
+  const hubY = 100;
+  const rightX = hubX + groups.get(hub).width + 170;
+  const placements = new Map([[hub, { x: hubX, y: hubY }]]);
+  const placeSide = (ids, x) => {
+    const totalHeight = ids.reduce((sum, id) => sum + groups.get(id).height + 90, -90);
+    let y = Math.max(100, hubY + (groups.get(hub).height - totalHeight) / 2);
+    ids.forEach(id => {
+      placements.set(id, { x, y });
+      y += groups.get(id).height + 90;
+    });
+  };
+  if (left.length) placeSide(left, 100);
+  if (right.length) placeSide(right, rightX);
+  let bottom = Math.max(...[...placements].map(([id, place]) => place.y + groups.get(id).height)) + 130;
+  isolated.forEach(id => {
+    placements.set(id, { x: hubX, y: bottom });
+    bottom += groups.get(id).height + 90;
+  });
+  const positions = {};
+  groups.forEach((group, id) => {
+    const place = placements.get(id);
+    Object.entries(group.positions).forEach(([nodeId, position]) => {
+      positions[nodeId] = { x: position.x + place.x, y: position.y + place.y };
+    });
+  });
+  const width = Math.max(...[...placements].map(([id, place]) => place.x + groups.get(id).width), 800) + 100;
+  const height = Math.max(...[...placements].map(([id, place]) => place.y + groups.get(id).height), 580) + 100;
+  return { positions, bounds: { width, height } };
+}
+
+function canonicalResolveNodeOverlaps(network, nodeIds, gap = 28) {
+  const positions = network.getPositions();
+  const ordered = nodeIds.map(id => ({ id, box: network.getBoundingBox(id) }))
+    .filter(item => item.box && [item.box.left, item.box.right, item.box.top, item.box.bottom].every(Number.isFinite))
+    .sort((a, b) => a.box.top - b.box.top || a.box.left - b.box.left || String(a.id).localeCompare(String(b.id)));
+  const placed = [];
+  let moved = false;
+  ordered.forEach(item => {
+    const position = positions[item.id];
+    if (!position) return;
+    let box = { ...item.box };
+    for (const prior of placed) {
+      const overlapsX = box.left < prior.right + gap && box.right > prior.left - gap;
+      if (overlapsX && box.top < prior.bottom + gap && box.bottom > prior.top - gap) {
+        const shift = prior.bottom + gap - box.top;
+        box = { left: box.left, right: box.right, top: box.top + shift, bottom: box.bottom + shift };
+      }
+    }
+    const deltaY = box.top - item.box.top;
+    if (deltaY > 0.5) {
+      network.moveNode(item.id, position.x, position.y + deltaY);
+      moved = true;
+    }
+    placed.push(box);
+  });
+  return moved;
 }
 
 function canonicalZoneDepth(zoneId, zonesById, memo = new Map()) {
@@ -2707,7 +2807,6 @@ function renderCanonicalZoneLayer(model, visibleNodes) {
   const zonesById = new Map((model.zones || []).map(zone => [String(zone.id), zone]));
   const descendantMemo = new Map();
   const depthMemo = new Map();
-  const visibleIds = new Set(visibleNodes.map(node => String(node.id)));
   const records = (model.zones || []).map(zone => {
     const zoneIds = new Set(canonicalZoneDescendants(String(zone.id), zonesById, descendantMemo));
     const nodeIds = visibleNodes.filter(node => (node.zone_ids || []).some(id => zoneIds.has(String(id)))).map(node => String(node.id));
@@ -2718,43 +2817,43 @@ function renderCanonicalZoneLayer(model, visibleNodes) {
       <span>${escHtml(`${record.zone.display_id || record.zone.id} · ${record.zone.name}`)}</span>
     </div>`).join('');
   layer.dataset.zoneCount = String(records.length);
-  updateCanonicalZoneLayer(model, visibleIds);
 }
 
-function updateCanonicalZoneLayer(model, visibleIds = null) {
+function updateCanonicalZoneLayer(model, visualNodes) {
   if (!diagramNetwork) return;
   const layer = document.getElementById('diagram-zone-layer');
   if (!layer) return;
+  const zonesById = new Map((model.zones || []).map(zone => [String(zone.id), zone]));
+  const depthMemo = new Map();
   const positions = diagramNetwork.getPositions();
-  const visualNodes = diagramNetwork.body.data.nodes.get();
-  const visible = visibleIds || new Set(Object.keys(positions));
   layer.querySelectorAll('[data-zone-id]').forEach(element => {
     const zoneId = element.dataset.zoneId;
-    const zone = (model.zones || []).find(item => String(item.id) === String(zoneId));
+    const zone = zonesById.get(String(zoneId));
     if (!zone) return;
-    const zoneIds = new Set(canonicalZoneDescendants(String(zone.id), new Map((model.zones || []).map(item => [String(item.id), item]))));
-    const points = visualNodes.filter(node => visible.has(String(node.id)) && (node.zone_ids || []).some(id => zoneIds.has(String(id))))
-      .map(node => positions[node.id])
-      .filter(Boolean)
-      .map(position => diagramNetwork.canvasToDOM(position));
-    if (!points.length) {
+    const descendantIds = canonicalZoneDescendants(String(zone.id), zonesById);
+    const zoneIds = new Set(descendantIds);
+    const boxes = visualNodes.filter(node => positions[node.id] && (node.zone_ids || []).some(id => zoneIds.has(String(id))))
+      .map(node => diagramNetwork.getBoundingBox(node.id))
+      .filter(box => box && [box.left, box.right, box.top, box.bottom].every(Number.isFinite));
+    if (!boxes.length) {
       element.style.display = 'none';
       return;
     }
     const depth = Number(element.dataset.zoneDepth || 0);
-    const paddingX = 105 + depth * 14;
-    const paddingTop = 58 + depth * 10;
-    const paddingBottom = 55 + depth * 10;
-    const left = Math.min(...points.map(point => point.x)) - paddingX;
-    const top = Math.min(...points.map(point => point.y)) - paddingTop;
-    const right = Math.max(...points.map(point => point.x)) + paddingX;
-    const bottom = Math.max(...points.map(point => point.y)) + paddingBottom;
+    const nestedLevels = Math.max(0, ...descendantIds.map(id => canonicalZoneDepth(id, zonesById, depthMemo) - depth));
+    const paddingX = 34 + nestedLevels * 24;
+    const paddingTop = 58 + nestedLevels * 28;
+    const paddingBottom = 30 + nestedLevels * 22;
+    const left = diagramNetwork.canvasToDOM({ x: Math.min(...boxes.map(box => box.left)), y: 0 }).x - paddingX;
+    const top = diagramNetwork.canvasToDOM({ x: 0, y: Math.min(...boxes.map(box => box.top)) }).y - paddingTop;
+    const right = diagramNetwork.canvasToDOM({ x: Math.max(...boxes.map(box => box.right)), y: 0 }).x + paddingX;
+    const bottom = diagramNetwork.canvasToDOM({ x: 0, y: Math.max(...boxes.map(box => box.bottom)) }).y + paddingBottom;
     element.style.display = '';
-    element.style.left = `${Math.max(4, left)}px`;
-    element.style.top = `${Math.max(4, top)}px`;
+    element.style.left = `${left}px`;
+    element.style.top = `${top}px`;
     element.style.width = `${Math.max(150, right - left)}px`;
     element.style.height = `${Math.max(110, bottom - top)}px`;
-    element.title = `${zone.display_id || zone.id} ${zone.name} · ${points.length} visible node${points.length === 1 ? '' : 's'}`;
+    element.title = `${zone.display_id || zone.id} ${zone.name} · ${boxes.length} visible node${boxes.length === 1 ? '' : 's'}`;
   });
 }
 
@@ -2803,30 +2902,50 @@ function canonicalVisualProjection(model, nodes, flows, collapsedGroups) {
     });
     members.forEach(node => nodeTarget.set(String(node.id), groupId));
   });
-  const projectedFlows = new Map();
+  const projectedFlows = [];
+  const aggregated = new Map();
   flows.forEach(flow => {
     const sourceId = nodeTarget.get(String(flow.source_id));
     const targetId = nodeTarget.get(String(flow.target_id));
     if (!sourceId || !targetId || sourceId === targetId) return;
-    const key = `${sourceId}::${targetId}`;
-    const existing = projectedFlows.get(key);
-    if (existing) {
-      existing._collapsedFlowIds.push(flow.id);
-      existing.data_object_ids = [...new Set([...(existing.data_object_ids || []), ...(flow.data_object_ids || [])])];
-      existing.name = existing._collapsedFlowIds.length > 1 ? `${existing.name} (+${existing._collapsedFlowIds.length - 1})` : existing.name;
+    const projected = { ...flow, source_id: sourceId, target_id: targetId, _collapsedFlowIds: [flow.id], _collapsedFlows: [flow] };
+    if (sourceId === String(flow.source_id) && targetId === String(flow.target_id)) {
+      projectedFlows.push(projected);
       return;
     }
-    projectedFlows.set(key, {
-      ...flow,
-      source_id: sourceId,
-      target_id: targetId,
-      _collapsedFlowIds: [flow.id],
-    });
+    const key = `${sourceId}::${targetId}`;
+    const existing = aggregated.get(key);
+    if (existing) {
+      existing._collapsedFlowIds.push(flow.id);
+      existing._collapsedFlows.push(flow);
+      existing.data_object_ids = [...new Set([...(existing.data_object_ids || []), ...(flow.data_object_ids || [])])];
+      existing.boundary_crossings = [...new Set([...(existing.boundary_crossings || []), ...(flow.boundary_crossings || [])])];
+      existing.evidence_refs = [...new Set([...(existing.evidence_refs || []), ...(flow.evidence_refs || [])])];
+      if (flow.crossing_status === 'unresolved') existing.crossing_status = 'unresolved';
+      for (const field of ['protocol', 'authn', 'authz', 'interaction_kind']) {
+        if (existing[field] !== flow[field]) existing[field] = 'mixed';
+      }
+      return;
+    }
+    aggregated.set(key, projected);
+    projectedFlows.push(projected);
   });
-  return { nodes: visualNodes, flows: [...projectedFlows.values()] };
+  projectedFlows.forEach(flow => {
+    if (flow._collapsedFlowIds.length > 1) {
+      flow.id = `dfd-aggregate:${flow.source_id}:${flow.target_id}`;
+      flow.display_id = `${flow._collapsedFlowIds.length} flows`;
+      flow.name = `${flow._collapsedFlowIds.length} flows in collapsed zone`;
+    }
+  });
+  return { nodes: visualNodes, flows: projectedFlows };
 }
 
-function renderCanonicalDiagram(report, viewKind = 'context') {
+function canonicalFlowSmooth(ordinal, count) {
+  if (count <= 1) return { enabled: true, type: 'cubicBezier', forceDirection: 'horizontal', roundness: .22 };
+  return { enabled: true, type: ordinal % 2 === 0 ? 'curvedCW' : 'curvedCCW', roundness: .18 + Math.floor(ordinal / 2) * .12 };
+}
+
+function renderCanonicalDiagram(report, viewKind = 'context', { forceReflow = false } = {}) {
   const container = document.getElementById('threat-diagram-canvas');
   if (!container) return;
   document.getElementById('diagram-canvas-shell')?.classList.add('is-canonical');
@@ -2868,7 +2987,7 @@ function renderCanonicalDiagram(report, viewKind = 'context') {
     unconnectedButton.textContent = canonicalShowUnconnected ? 'Hide unconnected' : `Show unconnected (${hiddenUnconnectedCount})`;
     unconnectedButton.setAttribute('aria-pressed', String(canonicalShowUnconnected));
   }
-  const layout = canonicalLayoutPositions(model, visibleNodes, visibleFlows, viewKind, selectedFeature);
+  const layout = canonicalLayoutPositions(model, visibleNodes, visibleFlows, viewKind, selectedFeature, forceReflow);
   canonicalRenderedViewKind = viewKind;
   const shell = document.getElementById('diagram-canvas-shell');
   if (shell) shell.style.height = `${Math.max(680, Math.min(1100, Math.ceil(layout.bounds.height)))}px`;
@@ -2899,22 +3018,35 @@ function renderCanonicalDiagram(report, viewKind = 'context') {
       _threats: mapped,
       _origLabel: `${node.display_id || node.id} ${node.name}`,
       _elementId: node.id,
+      zone_ids: [...(node.zone_ids || [])],
+      _collapsedZoneId: node._collapsedZoneId || null,
+      _collapsedNodeIds: [...(node._collapsedNodeIds || [])],
       _modelMeta: `${node.type} · ${zone?.name || 'zone unknown'} · ${status}${node.knowledge_status ? ` · knowledge=${node.knowledge_status}` : ''}`,
     };
   });
   const nodeById = new Map(visibleNodes.map(node => [String(node.id), node]));
+  const pairCounts = new Map();
+  visibleFlows.forEach(flow => {
+    const pair = `${flow.source_id}::${flow.target_id}`;
+    pairCounts.set(pair, (pairCounts.get(pair) || 0) + 1);
+  });
+  const pairOrdinals = new Map();
   const edgeRows = visibleFlows.map(flow => {
     const source = nodeById.get(String(flow.source_id));
     const target = nodeById.get(String(flow.target_id));
+    const constituents = flow._collapsedFlows || [flow];
     const mapped = uniqueThreats(threats.filter(threat =>
-      targetMatches(threat, flow.id, 'data_flow')
-      || targetMatches(threat, flow.boundary_crossings || [], 'trust_boundary')
+      constituents.some(item => targetMatches(threat, item.id, 'data_flow')
+        || targetMatches(threat, item.boundary_crossings || [], 'trust_boundary'))
     ));
     const data = (flow.data_object_ids || []).map(id => dataObjects.get(String(id))?.name || id);
     const crossing = (flow.boundary_crossings || []).length > 0 || flow.crossing_status === 'unresolved';
     const crossingText = flow.crossing_status === 'unresolved'
       ? 'Boundary crossing unresolved — review zone membership.'
       : `Crossings: ${(flow.boundary_crossings || []).join(', ') || 'none'}`;
+    const pair = `${flow.source_id}::${flow.target_id}`;
+    const ordinal = pairOrdinals.get(pair) || 0;
+    pairOrdinals.set(pair, ordinal + 1);
     return {
       id: flow.id,
       from: flow.source_id,
@@ -2926,19 +3058,19 @@ function renderCanonicalDiagram(report, viewKind = 'context') {
       color: { color: flow.crossing_status === 'unresolved' ? '#B7791F' : crossing ? '#D06B55' : '#6C91AA', highlight: '#1D3557', hover: '#1D3557' },
       width: crossing ? 2 : 1.7,
       font: { size: 12, color: '#344E5C', face: 'JetBrains Mono, monospace', background: 'rgba(255,255,255,.96)', strokeWidth: 0, align: 'horizontal' },
-      smooth: { enabled: true, type: 'cubicBezier', forceDirection: 'horizontal', roundness: .22 },
+      smooth: canonicalFlowSmooth(ordinal, pairCounts.get(pair) || 1),
       _sourceLabel: source?.name || flow.source_id,
       _destinationLabel: target?.name || flow.target_id,
       _flowDetails: [
-        `${flow.display_id || flow.id}: ${flow.name || 'unknown data'}`,
-        flow._collapsedFlowIds?.length > 1 ? `Aggregated flows: ${flow._collapsedFlowIds.join(', ')}` : null,
-        `Interaction: ${flow.interaction_kind}`,
-        `Data: ${data.join(', ') || 'unknown'}`,
-        `Protocol: ${flow.protocol || 'unknown'}`,
-        `AuthN: ${flow.authn || 'unknown'} · AuthZ: ${flow.authz || 'unknown'}`,
-        crossingText,
-        `Evidence: ${(flow.evidence_refs || []).join(', ') || 'none'}`,
+        `${constituents.length} canonical flow${constituents.length === 1 ? '' : 's'}`,
+        ...constituents.flatMap(item => [
+          `${item.display_id || item.id}: ${item.name || 'unknown data'}`,
+          `Interaction: ${item.interaction_kind || 'unknown'} · Protocol: ${item.protocol || 'unknown'}`,
+          `AuthN: ${item.authn || 'unknown'} · AuthZ: ${item.authz || 'unknown'}`,
+          `Crossings: ${(item.boundary_crossings || []).join(', ') || 'none'} · Evidence: ${(item.evidence_refs || []).join(', ') || 'none'}`,
+        ]),
       ],
+      _canonicalFlowIds: constituents.map(item => String(item.id)),
       _crossing: crossing,
       _logical: flow.crossing_status === 'resolved' && !(flow.boundary_crossings || []).length,
       _threats: mapped,
@@ -2946,6 +3078,7 @@ function renderCanonicalDiagram(report, viewKind = 'context') {
   });
   if (!nodeRows.length) {
     container.innerHTML = '<div class="diagram-grounded-empty"><strong>Canonical DFD is empty</strong><span>Add or confirm model elements before running threat analysis.</span></div>';
+    document.getElementById('diagram-zone-layer')?.replaceChildren();
     return;
   }
   const data = { nodes: new vis.DataSet(nodeRows), edges: new vis.DataSet(edgeRows) };
@@ -2964,15 +3097,31 @@ function renderCanonicalDiagram(report, viewKind = 'context') {
     nodes: { chosen: true },
     edges: { selectionWidth: 2.5, hoverWidth: 2.2 },
   });
-  diagramNetwork.once('afterDrawing', () => {
-    if (!restoreCanonicalViewport(model)) {
-      diagramNetwork.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
+  const network = diagramNetwork;
+  let initialized = false;
+  let zoneFrame = null;
+  const refreshZones = () => {
+    if (zoneFrame != null) return;
+    zoneFrame = window.requestAnimationFrame(() => {
+      zoneFrame = null;
+      if (diagramNetwork === network) updateCanonicalZoneLayer(model, visibleNodes);
+    });
+  };
+  network.on('afterDrawing', () => {
+    if (!initialized) {
+      initialized = true;
+      canonicalResolveNodeOverlaps(network, visibleNodes.map(node => node.id));
+      if (forceReflow || !restoreCanonicalViewport(model)) {
+        network.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
+      }
+      if (forceReflow) scheduleCanonicalLayoutSave();
     }
-    window.requestAnimationFrame(() => updateCanonicalZoneLayer(model, new Set(visibleNodes.map(node => String(node.id)))));
+    refreshZones();
   });
-  diagramNetwork.on('zoom', () => updateCanonicalZoneLayer(model, new Set(visibleNodes.map(node => String(node.id)))));
-  diagramNetwork.on('dragging', () => updateCanonicalZoneLayer(model, new Set(visibleNodes.map(node => String(node.id)))));
-  diagramNetwork.on('click', params => {
+  network.on('animationFinished', refreshZones);
+  network.on('zoom', refreshZones);
+  network.on('dragging', refreshZones);
+  network.on('click', params => {
     if (params.nodes.length) {
       const selected = data.nodes.get(params.nodes[0]);
       if (selected?._collapsedZoneId) {
@@ -2983,13 +3132,19 @@ function renderCanonicalDiagram(report, viewKind = 'context') {
     else if (params.edges.length) showFlowInspector(data.edges.get(params.edges[0]));
     else document.getElementById('node-inspector').style.display = 'none';
   });
-  diagramNetwork.on('dragEnd', () => {
-    updateCanonicalZoneLayer(model, new Set(visibleNodes.map(node => String(node.id))));
+  network.on('dragEnd', () => {
+    refreshZones();
     scheduleCanonicalLayoutSave();
   });
 }
 
-function scheduleCanonicalLayoutSave() {
+function reflowCanonicalDiagram() {
+  if (!currentReport?.dfd_model) return;
+  renderCanonicalDiagram(currentReport, canonicalRenderedViewKind, { forceReflow: true });
+  showToast('DFD positions recalculated; Fit changes only the viewport', 'success');
+}
+
+function scheduleCanonicalLayoutSave({ savePositions = true } = {}) {
   if (!currentReport?.dfd_model || !diagramNetwork) return;
   window.clearTimeout(canonicalLayoutSaveTimer);
   canonicalLayoutSaveTimer = window.setTimeout(async () => {
@@ -2997,13 +3152,16 @@ function scheduleCanonicalLayoutSave() {
     const view = canonicalViewFor(model, canonicalRenderedViewKind);
     if (!view) return;
     const positions = diagramNetwork.getPositions();
-    view.positions = {
-      ...(view.positions || {}),
-      ...Object.fromEntries(Object.entries(positions).map(([id, position]) => [id, {
-        x: Number(position.x.toFixed(2)),
-        y: Number(position.y.toFixed(2)),
-      }])),
-    };
+    if (savePositions) {
+      const canonicalNodeIds = new Set((model.nodes || []).map(node => String(node.id)));
+      view.positions = {
+        ...(view.positions || {}),
+        ...Object.fromEntries(Object.entries(positions).filter(([id]) => canonicalNodeIds.has(String(id))).map(([id, position]) => [id, {
+          x: Number(position.x.toFixed(2)),
+          y: Number(position.y.toFixed(2)),
+        }])),
+      };
+    }
     const viewport = diagramNetwork.getViewPosition();
     const scale = diagramNetwork.getScale();
     if (viewport && Number.isFinite(Number(viewport.x)) && Number.isFinite(Number(viewport.y)) && Number.isFinite(Number(scale)) && Number(scale) > 0) {
@@ -3737,10 +3895,41 @@ function showFlowInspector(edge) {
     body.querySelector('[data-save-dfd-flow]')?.addEventListener('click', () => saveCanonicalFlow(canonicalFlow.id, body));
     wireDfdDeleteButton(body);
   } else {
-    body.innerHTML = `${crossing}<ul class="flow-detail-list">${details}</ul>${findings}`;
+    const flowButtons = (edge._canonicalFlowIds || []).map(id => {
+      const item = currentReport?.dfd_model?.flows?.find(flow => String(flow.id) === id);
+      return item ? `<button type="button" class="btn btn-secondary btn-sm" data-inspect-canonical-flow="${escHtml(id)}">Inspect ${escHtml(item.display_id || id)}</button>` : '';
+    }).join('');
+    body.innerHTML = `${crossing}${flowButtons ? `<div class="dfd-editor-actions">${flowButtons}</div>` : ''}<ul class="flow-detail-list">${details}</ul>${findings}`;
+    body.querySelectorAll('[data-inspect-canonical-flow]').forEach(button => button.addEventListener('click', () => {
+      const item = currentReport?.dfd_model?.flows?.find(flow => String(flow.id) === button.dataset.inspectCanonicalFlow);
+      if (item) showCanonicalFlowInspector(item);
+    }));
   }
   inspector.style.display = 'block';
   inspector.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function showCanonicalFlowInspector(flow) {
+  const model = currentReport?.dfd_model || {};
+  const nodes = new Map((model.nodes || []).map(node => [String(node.id), node]));
+  const mapped = uniqueThreats(analysisVisibility(currentReport).threats.filter(threat =>
+    targetMatches(threat, flow.id, 'data_flow') || targetMatches(threat, flow.boundary_crossings || [], 'trust_boundary')));
+  showFlowInspector({
+    id: flow.id,
+    label: flow.name,
+    _sourceLabel: nodes.get(String(flow.source_id))?.name || flow.source_id,
+    _destinationLabel: nodes.get(String(flow.target_id))?.name || flow.target_id,
+    _flowDetails: [
+      `${flow.display_id || flow.id}: ${flow.name || 'unknown data'}`,
+      `Interaction: ${flow.interaction_kind || 'unknown'} · Protocol: ${flow.protocol || 'unknown'}`,
+      `AuthN: ${flow.authn || 'unknown'} · AuthZ: ${flow.authz || 'unknown'}`,
+      `Crossings: ${(flow.boundary_crossings || []).join(', ') || 'none'}`,
+      `Evidence: ${(flow.evidence_refs || []).join(', ') || 'none'}`,
+    ],
+    _crossing: Boolean((flow.boundary_crossings || []).length) || flow.crossing_status === 'unresolved',
+    _logical: flow.crossing_status === 'resolved' && !(flow.boundary_crossings || []).length,
+    _threats: mapped,
+  });
 }
 
 function renderClassicDiagram(report) {
@@ -4107,32 +4296,106 @@ function showNodeInspector(node) {
   inspector.style.display = 'block';
 }
 
+function diagramExportScene() {
+  const canvas = diagramNetwork?.canvas?.frame?.canvas;
+  if (!canvas) throw new Error('Diagram canvas is unavailable');
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) throw new Error('Diagram has no visible size');
+  const sx = canvas.width / rect.width;
+  const sy = canvas.height / rect.height;
+  const palette = [
+    { stroke: '#457B9D', fill: '#F3F8FC' },
+    { stroke: '#6D28D9', fill: '#F9F6FF' },
+    { stroke: '#D97706', fill: '#FFF9F1' },
+    { stroke: '#DC2626', fill: '#FFF5F6' },
+  ];
+  const zones = currentReport?.dfd_model ? [...document.querySelectorAll('#diagram-zone-layer .diagram-zone')]
+    .filter(element => getComputedStyle(element).display !== 'none')
+    .map(element => {
+      const box = element.getBoundingClientRect();
+      return {
+        id: element.dataset.zoneId,
+        label: element.querySelector('span')?.textContent || element.dataset.zoneId,
+        x: (box.left - rect.left) * sx,
+        y: (box.top - rect.top) * sy,
+        width: box.width * sx,
+        height: box.height * sy,
+        ...palette[Math.min(Number(element.dataset.zoneDepth || 0), palette.length - 1)],
+      };
+    }) : [];
+  const edges = diagramNetwork.body.data.edges.get();
+  return {
+    canvas, zones, width: canvas.width, height: canvas.height,
+    revision: currentReport?.dfd_model?.revision || null,
+    semanticHash: currentReport?.dfd_model?.semantic_hash || null,
+    viewKind: canonicalRenderedViewKind,
+    flowRefs: edges.flatMap(edge => edge._canonicalFlowIds || [edge.id]).map(String),
+    nodeRefs: diagramNetwork.body.data.nodes.getIds().map(String),
+  };
+}
+
+function drawDiagramZones(context, scene) {
+  scene.zones.forEach(zone => {
+    context.fillStyle = zone.fill;
+    context.strokeStyle = zone.stroke;
+    context.lineWidth = 2;
+    context.setLineDash([8, 6]);
+    context.beginPath();
+    if (context.roundRect) context.roundRect(zone.x, zone.y, zone.width, zone.height, 18);
+    else context.rect(zone.x, zone.y, zone.width, zone.height);
+    context.fill();
+    context.stroke();
+    context.setLineDash([]);
+    context.fillStyle = zone.stroke;
+    context.font = '600 12px monospace';
+    context.fillText(zone.label, zone.x + 14, zone.y + 25, Math.max(80, zone.width - 28));
+  });
+}
+
 function exportDiagramPng() {
   if (!diagramNetwork) return;
   try {
-    const canvas = diagramNetwork.canvas.frame.canvas;
+    const scene = diagramExportScene();
+    const output = document.createElement('canvas');
+    output.width = scene.width;
+    output.height = scene.height;
+    const context = output.getContext('2d');
+    context.fillStyle = '#FFFFFF';
+    context.fillRect(0, 0, scene.width, scene.height);
+    drawDiagramZones(context, scene);
+    context.drawImage(scene.canvas, 0, 0);
     const link = document.createElement('a');
-    link.download = `threat-diagram-${projectId}.png`;
-    link.href = canvas.toDataURL('image/png');
+    link.download = `dfd-${projectId}${scene.revision ? `-r${scene.revision}` : ''}-${scene.viewKind}.png`;
+    link.href = output.toDataURL('image/png');
     link.click();
-    showToast('Diagram exported as PNG', 'success');
+    showToast('Current diagram view exported as PNG', 'success');
   } catch {
     showToast('Could not export diagram', 'error');
   }
 }
 
+function diagramSvgMarkup(scene, exportProjectId) {
+  const xml = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[char]));
+  const metadata = { revision: scene.revision, semantic_hash: scene.semanticHash, view: scene.viewKind,
+    zone_ids: scene.zones.map(zone => zone.id), node_refs: scene.nodeRefs, flow_refs: scene.flowRefs };
+  const zones = scene.zones.map(zone => `
+      <rect data-zone-id="${xml(zone.id)}" x="${zone.x}" y="${zone.y}" width="${zone.width}" height="${zone.height}" rx="18" fill="${zone.fill}" stroke="${zone.stroke}" stroke-width="2" stroke-dasharray="8 6"/>
+      <text x="${zone.x + 14}" y="${zone.y + 25}" font-size="12" font-family="monospace" font-weight="600" fill="${zone.stroke}">${xml(zone.label)}</text>`).join('');
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${scene.width}" height="${scene.height}" viewBox="0 0 ${scene.width} ${scene.height}" role="img"><title>DFD ${xml(exportProjectId)} revision ${xml(scene.revision)} · ${xml(scene.viewKind)}</title><desc>Current diagram viewport with visible trust zones and data flows.</desc><metadata>${xml(JSON.stringify(metadata))}</metadata><rect width="100%" height="100%" fill="#FFFFFF"/>${zones}<image href="${scene.canvas.toDataURL('image/png')}" x="0" y="0" width="${scene.width}" height="${scene.height}"/></svg>`;
+}
+
 async function exportDiagramSvg() {
   if (!projectId) return;
   try {
-    const response = await API.dfd.exportSvg(projectId);
-    if (!response.ok) throw new Error('SVG export failed');
-    const blob = await response.blob();
+    const scene = diagramExportScene();
+    const svg = diagramSvgMarkup(scene, projectId);
+    const blob = new Blob([svg], { type: 'image/svg+xml' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = `dfd-${projectId}.svg`;
+    link.download = `dfd-${projectId}${scene.revision ? `-r${scene.revision}` : ''}-${scene.viewKind}.svg`;
     link.click();
-    URL.revokeObjectURL(link.href);
-    showToast('Canonical DFD exported as SVG', 'success');
+    window.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    showToast('Current diagram view exported as SVG', 'success');
   } catch {
     showToast('Could not export canonical DFD', 'error');
   }

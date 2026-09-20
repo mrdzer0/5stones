@@ -5,7 +5,7 @@
 - Acuan: `DFD_Feature_AI_Agent_Prompt.md`
 - Status project saat ini: **grounded threat-modeling MVP dengan DFD visualization**.
 - Target akhir: **semantic DFD modeling feature** yang menjadi source of truth untuk canvas, inventory, export, STRIDE, dan LINDDUN.
-- Verifikasi branch saat ini: 154 test Python + 1 regression JavaScript lulus setelah RI1; progress POST/polling/reload juga diuji dengan Playwright. RG05–RG12 masih menjadi pekerjaan integrasi terpisah.
+- Verifikasi branch saat ini: 154 test Python + 2 regression JavaScript + Playwright RI2 lulus. RG10, RG11, dan bagian visibility lintas fitur RG12 masih menjadi pekerjaan integrasi terpisah.
 - Branch enhanced/revamp: `codex/dfd-threat-model-alignment`.
 - Checkpoint fondasi: `77db35f Add canonical DFD semantic model foundation`.
 - Audit terbaru: **2026-09-20**, terhadap commit `4bb1a5d` dan report project `81a087d2-b46b-40f7-ba58-bdc315a6ae0c` revision 3. Gunakan **Audit regresi integrasi** di bawah sebagai prioritas sekarang. Status remediasi selesai pada F01–F14/M0–M9 adalah catatan implementasi historis dan harus dibaca bersama gap integrasi yang dibuka kembali.
@@ -41,7 +41,7 @@ Audit ini mencakup kode dan Git diff, enam report lokal, browser Playwright pada
 
 ### Finding integrasi dan acceptance remediation
 
-RG05–RG12 tetap **terbuka**; RG01/RG04 telah diremediasi pada RI1, sementara RG02/RG03/RG08/RG09 memiliki remediation RI0. Bukti historis pada tabel berikut adalah kondisi saat audit awal. “Reproduksi” berarti teramati pada browser/data atau fixture di memori; “inspeksi” berarti jalur kode terkonfirmasi, tetapi dampak produksi spesifik belum diuji.
+RG10/RG11 dan visibility lintas fitur RG12 tetap **terbuka**; RG05–RG07 serta export diagram RG12 diremediasi pada RI2, RG01/RG04 pada RI1, dan RG02/RG03/RG08/RG09 pada RI0. Bukti historis pada tabel berikut adalah kondisi saat audit awal. “Reproduksi” berarti teramati pada browser/data atau fixture di memori; “inspeksi” berarti jalur kode terkonfirmasi, tetapi dampak produksi spesifik belum diuji.
 
 | ID / prioritas | Finding, bukti, dan dampak | Target perbaikan / acceptance |
 |---|---|---|
@@ -64,7 +64,7 @@ RG05–RG12 tetap **terbuka**; RG01/RG04 telah diremediasi pada RI1, sementara R
 |---|---|---|
 | RI0 — Recovery dan konsistensi state | RG02, RG03, RG08, RG09; buka kembali acceptance C0/F01/F02/F08 | **Selesai untuk jalur recovery/publish yang diimplementasikan.** Snapshot tervalidasi ditangkap sebelum quarantine, hasil lama dipulihkan sebagai `historical`, invalid/blocked tidak disebut baseline, downstream tanpa finding tervalidasi diblokir, project state digabung dari snapshot terbaru, report revision/DFD conflict dilindungi sebelum publish, dan storage write dibuat atomic. Acceptance multi-process/job cancellation tetap dicatat sebagai hardening lanjutan. |
 | RI1 — Generation dan progress aktual | RG01, RG04; buka kembali acceptance C1/C5/F03/F04/F08 | **Selesai pada jalur implementasi dan simulasi provider.** Satu POST/run dengan progress per-stage yang dipersist dan dipoll, reload/retry mengikuti run baru; STRIDE/LINDDUN dibagi per interaksi DFD dengan manifest coverage/deferred dan metadata/error provider. Acceptance live-provider/release gate tetap terbuka. |
-| RI2 — DFD projection/layout/export | RG05, RG06, RG07, bagian diagram RG12; buka kembali acceptance M5/C6 | **Belum selesai.** Zone terlihat setelah render stabil, nol node overlap, flow semantics/inspector dipertahankan, export cocok dengan canvas. |
+| RI2 — DFD projection/layout/export | RG05, RG06, RG07, bagian diagram RG12; buka kembali acceptance M5/C6 | **Selesai untuk UI DFD dan uji visual lokal.** Zone memakai membership dan bounding box node aktual; Fit hanya viewport, Reflow menghitung ulang posisi; flow paralel dan collapsed inspector tetap terpisah/tertelusur; PNG/SVG view menyertakan zone. Release gate multi-project tetap terbuka. |
 | RI3 — Ingestion dan visibility lintas fitur | RG10, RG11, bagian filtering RG12; buka kembali acceptance F14/C5/C6 | **Belum selesai.** Coverage file→chunk→verified evidence jujur, source lama bisa di-upgrade, no hidden same-zone finding, no repeated unbounded provider calls. |
 
 Gate release untuk seluruh milestone: jalankan skenario legacy + new project; full analysis → failure → retry → review/edit → reload → export; tahan request saat tiap phase untuk menguji progress; cek counts API/UI/export, saved review, live rendered zone geometry, collision, dan provider error metadata. Existing unit suite tetap dipakai, tetapi tidak menggantikan acceptance tersebut.
@@ -75,6 +75,14 @@ Gate release untuk seluruh milestone: jalankan skenario legacy + new project; fu
 - STRIDE/LINDDUN memakai irisan graph (maksimum 8 batch, 2 flow per batch, 2 call paralel, 2.200 output token per call). Setiap batch menyimpan scope, prompt size, finish reason, usage, parse/attempt metadata, valid-empty atau error code. Referensi yang tidak diproses/failed dicatat `deferred_refs`; referensi bersama yang sudah diproses batch sukses tidak dianggap deferred. Hasil batch valid dipertahankan bila batch lain gagal; retry format karena output limit meminta JSON lebih pendek, dan retry fase penuh tersedia tanpa menyamarkan invalid/prose/truncated/empty sebagai hasil valid.
 - Verifikasi: 154 Python tests, JavaScript visibility regression, syntax/diff checks. Playwright dengan POST provider yang ditahan menunjukkan hanya STRIDE aktif, fase berikut queued, 16% untuk 1 dari 6 fase, satu POST; reload run yang masih berjalan memulihkan STRIDE dan 33% untuk 1 dari 3 fase. API progress lokal merespons 200 dan browser console 0 error. Provider berbayar tidak dipanggil; kualitas finding serta throughput batch pada provider nyata masih perlu uji release.
 - Batas: retry kini pada tingkat fase (membangun ulang semua batch), belum resume hanya batch gagal. Progress JSON tidak memiliki worker lease/cancellation; restart process ketika POST berjalan bisa meninggalkan status `running` sampai run baru dimulai. Ini hardening operasi lanjutan, bukan klaim bahwa job async telah dibangun.
+
+### RI2 — implementation record dan batas verifikasi
+
+- Projection visual membawa `zone_ids`, `_collapsedZoneId`, dan constituent flow IDs/metadata sampai ke node/edge renderer. Flow source–target sama tidak digabung tanpa collapse; saat collapse, agregasi hanya mewakili endpoint yang diproyeksikan, dengan protocol/crossing/evidence setiap flow bisa dibuka lewat inspector. Inspector zone menampilkan jumlah member/flow serta tautan ke flow internal dan crossing.
+- Geometry kotak zone dihitung dari bounding box node vis-network dan transform canvas→DOM, termasuk parent/child zone; pembaruan mengikuti frame render, animasi Fit, pan/zoom, dan resize. Layout Reflow memakai dimensi perkiraan label, kelompok zone yang terhubung ditempatkan di sekitar hub, dan collision aktual dibenahi setelah render. Fit hanya mengubah viewport; posisi sintetis `dfd-group-*` tidak ditulis ke view canonical.
+- Export PNG dan SVG dari toolbar menangkap **current visible viewport** yang sama, termasuk zone dan revision. SVG view berisi zone vector + canvas graph yang tertanam sebagai raster agar hasil visual konsisten; endpoint `/dfd/export?format=svg` tetap tersedia sebagai export canonical full-model vector, bukan viewport snapshot. JSON export tetap canonical full model. Bila dibutuhkan SVG viewport yang seluruh graph-nya vector-editable, itu hardening export tersendiri.
+- Verifikasi: 154 Python tests, dua JavaScript regression (`test_analysis_visibility.js`, `test_ri2_dfd_visual.js`), syntax/diff checks, dan Playwright headless pada project terdampak tanpa menyimpan perubahan DFD. Context DFD 21 nodes/7 flows/4 zones: keempat zone terlihat, **0 node overlap** sebelum/sesudah Fit, Reflow, dan pada 390×844; pan menggeser kotak zone; collapse 16 member Application menjadi satu group yang membuka inspector; flow paralel API/HTTP punya ID, kurva, dan detail inspector terpisah; PNG/SVG terunduh, SVG membawa empat zone serta metadata flow/revision; 0 page error.
+- Batas: Fit adalah overview seluruh graph sehingga label bisa mengecil pada graph padat; zoom tetap diperlukan untuk membaca detail. SVG view raster-backed seperti dijelaskan di atas. RG12 untuk filtering finding dan kesetaraan UI/report/Markdown export masih terbuka pada RI3.
 
 ### Batas bukti audit
 
