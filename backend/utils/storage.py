@@ -10,6 +10,7 @@ DATA_DIR = Path(os.getenv("DATA_DIR", "./backend/data"))
 PROJECTS_DIR = DATA_DIR / "projects"
 REPORTS_DIR = DATA_DIR / "reports"
 DFD_MODELS_DIR = DATA_DIR / "dfd_models"
+ANALYSIS_RUNS_DIR = DATA_DIR / "analysis_runs"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 
 
@@ -17,6 +18,7 @@ def _ensure_dirs():
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     DFD_MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    ANALYSIS_RUNS_DIR.mkdir(parents=True, exist_ok=True)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -75,6 +77,9 @@ def delete_project(project_id: str) -> bool:
         dfd_path = DFD_MODELS_DIR / f"{project_id}.json"
         if dfd_path.exists():
             dfd_path.unlink()
+        progress_path = ANALYSIS_RUNS_DIR / f"{project_id}.json"
+        if progress_path.exists():
+            progress_path.unlink()
         return True
     return False
 
@@ -96,6 +101,15 @@ def save_report(project_id: str, report: dict) -> dict:
 
 def get_report(project_id: str) -> Optional[dict]:
     return _read_json(REPORTS_DIR / f"{project_id}.json")
+
+
+def save_analysis_progress(project_id: str, progress: dict) -> dict:
+    _write_json(ANALYSIS_RUNS_DIR / f"{project_id}.json", progress)
+    return progress
+
+
+def get_analysis_progress(project_id: str) -> Optional[dict]:
+    return _read_json(ANALYSIS_RUNS_DIR / f"{project_id}.json")
 
 
 # ── Canonical DFD models ─────────────────────────────────────────────────────

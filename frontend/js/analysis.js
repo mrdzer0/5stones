@@ -640,6 +640,18 @@ async function tryLoadExistingReport() {
     document.body.classList.add('analysis-has-report');
     renderResults(report);
     document.getElementById('btn-view-report').style.display = '';
+    if (report.analysis_run?.status === 'running') {
+      const types = report.analysis_run.requested_types || fullAnalysisTypes();
+      startAnalysisProgress(types);
+      document.getElementById('analyzing-card').style.display = '';
+      setAnalysisRunning(true);
+      startAnalysisProgressPolling(types, null, async () => {
+        stopAnalysisProgressPolling();
+        setAnalysisRunning(false);
+        await tryLoadExistingReport();
+        document.getElementById('analyzing-card').style.display = 'none';
+      });
+    }
   } catch {
     // No report yet — show empty state
     document.body.classList.remove('analysis-has-report');
@@ -685,21 +697,7 @@ function renderAnalysisRunState(report) {
 
 async function retryPersistedAnalysis() {
   if (analysisIsRunning) return;
-  setAnalysisRunning(true);
-  const button = document.getElementById('btn-retry-persisted-analysis');
-  if (button) button.disabled = true;
-  try {
-    const report = await API.analysis.retry(projectId);
-    currentReport = report;
-    renderResults(report);
-    showToast(report.analysis_run?.status === 'completed_with_warnings' ? 'Analysis retried with review warnings.' : 'Analysis retry completed.', 'success');
-  } catch (err) {
-    showToast(`Analysis retry failed: ${userFacingAnalysisError(err.message)}`, 'error');
-    try { await tryLoadExistingReport(); } catch (_) {}
-  } finally {
-    setAnalysisRunning(false);
-    if (button) button.disabled = false;
-  }
+  await runAnalysis(currentReport?.analysis_run?.requested_types || fullAnalysisTypes());
 }
 
 // ── Analysis pipeline ──────────────────────────────────────────────────────────
@@ -809,14 +807,30 @@ function userFacingAnalysisError(error) {
 }
 
 function stageOutcomeMessage(aiStatus = {}) {
+  const manifest = aiStatus.response_metadata?.generation_manifest;
+  const failedBatch = manifest?.batches?.find(batch => batch.status === 'invalid' || batch.status === 'unavailable');
+  const responseCode = aiStatus.error_code || failedBatch?.error_code || aiStatus.response_metadata?.parse_status;
+  const cause = {
+    truncated_json: 'Provider output was truncated.',
+    truncated_response: 'Provider reached its output limit.',
+    non_json_response: 'Provider returned prose instead of JSON.',
+    empty_response: 'Provider returned an empty response.',
+    empty_choices: 'Provider returned no completion.',
+    provider_contract_invalid: 'Provider response did not match the threat schema.',
+    provider_unavailable: 'Provider could not complete the request.'
+  }[responseCode];
   if (aiStatus.previous_results_preserved) {
-    return 'Previous validated results preserved while this phase is retried.';
+    return `${cause ? `${cause} ` : ''}Previous validated results preserved while this phase is retried.`;
   }
   if (aiStatus.assessment_status === 'blocked') {
     return 'Not run because a required upstream phase did not produce validated findings.';
   }
   if (aiStatus.assessment_status === 'invalid') {
-    return 'No validated result was produced by the selected analysis engine.';
+    return `${cause ? `${cause} ` : ''}No validated result was produced by the selected analysis engine.`;
+  }
+  if (aiStatus.assessment_status === 'partial') {
+    const deferred = manifest?.deferred_refs?.length || 0;
+    return `${cause ? `${cause} ` : ''}Partial assessment; ${deferred} DFD references remain deferred. Retry this phase.`;
   }
   if (aiStatus.baseline_used || aiStatus.engine === 'fallback') {
     return `Baseline framework results used. ${escHtml(userFacingAnalysisError(aiStatus.error))}`;
@@ -846,10 +860,7 @@ function updateAnalysisProgress() {
     ? selectedStageIds.indexOf(activeStageId)
     : completedCount - 1;
   const expected = activeStageId ? expectedStageSeconds(activeStageId) : 60;
-  const estimatedPhaseFraction = activeStageId
-    ? Math.min(.88, 1 - Math.exp(-(phaseElapsed / expected) * 1.25))
-    : 0;
-  const percent = Math.min(99, Math.round(((completedCount + estimatedPhaseFraction) / selectedStageIds.length) * 100));
+  const percent = Math.min(99, Math.floor((completedCount / selectedStageIds.length) * 100));
 
   let remaining = activeStageId
     ? Math.max(expected - phaseElapsed, expected * .22)
@@ -870,7 +881,7 @@ function updateAnalysisProgress() {
   if (label && activeStageId) {
     label.textContent = `Phase ${currentIndex + 1} of ${selectedStageIds.length} · ${stageProfiles[activeStageId].shortLabel}`;
   }
-  if (percentEl) percentEl.textContent = `${percent}% est.`;
+  if (percentEl) percentEl.textContent = `${percent}%`;
   if (fill) fill.style.width = `${percent}%`;
   if (track) {
     track.setAttribute('aria-valuenow', String(percent));
@@ -897,12 +908,88 @@ function startAnalysisProgress(types) {
   analysisTimer = setInterval(updateAnalysisProgress, 1000);
 }
 
-function startStageProgress(stageId) {
-  activeStageId = stageId;
-  phaseStartedAt = performance.now();
+let analysisProgressPoll = null;
+let observedProgressRunId = null;
+let analysisProgressPollGeneration = 0;
+
+function stopAnalysisProgressPolling() {
+  analysisProgressPollGeneration += 1;
+  if (analysisProgressPoll) clearInterval(analysisProgressPoll);
+  analysisProgressPoll = null;
+}
+
+function renderPersistedAnalysisProgress(progress) {
+  if (!progress?.run_id || !progress?.stages) return;
+  if (observedProgressRunId !== progress.run_id) {
+    const started = Date.parse(progress.started_at || '');
+    if (Number.isFinite(started)) analysisStartedAt = performance.now() - Math.max(0, Date.now() - started);
+  }
+  observedProgressRunId = progress.run_id;
+  const stageToId = {
+    trust_boundary: 'as-trust', stride: 'as-stride', linddun: 'as-linddun',
+    controls: 'as-controls', tests: 'as-tests', missing_info: 'as-gaps', assumptions: 'as-gaps'
+  };
+  const grouped = {};
+  (progress.requested_types || []).forEach(stage => {
+    const id = stageToId[stage];
+    if (id) (grouped[id] ||= []).push(progress.stages[stage] || { state: 'queued' });
+  });
+  Object.keys(originalLabels).filter(id => !grouped[id]).forEach(id => {
+    const element = document.getElementById(id);
+    if (!element) return;
+    element.className = 'analyzing-step-item skipped';
+    element.innerHTML = `<div class="step-dot"></div><span>${originalLabels[id]} · not requested</span>`;
+  });
+  completedStageIds = new Set();
+  let activeId = null;
+  Object.entries(grouped).forEach(([id, records]) => {
+    const element = document.getElementById(id);
+    if (!element) return;
+    const states = records.map(record => record.state);
+    const active = states.includes('active');
+    const terminal = states.every(state => ['completed', 'warning', 'blocked', 'skipped'].includes(state));
+    const warning = states.some(state => ['warning', 'blocked'].includes(state));
+    const skipped = states.every(state => state === 'skipped');
+    element.className = `analyzing-step-item ${active ? 'active' : skipped ? 'skipped' : terminal ? warning ? 'error' : 'done' : ''}`.trim();
+    const detail = skipped ? 'skipped' : terminal && warning ? 'needs review' : terminal ? 'complete' : active ? 'running' : 'queued';
+    element.innerHTML = `<div class="step-dot"></div><span>${originalLabels[id]} · ${detail}</span>`;
+    if (terminal && !skipped) completedStageIds.add(id);
+    if (active) activeId = id;
+  });
+  if (activeStageId !== activeId) {
+    activeStageId = activeId;
+    const activeRecord = Object.entries(stageToId).find(([stage, id]) => id === activeId && progress.stages[stage]?.state === 'active');
+    const started = Date.parse(progress.stages[activeRecord?.[0]]?.started_at || '');
+    phaseStartedAt = activeId ? Number.isFinite(started) ? performance.now() - Math.max(0, Date.now() - started) : performance.now() : 0;
+  }
   const title = document.querySelector('#analyzing-card h3');
-  if (title) title.textContent = `${originalLabels[stageId]}…`;
+  if (title && activeId) title.textContent = `${originalLabels[activeId]}…`;
+  if (!activeId && progress.status === 'running') {
+    const label = document.getElementById('analysis-progress-label');
+    if (label) label.textContent = 'Waiting for the next phase…';
+  }
   updateAnalysisProgress();
+}
+
+function startAnalysisProgressPolling(types, previousRunId = null, onComplete = null) {
+  stopAnalysisProgressPolling();
+  const generation = analysisProgressPollGeneration;
+  const poll = async () => {
+    try {
+      const progress = await API.analysis.progress(projectId);
+      if (generation !== analysisProgressPollGeneration) return;
+      if (!progress?.run_id || progress.run_id === previousRunId) return;
+      renderPersistedAnalysisProgress(progress);
+      if (progress.status !== 'running') {
+        stopAnalysisProgressPolling();
+        if (onComplete) await onComplete(progress);
+      }
+    } catch (_) {
+      // A transient poll error must not cancel the in-flight analysis request.
+    }
+  };
+  poll();
+  analysisProgressPoll = setInterval(poll, 650);
 }
 
 function completeStageProgress(stageId) {
@@ -960,6 +1047,8 @@ function setAnalysisRunning(running) {
 
 async function runAnalysis(types) {
   if (analysisIsRunning) return;
+  const previousRunId = currentReport?.analysis_run?.run_id || null;
+  observedProgressRunId = null;
   setAnalysisRunning(true);
   document.getElementById('empty-analysis-card').style.display = 'none';
   document.getElementById('results-tabs').style.display = 'none';
@@ -986,12 +1075,6 @@ async function runAnalysis(types) {
       `;
     }
   });
-
-  const setActiveStep = (id) => {
-    const el = document.getElementById(id);
-    if (el) { el.classList.remove('done', 'skipped'); el.classList.add('active'); }
-    startStageProgress(id);
-  };
 
   const setStepDone = (id, aiStatus = { ok: true }) => {
     const el = document.getElementById(id);
@@ -1053,13 +1136,14 @@ async function runAnalysis(types) {
   if (gapTypes.length) activeUiStages.push(['gaps', 'as-gaps']);
   const activeUiIds = new Set(activeUiStages.map(([, id]) => id));
   stepIds.filter(id => !activeUiIds.has(id)).forEach(setStepSkipped);
-  activeUiStages.forEach(([, id]) => setActiveStep(id));
 
-  // One request creates one immutable backend run/snapshot. The UI still
-  // renders each stage separately from the returned per-stage status.
+  // The POST owns one run; a separate endpoint publishes each stage transition.
   let report;
   try {
-    report = await API.analysis.run(projectId, types);
+    const request = API.analysis.run(projectId, types);
+    startAnalysisProgressPolling(types, previousRunId);
+    report = await request;
+    stopAnalysisProgressPolling();
     currentReport = report;
     activeUiStages.forEach(([stage, id]) => {
       const stageStatuses = stage === 'gaps'
@@ -1070,14 +1154,23 @@ async function runAnalysis(types) {
             ok: stageStatuses.length > 0 && stageStatuses.every(status => status.ok !== false),
             duration_seconds: stageStatuses.reduce((sum, status) => sum + Number(status.duration_seconds || 0), 0),
             error: stageStatuses.find(status => status.ok === false)?.error,
+            assessment_status: stageStatuses.find(status => status.ok === false)?.assessment_status,
+            previous_results_preserved: stageStatuses.some(status => status.previous_results_preserved),
+            baseline_used: stageStatuses.some(status => status.baseline_used),
           }
         : (stageStatuses[0] || { ok: false, error: 'Stage completed without a persisted status. Please retry this phase.' });
       if (!aiStatus.ok) anyFailed = true;
       setStepDone(id, aiStatus);
+      completedStageIds.add(id);
     });
   } catch (err) {
+    stopAnalysisProgressPolling();
     anyFailed = true;
-    activeUiStages.forEach(([, id]) => setStepDone(id, { ok: false, error: err.message }));
+    const active = activeStageId || activeUiStages[0]?.[1];
+    activeUiStages.forEach(([, id]) => {
+      if (id === active) setStepDone(id, { ok: false, error: err.message });
+      else if (!completedStageIds.has(id)) setStepSkipped(id);
+    });
     report = null;
   }
 
@@ -1089,8 +1182,8 @@ async function runAnalysis(types) {
       const recovery = report.analysis_recovery || {};
       const preserved = recovery.state === 'previous_results_preserved';
       const unavailable = recovery.state === 'analysis_unavailable';
-      finishAnalysisProgress(preserved ? 'Previous results preserved · retry available' : unavailable ? 'Retry required · no validated replacement' : 'Review ready · baseline results used');
-      if (titleEl) titleEl.textContent = preserved ? 'Previous results preserved for review' : unavailable ? 'Analysis requires a retry' : 'Analysis prepared with baseline results';
+      finishAnalysisProgress(preserved ? 'Previous results preserved · retry available' : unavailable ? 'Retry required · no validated replacement' : 'Review ready · warnings require review');
+      if (titleEl) titleEl.textContent = preserved ? 'Previous results preserved for review' : unavailable ? 'Analysis requires a retry' : 'Analysis prepared with review warnings';
       document.getElementById('analyzing-actions').style.display = 'block';
       document.body.classList.add('analysis-has-report');
       pendingArtifactAnalysisTypes = [];
@@ -1101,7 +1194,7 @@ async function runAnalysis(types) {
           ? 'Previous validated findings remain available while the failed stages are retried.'
           : unavailable
             ? 'No validated replacement was produced. Retry the affected stages.'
-            : 'Some stages used baseline framework results and still require review.',
+            : 'Some stages require review or used baseline results.',
         'warn'
       );
     } else {
@@ -1137,112 +1230,9 @@ window.retryStage = async function(stepId) {
     'as-tests': ['tests'],
     'as-gaps': ['missing_info', 'assumptions']
   };
-
   const types = stepToTypes[stepId];
   if (!types) return;
-
-  const el = document.getElementById(stepId);
-  if (el) {
-    el.className = 'analyzing-step-item active';
-    el.innerHTML = `
-      <div class="step-dot"></div>
-      <span style="font-weight:500;">${originalLabels[stepId]} (Retrying…)</span>
-    `;
-  }
-
-  try {
-    await API.analysis.run(projectId, types);
-    const report = await API.analysis.report(projectId);
-    currentReport = report;
-
-    const statusMap = {
-      'as-trust': 'trust_boundary',
-      'as-stride': 'stride',
-      'as-linddun': 'linddun',
-      'as-controls': 'controls',
-      'as-tests': 'tests',
-      'as-gaps': 'missing_info'
-    };
-    const key = statusMap[stepId];
-    const aiStatus = report.ai_status?.[key] || { ok: true };
-
-    const originalSetStepDone = (id, aiStat) => {
-      const targetEl = document.getElementById(id);
-      if (!targetEl) return;
-      if (aiStat && aiStat.ok === false) {
-        targetEl.className = 'analyzing-step-item error';
-        targetEl.innerHTML = `
-          <div class="step-dot" style="background:#DC2626;box-shadow:none;"></div>
-          <div style="flex:1;">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:var(--space-2);width:100%;">
-              <span style="color:#DC2626;font-weight:500;">${originalLabels[id]}</span>
-              <button class="btn btn-sm btn-ghost" onclick="event.stopPropagation(); retryStage('${id}')" style="color:#2563EB;padding:2px 8px;font-size:0.72rem;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--surface);">
-                ↻ Retry stage
-              </button>
-            </div>
-            <div class="step-subtext" style="font-size:0.72rem;color:var(--orange);margin-top:2px;line-height:1.2;">
-              ${stageOutcomeMessage(aiStat)}
-            </div>
-          </div>
-        `;
-      } else {
-        targetEl.className = 'analyzing-step-item done';
-        targetEl.innerHTML = `
-          <div class="step-dot" style="background:var(--green);box-shadow:none;"></div>
-          <span style="color:var(--green);">${originalLabels[id]}</span>
-        `;
-      }
-    };
-
-    originalSetStepDone(stepId, aiStatus);
-    renderResults(report);
-
-    if (aiStatus.ok) {
-      showToast('Stage evaluation completed successfully.', 'success');
-      
-      // Auto-proceed if all active/non-skipped steps are now green/done
-      const anyRemainingFailed = Object.keys(statusMap).some(sid => {
-        const k = statusMap[sid];
-        const itemEl = document.getElementById(sid);
-        if (!itemEl || itemEl.classList.contains('skipped')) return false;
-        return report.ai_status?.[k]?.ok === false;
-      });
-      if (!anyRemainingFailed) {
-        document.getElementById('analyzing-card').style.display = 'none';
-        document.getElementById('btn-view-report').style.display = '';
-      }
-    } else {
-      showToast(
-        report.analysis_recovery?.state === 'previous_results_preserved'
-          ? 'Previous validated results remain available while this stage is retried.'
-          : 'Stage evaluation could not complete; retry is available.',
-        'warn'
-      );
-    }
-  } catch (err) {
-    showToast('Stage evaluation failed: ' + err.message, 'error');
-    // Restore error state
-    const originalSetStepDone = (id, aiStat) => {
-      const targetEl = document.getElementById(id);
-      if (!targetEl) return;
-      targetEl.className = 'analyzing-step-item error';
-      targetEl.innerHTML = `
-        <div class="step-dot" style="background:#DC2626;box-shadow:none;"></div>
-        <div style="flex:1;">
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:var(--space-2);width:100%;">
-            <span style="color:#DC2626;font-weight:500;">${originalLabels[id]}</span>
-            <button class="btn btn-sm btn-ghost" onclick="event.stopPropagation(); retryStage('${id}')" style="color:#2563EB;padding:2px 8px;font-size:0.72rem;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--surface);">
-              ↻ Retry stage
-            </button>
-          </div>
-          <div class="step-subtext" style="font-size:0.72rem;color:var(--orange);margin-top:2px;line-height:1.2;">
-            ${stageOutcomeMessage({ ok: false, error: err.message })}
-          </div>
-        </div>
-      `;
-    };
-    originalSetStepDone(stepId, { ok: false, error: err.message });
-  }
+  await runAnalysis(types);
 };
 
 // ── Result rendering ───────────────────────────────────────────────────────────

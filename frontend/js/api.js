@@ -61,6 +61,7 @@ const API = {
   analysis: {
     run:     (id, types) => apiFetch(`/api/projects/${id}/analyze`, { method: 'POST', body: JSON.stringify({ analysis_types: types }) }),
     retry:   (id)        => apiFetch(`/api/projects/${id}/analyze/retry`, { method: 'POST' }),
+    progress:(id)        => apiFetch(`/api/projects/${id}/analyze/progress`),
     stride:  (id)        => apiFetch(`/api/projects/${id}/analyze/stride`, { method: 'POST' }),
     linddun: (id)        => apiFetch(`/api/projects/${id}/analyze/linddun`, { method: 'POST' }),
     report:  (id)        => apiFetch(`/api/projects/${id}/report`),

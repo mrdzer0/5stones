@@ -4,8 +4,8 @@ import uuid
 from typing import List
 from backend.services.ai_service import chat_complete_json, get_active_provider_config
 from backend.services.posture_service import build_evidence_context
-from backend.services.dfd_model_service import format_dfd_analysis_context
-from backend.services.threat_validation_service import parse_generation_payload, ThreatGenerationResult
+from backend.services.threat_validation_service import ThreatGenerationResult
+from backend.services.threat_batch_service import build_threat_batches, run_threat_batches
 
 STRIDE_SYSTEM_PROMPT = """You are a senior AppSec engineer performing STRIDE threat modeling.
 Generate realistic, specific threats based on the context. Each threat must be actionable and evidence-based.
@@ -40,13 +40,13 @@ async def generate_stride_threats(
 
     cfg = get_active_provider_config(project.get("data_policy"))
 
-    context = _build_context(project)
-    evidence_context = build_evidence_context(project)
+    context = _build_context(project)[:1800]
+    evidence_context = build_evidence_context(project, limit=10)
     boundaries_text = "\n".join([
         f"- {b.get('source')} → {b.get('destination')}: {b.get('boundary_label')}"
         for b in trust_boundaries[:10]
     ])
-    dfd_context = format_dfd_analysis_context(dfd_model)
+    batches, deferred_refs = build_threat_batches(dfd_model)
 
     user_prompt = f"""Perform STRIDE threat analysis for this system.
 
@@ -57,7 +57,7 @@ TRUST BOUNDARIES:
 {boundaries_text}
 
 CANONICAL DFD MODEL:
-{dfd_context}
+The current interaction batch is provided after the response contract. Analyze only its listed canonical references.
 
 EVIDENCE CATALOG:
 {evidence_context}
@@ -101,15 +101,11 @@ EVIDENCE CATALOG:
   ]
 }}"""
 
-    result = await chat_complete_json(
-        system_prompt=STRIDE_SYSTEM_PROMPT,
-        user_prompt=user_prompt,
-        base_url=cfg.get("base_url"),
-        api_key=cfg.get("api_key"),
-        model=cfg.get("model"),
-        max_tokens=4000,
+    parsed = await run_threat_batches(
+        framework="STRIDE", batches=batches, deferred_refs=deferred_refs,
+        system_prompt=STRIDE_SYSTEM_PROMPT, prompt_prefix=user_prompt, prompt_suffix="Return coverage and candidates only for this batch. An omitted pair is insufficient information, never a reviewed negative.",
+        provider=cfg, chat_complete_json=chat_complete_json,
     )
-    parsed = parse_generation_payload(result, "STRIDE")
     threats = list(parsed)
 
     for t in threats:
@@ -123,6 +119,7 @@ EVIDENCE CATALOG:
         assessment_status=parsed.assessment_status,
         response_shape=parsed.response_shape,
         warnings=parsed.generation_warnings,
+        response_metadata=parsed.response_metadata,
     )
 
 

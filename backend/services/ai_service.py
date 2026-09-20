@@ -350,14 +350,22 @@ async def chat_complete_json(
         attempt_system = system_prompt
         attempt_user = user_prompt
         if attempt:
-            attempt_system = (
-                f"{system_prompt}\nYour previous response was not valid JSON. "
-                "Return exactly one valid JSON object, with no markdown, reasoning, commentary, or code fences."
-            )
-            attempt_user = (
-                f"{user_prompt}\n\nThe previous response could not be parsed. "
-                f"Correct it and return only the required JSON object. Previous response excerpt:\n{retry_context}"
-            )
+            if metadata.get("parse_status") in {"truncated_json", "truncated_response"}:
+                attempt_system = (
+                    f"{system_prompt}\nYour previous response reached the output limit. "
+                    "Return one shorter but complete JSON object. Prioritize the highest-value items, "
+                    "keep explanations concise, and preserve every required field."
+                )
+                attempt_user = f"{user_prompt}\n\nOutput limit reached previously. Return a concise complete JSON object."
+            else:
+                attempt_system = (
+                    f"{system_prompt}\nYour previous response was not valid JSON. "
+                    "Return exactly one valid JSON object, with no markdown, reasoning, commentary, or code fences."
+                )
+                attempt_user = (
+                    f"{user_prompt}\n\nThe previous response could not be parsed. "
+                    f"Correct it and return only the required JSON object. Previous response excerpt:\n{retry_context}"
+                )
 
         try:
             raw_result = await chat_complete(
@@ -382,6 +390,17 @@ async def chat_complete_json(
         else:
             raw = raw_result
         raw_text = str(raw or "")
+        if metadata.get("finish_reason") == "length":
+            reason = "truncated_json" if _looks_truncated_json(raw_text) else "truncated_response"
+            metadata["retry_reasons"].append(reason)
+            metadata["parse_status"] = reason
+            last_error = AnalysisResponseError(
+                "Analysis engine stopped at its output limit before the assessment could be verified",
+                code=reason,
+                metadata=metadata,
+            )
+            retry_context = "(output limit reached)"
+            continue
         repaired = clean_and_repair_json(raw_text)
         retry_context = raw_text[:3000]
         if not repaired or repaired[0] not in ("{", "["):
@@ -423,7 +442,7 @@ async def chat_complete_json(
             last_error = exc
 
     raise AnalysisResponseError(
-        "Analysis engine could not produce valid structured data after one formatting retry. Baseline results are available.",
+        "Analysis engine could not produce valid structured data after one formatting retry.",
         code=metadata.get("parse_status") or "structured_output_invalid",
         metadata=metadata,
     ) from last_error

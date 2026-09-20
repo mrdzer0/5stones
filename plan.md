@@ -5,7 +5,7 @@
 - Acuan: `DFD_Feature_AI_Agent_Prompt.md`
 - Status project saat ini: **grounded threat-modeling MVP dengan DFD visualization**.
 - Target akhir: **semantic DFD modeling feature** yang menjadi source of truth untuk canvas, inventory, export, STRIDE, dan LINDDUN.
-- Verifikasi branch saat ini: 145 test Python + 1 regression JavaScript lulus setelah aktivitas RI0; alur recovery juga diuji dengan Playwright. RG01 dan RG05–RG12 masih menjadi pekerjaan integrasi terpisah.
+- Verifikasi branch saat ini: 154 test Python + 1 regression JavaScript lulus setelah RI1; progress POST/polling/reload juga diuji dengan Playwright. RG05–RG12 masih menjadi pekerjaan integrasi terpisah.
 - Branch enhanced/revamp: `codex/dfd-threat-model-alignment`.
 - Checkpoint fondasi: `77db35f Add canonical DFD semantic model foundation`.
 - Audit terbaru: **2026-09-20**, terhadap commit `4bb1a5d` dan report project `81a087d2-b46b-40f7-ba58-bdc315a6ae0c` revision 3. Gunakan **Audit regresi integrasi** di bawah sebagai prioritas sekarang. Status remediasi selesai pada F01–F14/M0–M9 adalah catatan implementasi historis dan harus dibaca bersama gap integrasi yang dibuka kembali.
@@ -41,7 +41,7 @@ Audit ini mencakup kode dan Git diff, enam report lokal, browser Playwright pada
 
 ### Finding integrasi dan acceptance remediation
 
-RG01 dan RG05–RG12 tetap **terbuka**; RG02/RG03/RG08/RG09 memiliki remediation RI0 yang tercatat pada milestone dan implementation record. “Reproduksi” berarti teramati pada browser/data atau fixture di memori; “inspeksi” berarti jalur kode terkonfirmasi, tetapi dampak produksi spesifik belum diuji.
+RG05–RG12 tetap **terbuka**; RG01/RG04 telah diremediasi pada RI1, sementara RG02/RG03/RG08/RG09 memiliki remediation RI0. Bukti historis pada tabel berikut adalah kondisi saat audit awal. “Reproduksi” berarti teramati pada browser/data atau fixture di memori; “inspeksi” berarti jalur kode terkonfirmasi, tetapi dampak produksi spesifik belum diuji.
 
 | ID / prioritas | Finding, bukti, dan dampak | Target perbaikan / acceptance |
 |---|---|---|
@@ -63,11 +63,18 @@ RG01 dan RG05–RG12 tetap **terbuka**; RG02/RG03/RG08/RG09 memiliki remediation
 | Milestone | Scope | Status / exit criteria |
 |---|---|---|
 | RI0 — Recovery dan konsistensi state | RG02, RG03, RG08, RG09; buka kembali acceptance C0/F01/F02/F08 | **Selesai untuk jalur recovery/publish yang diimplementasikan.** Snapshot tervalidasi ditangkap sebelum quarantine, hasil lama dipulihkan sebagai `historical`, invalid/blocked tidak disebut baseline, downstream tanpa finding tervalidasi diblokir, project state digabung dari snapshot terbaru, report revision/DFD conflict dilindungi sebelum publish, dan storage write dibuat atomic. Acceptance multi-process/job cancellation tetap dicatat sebagai hardening lanjutan. |
-| RI1 — Generation dan progress aktual | RG01, RG04; buka kembali acceptance C1/C5/F03/F04/F08 | **Belum selesai.** Satu run dengan progress aktual, error metadata lengkap, bounded generation/batching dan recovery/retry teruji pada provider gagal. |
+| RI1 — Generation dan progress aktual | RG01, RG04; buka kembali acceptance C1/C5/F03/F04/F08 | **Selesai pada jalur implementasi dan simulasi provider.** Satu POST/run dengan progress per-stage yang dipersist dan dipoll, reload/retry mengikuti run baru; STRIDE/LINDDUN dibagi per interaksi DFD dengan manifest coverage/deferred dan metadata/error provider. Acceptance live-provider/release gate tetap terbuka. |
 | RI2 — DFD projection/layout/export | RG05, RG06, RG07, bagian diagram RG12; buka kembali acceptance M5/C6 | **Belum selesai.** Zone terlihat setelah render stabil, nol node overlap, flow semantics/inspector dipertahankan, export cocok dengan canvas. |
 | RI3 — Ingestion dan visibility lintas fitur | RG10, RG11, bagian filtering RG12; buka kembali acceptance F14/C5/C6 | **Belum selesai.** Coverage file→chunk→verified evidence jujur, source lama bisa di-upgrade, no hidden same-zone finding, no repeated unbounded provider calls. |
 
 Gate release untuk seluruh milestone: jalankan skenario legacy + new project; full analysis → failure → retry → review/edit → reload → export; tahan request saat tiap phase untuk menguji progress; cek counts API/UI/export, saved review, live rendered zone geometry, collision, dan provider error metadata. Existing unit suite tetap dipakai, tetapi tidak menggantikan acceptance tersebut.
+
+### RI1 — implementation record dan batas verifikasi
+
+- Progress `GET /api/projects/{id}/analyze/progress` menyimpan state `queued/active/completed/warning/blocked/skipped`, waktu dan error tiap stage per run. UI polling 650 ms hanya menandai stage yang benar-benar aktif; reload memulihkan fase dan elapsed time dari server, retry stage membuat run baru melalui jalur yang sama. Progress bar memakai jumlah fase yang telah selesai, bukan persentase perkiraan provider.
+- STRIDE/LINDDUN memakai irisan graph (maksimum 8 batch, 2 flow per batch, 2 call paralel, 2.200 output token per call). Setiap batch menyimpan scope, prompt size, finish reason, usage, parse/attempt metadata, valid-empty atau error code. Referensi yang tidak diproses/failed dicatat `deferred_refs`; referensi bersama yang sudah diproses batch sukses tidak dianggap deferred. Hasil batch valid dipertahankan bila batch lain gagal; retry format karena output limit meminta JSON lebih pendek, dan retry fase penuh tersedia tanpa menyamarkan invalid/prose/truncated/empty sebagai hasil valid.
+- Verifikasi: 154 Python tests, JavaScript visibility regression, syntax/diff checks. Playwright dengan POST provider yang ditahan menunjukkan hanya STRIDE aktif, fase berikut queued, 16% untuk 1 dari 6 fase, satu POST; reload run yang masih berjalan memulihkan STRIDE dan 33% untuk 1 dari 3 fase. API progress lokal merespons 200 dan browser console 0 error. Provider berbayar tidak dipanggil; kualitas finding serta throughput batch pada provider nyata masih perlu uji release.
+- Batas: retry kini pada tingkat fase (membangun ulang semua batch), belum resume hanya batch gagal. Progress JSON tidak memiliki worker lease/cancellation; restart process ketika POST berjalan bisa meninggalkan status `running` sampai run baru dimulai. Ini hardening operasi lanjutan, bukan klaim bahwa job async telah dibangun.
 
 ### Batas bukti audit
 

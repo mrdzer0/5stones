@@ -2,7 +2,10 @@
 from __future__ import annotations
 import copy
 from fastapi import APIRouter, HTTPException, Request
-from backend.utils.storage import get_project, save_dfd_model, save_project, save_report, get_report, get_dfd_model
+from backend.utils.storage import (
+    get_project, save_dfd_model, save_project, save_report, get_report, get_dfd_model,
+    get_analysis_progress, save_analysis_progress,
+)
 from backend.utils.audit import log_event
 from backend.utils.access_control import get_authorized_project, workspace_access_dependency
 from backend.utils.redaction import redact_text
@@ -665,6 +668,56 @@ def _requested_analysis_types(body: dict | None) -> list[str]:
     return [str(item) for item in requested if str(item).strip()]
 
 
+def _write_analysis_progress(project_id: str, run_id: str, *, stage: str | None = None,
+                             state: str | None = None, status: dict | None = None,
+                             run_status: str | None = None):
+    progress = get_analysis_progress(project_id)
+    if not isinstance(progress, dict) or progress.get("run_id") != run_id:
+        return
+    if stage and stage in progress.get("stages", {}):
+        record = progress["stages"][stage]
+        record["state"] = state or record.get("state", "queued")
+        if state == "active":
+            record["started_at"] = _utc_now()
+            progress["active_stage"] = stage
+        else:
+            record["completed_at"] = _utc_now()
+            record["assessment_status"] = (status or {}).get("assessment_status") or ("complete" if (status or {}).get("ok") else "invalid")
+            record["error_code"] = (status or {}).get("error_code")
+            record["error"] = redact_text(str((status or {}).get("error") or ""))[:240]
+            record["duration_seconds"] = (status or {}).get("duration_seconds")
+            if progress.get("active_stage") == stage:
+                progress["active_stage"] = None
+    if run_status:
+        progress["status"] = run_status
+        if run_status == "failed":
+            for record in progress.get("stages", {}).values():
+                if record.get("state") == "active":
+                    record["state"] = "warning"
+                    record["assessment_status"] = "failed"
+                    record["completed_at"] = _utc_now()
+                elif record.get("state") == "queued":
+                    record["state"] = "skipped"
+        progress["active_stage"] = None
+        if run_status != "running":
+            progress["completed_at"] = _utc_now()
+    progress["updated_at"] = _utc_now()
+    save_analysis_progress(project_id, progress)
+
+
+def _initial_analysis_progress(run_id: str, types: list[str]) -> dict:
+    return {
+        "run_id": run_id,
+        "status": "running",
+        "requested_types": list(types),
+        "stage_order": list(types),
+        "stages": {stage: {"state": "queued"} for stage in types},
+        "active_stage": None,
+        "started_at": _utc_now(),
+        "updated_at": _utc_now(),
+    }
+
+
 @router.post("/{project_id}/analyze")
 async def run_full_analysis(project_id: str, body: dict = None, request: Request = None):
     """Run analysis with a persisted run state and retry-safe failure boundary."""
@@ -695,6 +748,9 @@ async def run_full_analysis(project_id: str, body: dict = None, request: Request
     project["analysis_status"] = "running"
     project["analysis_run_id"] = run_state["run_id"]
     save_project(project)
+    publish_progress = request is not None
+    if publish_progress:
+        save_analysis_progress(project_id, _initial_analysis_progress(run_state["run_id"], types))
 
     try:
         result = await _run_analysis_pipeline(
@@ -703,6 +759,7 @@ async def run_full_analysis(project_id: str, body: dict = None, request: Request
             request=request,
             run_id=run_state["run_id"],
             input_snapshot=input_snapshot,
+            publish_progress=publish_progress,
         )
     except Exception as exc:
         safe_error = redact_text(str(exc))[:1000] or "Analysis pipeline failed"
@@ -720,6 +777,8 @@ async def run_full_analysis(project_id: str, body: dict = None, request: Request
         }
         failed_report["analysis_status"] = "failed"
         save_report(project_id, failed_report)
+        if publish_progress:
+            _write_analysis_progress(project_id, run_state["run_id"], run_status="failed")
         _publish_project_analysis_state(
             project_id,
             run_state["run_id"],
@@ -750,6 +809,8 @@ async def run_full_analysis(project_id: str, body: dict = None, request: Request
     if not _project_run_is_current(project_id, run_state["run_id"]):
         return get_report(project_id) or result
     save_report(project_id, result)
+    if publish_progress:
+        _write_analysis_progress(project_id, run_state["run_id"], run_status=result["analysis_status"])
     _publish_project_analysis_state(
         project_id,
         run_state["run_id"],
@@ -758,6 +819,20 @@ async def run_full_analysis(project_id: str, body: dict = None, request: Request
         fallback_project=project,
     )
     return result
+
+
+@router.get("/{project_id}/analyze/progress")
+async def get_analysis_run_progress(project_id: str, request: Request = None):
+    project = get_project(project_id) if request is None else get_authorized_project(project_id, request)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    progress = get_analysis_progress(project_id)
+    report = get_report(project_id) or {}
+    run = report.get("analysis_run") or {}
+    if isinstance(progress, dict) and progress.get("run_id") == run.get("run_id"):
+        return progress
+    return {"run_id": run.get("run_id"), "status": run.get("status", "not_run"),
+            "requested_types": run.get("requested_types") or [], "stages": {}, "active_stage": None}
 
 
 @router.post("/{project_id}/analyze/retry")
@@ -785,6 +860,7 @@ async def _run_analysis_pipeline(
     request: Request = None,
     run_id: str | None = None,
     input_snapshot: dict | None = None,
+    publish_progress: bool = False,
 ):
     """Run full threat modeling pipeline for a project."""
     project = get_project(project_id) if request is None else get_authorized_project(project_id, request)
@@ -829,7 +905,22 @@ async def _run_analysis_pipeline(
         "stage_dependencies": {stage: ANALYSIS_STAGE_DEPENDENCIES.get(stage, []) for stage in types},
     }
 
+    def start_stage(stage: str):
+        if publish_progress:
+            _write_analysis_progress(project_id, run_id, stage=stage, state="active")
+
+    def end_stage(stage: str):
+        if publish_progress:
+            stage_status = report.get("ai_status", {}).get(stage) or {}
+            stage_state = "completed" if stage_status.get("ok") else (
+                "blocked" if stage_status.get("assessment_status") == "blocked" else "warning"
+            )
+            _write_analysis_progress(project_id, run_id, stage=stage, state=stage_state,
+                                     status={**stage_status, "duration_seconds": stage_timings.get(stage)})
+
     # 1. Trust Boundaries
+    if "trust_boundary" in types:
+        start_stage("trust_boundary")
     finish_trust_boundary = _stage_timer(stage_timings, "trust_boundary") if "trust_boundary" in types else None
     if "trust_boundary" in types:
         previous_signature = _active_topology_signature(report.get("trust_boundaries"))
@@ -915,6 +1006,7 @@ async def _run_analysis_pipeline(
         trust_boundaries = active_trust_boundaries(report.get("trust_boundaries", []))
     if finish_trust_boundary:
         finish_trust_boundary()
+        end_stage("trust_boundary")
 
     # Keep privacy/lifecycle readiness derived from the same canonical model
     # revision that feeds LINDDUN. Missing metadata remains review context; it
@@ -931,6 +1023,8 @@ async def _run_analysis_pipeline(
     _append_analysis_quarantine(report, quarantined_threats)
 
     # 2. STRIDE
+    if "stride" in types:
+        start_stage("stride")
     stride_threats = []
     finish_stride = _stage_timer(stage_timings, "stride") if "stride" in types else None
     if "stride" in types:
@@ -940,6 +1034,8 @@ async def _run_analysis_pipeline(
         ]
         stride_generation_status = "complete"
         stride_generation_error = None
+        stride_error_code = None
+        stride_response_metadata = {}
         try:
             stride_threats = await generate_stride_threats(
                 project,
@@ -957,9 +1053,12 @@ async def _run_analysis_pipeline(
                 assessment_status="invalid",
                 response_shape="invalid",
                 warnings=[str(exc)],
+                response_metadata=getattr(exc, "response_metadata", {}),
             )
             stride_engine = "AI"
             stride_generation_error = str(exc)
+            stride_error_code = getattr(exc, "code", "provider_contract_invalid")
+            stride_response_metadata = getattr(exc, "response_metadata", {})
             _append_generation_contract_quarantine(
                 report,
                 "STRIDE",
@@ -975,11 +1074,14 @@ async def _run_analysis_pipeline(
             )
             stride_engine = "fallback"
             stride_generation_error = str(exc)
+            stride_error_code = getattr(exc, "code", "provider_unavailable")
+            stride_response_metadata = getattr(exc, "response_metadata", {})
         stride_threats = normalize_generation_result(stride_threats, "STRIDE")
         raw_stride_threats = list(stride_threats or [])
         stride_generation_status = getattr(stride_threats, "assessment_status", "complete")
         stride_generation_warnings = list(getattr(stride_threats, "generation_warnings", []))
         stride_response_shape = getattr(stride_threats, "response_shape", "unknown")
+        stride_response_metadata = getattr(stride_threats, "response_metadata", stride_response_metadata)
         stride_coverage = getattr(stride_threats, "coverage", [])
         valid_stride_coverage, coverage_warnings = validate_coverage(
             stride_coverage, report.get("dfd_model"), "STRIDE"
@@ -1000,6 +1102,8 @@ async def _run_analysis_pipeline(
             "engine": stride_engine,
             "assessment_status": stride_generation_status,
             "response_shape": stride_response_shape,
+            "response_metadata": stride_response_metadata,
+            **({"error_code": stride_error_code} if stride_error_code else {}),
             "validation_warnings": [*coverage_warnings, *stride_warnings],
             "baseline_used": False,
             "previous_results_preserved": False,
@@ -1045,8 +1149,11 @@ async def _run_analysis_pipeline(
             stride_deduped = 0
     if finish_stride:
         finish_stride()
+        end_stage("stride")
 
     # 3. LINDDUN
+    if "linddun" in types:
+        start_stage("linddun")
     linddun_threats = []
     finish_linddun = _stage_timer(stage_timings, "linddun") if "linddun" in types else None
     if "linddun" in types:
@@ -1056,6 +1163,8 @@ async def _run_analysis_pipeline(
         ]
         linddun_generation_status = "complete"
         linddun_generation_error = None
+        linddun_error_code = None
+        linddun_response_metadata = {}
         try:
             linddun_threats = await generate_linddun_threats(
                 project,
@@ -1073,9 +1182,12 @@ async def _run_analysis_pipeline(
                 assessment_status="invalid",
                 response_shape="invalid",
                 warnings=[str(exc)],
+                response_metadata=getattr(exc, "response_metadata", {}),
             )
             linddun_engine = "AI"
             linddun_generation_error = str(exc)
+            linddun_error_code = getattr(exc, "code", "provider_contract_invalid")
+            linddun_response_metadata = getattr(exc, "response_metadata", {})
             _append_generation_contract_quarantine(
                 report,
                 "LINDDUN",
@@ -1091,11 +1203,14 @@ async def _run_analysis_pipeline(
             )
             linddun_engine = "fallback"
             linddun_generation_error = str(exc)
+            linddun_error_code = getattr(exc, "code", "provider_unavailable")
+            linddun_response_metadata = getattr(exc, "response_metadata", {})
         linddun_threats = normalize_generation_result(linddun_threats, "LINDDUN")
         raw_linddun_threats = list(linddun_threats or [])
         linddun_generation_status = getattr(linddun_threats, "assessment_status", "complete")
         linddun_generation_warnings = list(getattr(linddun_threats, "generation_warnings", []))
         linddun_response_shape = getattr(linddun_threats, "response_shape", "unknown")
+        linddun_response_metadata = getattr(linddun_threats, "response_metadata", linddun_response_metadata)
         linddun_coverage = getattr(linddun_threats, "coverage", [])
         valid_linddun_coverage, coverage_warnings = validate_coverage(
             linddun_coverage, report.get("dfd_model"), "LINDDUN"
@@ -1116,6 +1231,8 @@ async def _run_analysis_pipeline(
             "engine": linddun_engine,
             "assessment_status": linddun_generation_status,
             "response_shape": linddun_response_shape,
+            "response_metadata": linddun_response_metadata,
+            **({"error_code": linddun_error_code} if linddun_error_code else {}),
             "validation_warnings": [*coverage_warnings, *linddun_warnings],
             "baseline_used": False,
             "previous_results_preserved": False,
@@ -1162,6 +1279,7 @@ async def _run_analysis_pipeline(
             linddun_deduped = 0
     if finish_linddun:
         finish_linddun()
+        end_stage("linddun")
 
     # Framework replacement above already reconciles each active snapshot. A
     # final empty-seed merge only removes duplicate records from legacy reports
@@ -1170,6 +1288,8 @@ async def _run_analysis_pipeline(
     deduped_count = final_deduped + locals().get("stride_deduped", 0) + locals().get("linddun_deduped", 0)
 
     # 4. Controls
+    if "controls" in types:
+        start_stage("controls")
     finish_controls = _stage_timer(stage_timings, "controls") if "controls" in types else None
     if "controls" in types and report.get("threats"):
         try:
@@ -1238,8 +1358,11 @@ async def _run_analysis_pipeline(
         }
     if finish_controls:
         finish_controls()
+        end_stage("controls")
 
     # 5. Test Scenarios
+    if "tests" in types:
+        start_stage("tests")
     finish_tests = _stage_timer(stage_timings, "tests") if "tests" in types else None
     if "tests" in types and report.get("threats"):
         try:
@@ -1301,8 +1424,11 @@ async def _run_analysis_pipeline(
         }
     if finish_tests:
         finish_tests()
+        end_stage("tests")
 
     # 6. Missing Info
+    if "missing_info" in types:
+        start_stage("missing_info")
     finish_missing_info = _stage_timer(stage_timings, "missing_info") if "missing_info" in types else None
     if "missing_info" in types:
         try:
@@ -1314,8 +1440,11 @@ async def _run_analysis_pipeline(
         report["missing_info"] = enrich_missing_info(missing, project)
     if finish_missing_info:
         finish_missing_info()
+        end_stage("missing_info")
 
     # 7. Assumptions
+    if "assumptions" in types:
+        start_stage("assumptions")
     finish_assumptions = _stage_timer(stage_timings, "assumptions") if "assumptions" in types else None
     if "assumptions" in types:
         assumptions = await generate_assumptions(project, report.get("threats", []))
@@ -1323,6 +1452,7 @@ async def _run_analysis_pipeline(
         report["ai_status"]["assumptions"] = {"ok": True, "engine": "deterministic", "assessment_status": "complete"}
     if finish_assumptions:
         finish_assumptions()
+        end_stage("assumptions")
 
     recovery = _apply_recovery_snapshot(report, recovery_snapshot, types)
 

@@ -5,9 +5,9 @@ import uuid
 from typing import List
 from backend.services.ai_service import chat_complete_json, get_active_provider_config
 from backend.services.posture_service import build_evidence_context
-from backend.services.dfd_model_service import format_dfd_analysis_context
 from backend.services.privacy_service import assess_privacy_metadata
-from backend.services.threat_validation_service import parse_generation_payload, ThreatGenerationResult
+from backend.services.threat_validation_service import ThreatGenerationResult
+from backend.services.threat_batch_service import build_threat_batches, run_threat_batches
 
 LINDDUN_SYSTEM_PROMPT = """You are a privacy engineer performing LINDDUN privacy threat modeling.
 Evaluate direct PII and indirect privacy signals such as identifiers, geolocation, images,
@@ -46,13 +46,13 @@ async def generate_linddun_threats(
 
     cfg = get_active_provider_config(project.get("data_policy"))
 
-    context = _build_privacy_context(project)
-    evidence_context = build_evidence_context(project)
+    context = _build_privacy_context(project)[:1800]
+    evidence_context = build_evidence_context(project, limit=10)
     boundaries_text = "\n".join([
         f"- {b.get('source')} → {b.get('destination')}: {b.get('boundary_label')}"
         for b in trust_boundaries[:8]
     ])
-    dfd_context = format_dfd_analysis_context(dfd_model)
+    batches, deferred_refs = build_threat_batches(dfd_model)
     privacy_assessment = assess_privacy_metadata(dfd_model)
 
     user_prompt = f"""Perform LINDDUN privacy threat analysis for this system.
@@ -64,10 +64,10 @@ TRUST BOUNDARIES:
 {boundaries_text}
 
 CANONICAL DFD MODEL:
-{dfd_context}
+The current interaction batch is provided after the response contract. Analyze only its listed canonical references.
 
 PRIVACY METADATA READINESS:
-{json.dumps(privacy_assessment, ensure_ascii=False, indent=2)}
+{json.dumps({key: privacy_assessment.get(key) for key in ('status', 'unresolved_count', 'missing_fields')}, ensure_ascii=False)[:1200]}
 
 EVIDENCE CATALOG:
 {evidence_context}
@@ -119,15 +119,11 @@ risks such as excessive disclosure, linking, or unawareness.
   ]
 }}"""
 
-    result = await chat_complete_json(
-        system_prompt=LINDDUN_SYSTEM_PROMPT,
-        user_prompt=user_prompt,
-        base_url=cfg.get("base_url"),
-        api_key=cfg.get("api_key"),
-        model=cfg.get("model"),
-        max_tokens=3000,
+    parsed = await run_threat_batches(
+        framework="LINDDUN", batches=batches, deferred_refs=deferred_refs,
+        system_prompt=LINDDUN_SYSTEM_PROMPT, prompt_prefix=user_prompt, prompt_suffix="Return coverage and privacy candidates only for this batch. An omitted pair is insufficient information, never a reviewed negative.",
+        provider=cfg, chat_complete_json=chat_complete_json,
     )
-    parsed = parse_generation_payload(result, "LINDDUN")
     threats = list(parsed)
 
     for t in threats:
@@ -143,6 +139,7 @@ risks such as excessive disclosure, linking, or unawareness.
         assessment_status=parsed.assessment_status,
         response_shape=parsed.response_shape,
         warnings=parsed.generation_warnings,
+        response_metadata=parsed.response_metadata,
     )
 
 

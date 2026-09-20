@@ -32,12 +32,14 @@ class ThreatGenerationResult(list):
         assessment_status: str | None = None,
         response_shape: str = "object",
         warnings: list[str] | None = None,
+        response_metadata: dict | None = None,
     ):
         super().__init__(threats or [])
         self.coverage = coverage if isinstance(coverage, list) else []
         self.assessment_status = assessment_status or ("valid_empty" if not self else "complete")
         self.response_shape = response_shape
         self.generation_warnings = list(warnings or [])
+        self.response_metadata = dict(response_metadata or {})
 
 
 class ThreatGenerationContractError(ValueError):
@@ -66,12 +68,14 @@ def normalize_generation_result(result: object, framework: str) -> ThreatGenerat
         status = result.assessment_status
         response_shape = result.response_shape
         warnings = list(result.generation_warnings)
+        response_metadata = dict(result.response_metadata)
     elif isinstance(result, list):
         threats = list(result)
         coverage = []
         status = "valid_empty" if not threats else "complete"
         response_shape = "legacy_list"
         warnings = []
+        response_metadata = {}
     else:
         return ThreatGenerationResult(
             [],
@@ -96,6 +100,7 @@ def normalize_generation_result(result: object, framework: str) -> ThreatGenerat
         assessment_status=status,
         response_shape=response_shape,
         warnings=warnings,
+        response_metadata=response_metadata,
     )
 
 
