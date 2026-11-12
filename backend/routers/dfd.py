@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from html import escape
+import json
 from math import ceil, sqrt
 
 from fastapi import APIRouter, HTTPException, Request
@@ -22,17 +23,33 @@ from backend.services.dfd_model_service import (
     sync_dfd_views,
     validate_dfd_model,
 )
+from backend.services.posture_service import compute_signoff_readiness
 from backend.utils.audit import log_event
-from backend.utils.storage import get_dfd_model, get_project, get_report, save_dfd_model, save_report
-from backend.utils.access_control import get_authorized_project, workspace_access_dependency
+from backend.utils.storage import (
+    get_project,
+    get_project_report_and_dfd,
+    save_dfd_model,
+    save_report,
+    save_report_and_dfd,
+)
+from backend.utils.access_control import get_authorized_project, require_roles, workspace_access_dependency
 
 
 router = APIRouter(
     prefix="/api/projects",
     tags=["dfd"],
-    dependencies=[workspace_access_dependency],
+    dependencies=[workspace_access_dependency, require_roles("analyst", "reviewer", "admin")],
 )
 DOWNSTREAM_STAGES = ["stride", "linddun", "controls", "tests", "missing_info", "assumptions"]
+
+
+def _refresh_quality_gate(report: dict) -> dict:
+    gate = compute_signoff_readiness(report)
+    report["quality_gate"] = gate
+    if isinstance(report.get("analysis_run"), dict):
+        report["analysis_run"]["quality_gate"] = gate.copy()
+        report["analysis_run"]["review_required"] = gate["review_required"]
+    return gate
 
 
 def _auto_layout_dfd(model: DfdModel) -> tuple[dict[str, dict[str, float]], int, int]:
@@ -94,8 +111,176 @@ def _auto_layout_dfd(model: DfdModel) -> tuple[dict[str, dict[str, float]], int,
     return positions, max_width, max(760, lane_top + 80)
 
 
+def _resolve_dfd_view(model: DfdModel, selector: str | None):
+    if not selector:
+        return None
+    normalized = str(selector).strip()
+    view = next((item for item in model.views if item.id == normalized), None)
+    if view:
+        return view
+    if normalized in {"context", "system"}:
+        return next((item for item in model.views if item.kind == normalized), None)
+    if normalized.startswith("feature:"):
+        parent_id = normalized.split(":", 1)[1]
+        return next((item for item in model.views if item.kind == "feature" and item.parent_process_id == parent_id), None)
+    return None
+
+
+def _projection_payload(model: DfdModel, view, validation: dict) -> dict:
+    canonical_ids = {
+        canonical_id for node in view.projection_nodes for canonical_id in node.canonical_node_ids
+    }
+    individually_visible = {
+        node.id for node in view.projection_nodes
+        if node.id in {item.id for item in model.nodes} and node.canonical_node_ids == [node.id]
+    }
+    hidden_internal = sum(
+        1 for node in model.nodes
+        if node.scope == "in_scope" and node.id not in individually_visible
+    )
+    validation_status = "blocked" if not validation.get("valid") else "ready" if validation.get("semantic_ready") else "review"
+    level = {"context": "L0", "system": "L1", "feature": "L2"}[view.kind]
+    return {
+        "view_id": view.id,
+        "level": level,
+        "kind": view.kind,
+        "parent_process_id": view.parent_process_id,
+        "revision": model.revision,
+        "layout_revision": model.layout_revision,
+        "semantic_hash": model.semantic_hash,
+        "projection_version": "dfd-projection-v1",
+        "validation_status": validation_status,
+        "decomposition_status": view.decomposition_status,
+        "projection_issues": list(view.projection_issues),
+        "counts": {
+            "nodes": len(view.projection_nodes),
+            "flows": len(view.projection_flows),
+            "canonical_nodes_mapped": len(canonical_ids),
+            "canonical_flows_mapped": len({ref for flow in view.projection_flows for ref in flow.canonical_flow_ids}),
+            "hidden_internal_node_details": hidden_internal,
+        },
+        "warning": "This is a partial view of the canonical DFD; review validation status and projection issues before sign-off.",
+        "view": view.model_dump(),
+    }
+
+
+def _render_projection_svg(model: DfdModel, view, validation: dict) -> str:
+    payload = _projection_payload(model, view, validation)
+    nodes = list(view.projection_nodes)
+    flows = list(view.projection_flows)
+    node_by_id = {item.id: item for item in nodes}
+    indegree = {item.id: 0 for item in nodes}
+    outgoing: dict[str, list[str]] = {item.id: [] for item in nodes}
+    for flow in flows:
+        if flow.source_id in outgoing and flow.target_id in indegree:
+            outgoing[flow.source_id].append(flow.target_id)
+            indegree[flow.target_id] += 1
+    queue = sorted((node_id for node_id, degree in indegree.items() if degree == 0))
+    ranks = {node_id: 0 for node_id in node_by_id}
+    visited = set()
+    while queue:
+        source = queue.pop(0)
+        if source in visited:
+            continue
+        visited.add(source)
+        for target in sorted(outgoing.get(source, [])):
+            ranks[target] = max(ranks[target], ranks[source] + 1)
+            indegree[target] -= 1
+            if indegree[target] == 0:
+                queue.append(target)
+                queue.sort()
+    max_rank = max(ranks.values(), default=0)
+    by_rank: dict[int, list] = {}
+    for node in nodes:
+        rank = ranks[node.id] if node.id in visited else max_rank + 1
+        by_rank.setdefault(rank, []).append(node)
+    positions = {}
+    for rank, items in sorted(by_rank.items()):
+        items.sort(key=lambda item: (item.type != "entity", item.type != "system", item.display_id, item.id))
+        for index, item in enumerate(items):
+            positions[item.id] = {"x": 165 + rank * 280, "y": 130 + index * 142}
+    width = max(900, 320 + (max(by_rank.keys(), default=0) + 1) * 280)
+    height = max(560, 210 + max((len(items) for items in by_rank.values()), default=1) * 142 + 90)
+    esc = lambda value: escape(str(value or ""), quote=True)
+    status = payload["validation_status"]
+    warning_text = "; ".join(view.projection_issues) or payload["warning"]
+    metadata = escape(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" role="img" aria-labelledby="dfd-title dfd-desc" data-view-id="{esc(view.id)}" data-view-kind="{esc(view.kind)}" data-revision="{model.revision}" data-semantic-hash="{esc(model.semantic_hash)}" data-validation-status="{status}" data-decomposition-status="{view.decomposition_status}">',
+        f'<title id="dfd-title">{esc(model.title)} — {payload["level"]} {esc(view.id)} revision {model.revision}</title>',
+        f'<desc id="dfd-desc">{esc(payload["level"])} projection with {len(nodes)} nodes and {len(flows)} flows. Status: {status}. {esc(warning_text)}</desc>',
+        '<metadata id="dfd-projection-metadata">' + metadata + '</metadata>',
+        '<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#526777"/></marker></defs>',
+        f'<rect width="{width}" height="{height}" fill="#FFFFFF"/>',
+    ]
+    zone_by_id = {zone.id: zone for zone in model.zones}
+    for zone_id in sorted({zone_id for node in nodes for zone_id in node.zone_ids}):
+        zone_nodes = [node for node in nodes if zone_id in node.zone_ids]
+        points = [positions[node.id] for node in zone_nodes]
+        if not points:
+            continue
+        left = min(point["x"] for point in points) - 98
+        top = min(point["y"] for point in points) - 53
+        right = max(point["x"] for point in points) + 98
+        bottom = max(point["y"] for point in points) + 50
+        zone = zone_by_id.get(zone_id)
+        lines.append(f'<rect data-zone-id="{esc(zone_id)}" x="{max(4, left)}" y="{max(4, top)}" width="{max(190, right-left)}" height="{max(108, bottom-top)}" rx="16" fill="#EFF6FF" fill-opacity="0.3" stroke="#457B9D" stroke-width="2" stroke-dasharray="8 6"/>')
+        lines.append(f'<text x="{max(16,left+12)}" y="{max(24,top+23)}" font-size="12" font-family="monospace" fill="#315B73">{esc((zone.display_id + " · " if zone else "") + (zone.name if zone else zone_id))}</text>')
+    for flow in flows:
+        start, end = positions[flow.source_id], positions[flow.target_id]
+        dash = ' stroke-dasharray="9 6"' if flow.boundary_crossings or flow.crossing_status == "unresolved" else ""
+        canonical_ids = ",".join(flow.canonical_flow_ids)
+        lines.append(f'<g data-projection-flow-id="{esc(flow.id)}" data-canonical-flow-ids="{esc(canonical_ids)}"><line x1="{start["x"]}" y1="{start["y"]}" x2="{end["x"]}" y2="{end["y"]}" stroke="#6C91AA" stroke-width="2"{dash} marker-end="url(#arrow)"/>')
+        label = ", ".join(next((item.name for item in model.data_objects if item.id == data_id), data_id) for data_id in flow.data_object_ids) or flow.name
+        lines.append(f'<text x="{(start["x"]+end["x"])/2}" y="{(start["y"]+end["y"])/2-8}" text-anchor="middle" font-size="11" font-family="monospace" fill="#344E5C">{esc(flow.display_id)} · {esc(label)}</text></g>')
+    for node in nodes:
+        point = positions[node.id]
+        x, y = point["x"], point["y"]
+        canonical_ids = ",".join(node.canonical_node_ids)
+        if node.type == "entity":
+            shape = f'<ellipse cx="{x}" cy="{y}" rx="78" ry="34" fill="#EFF6FF" stroke="#2563EB" stroke-width="2"/>'
+        elif node.type == "data_store":
+            shape = f'<path d="M{x-76},{y-30}h152v60h-152z" fill="#F5F3FF" stroke="#6D28D9" stroke-width="2"/><path d="M{x-76},{y-30}q76,18 152,0" fill="none" stroke="#6D28D9" stroke-width="2"/>'
+        elif node.type == "system":
+            shape = f'<rect x="{x-87}" y="{y-36}" width="174" height="72" rx="18" fill="#ECFDF5" stroke="#15803D" stroke-width="3"/>'
+        else:
+            shape = f'<rect x="{x-82}" y="{y-32}" width="164" height="64" rx="12" fill="#F8FAFC" stroke="#64748B" stroke-width="2"/>'
+        label = f"{node.display_id} {node.name}"
+        lines.append(f'<g data-projection-node-id="{esc(node.id)}" data-canonical-node-ids="{esc(canonical_ids)}">{shape}<text x="{x}" y="{y+4}" text-anchor="middle" font-size="12" fill="#1F2937">{esc(label[:72])}</text></g>')
+    footer = f'{payload["level"]} · revision {model.revision} · validation {status} · {payload["counts"]["hidden_internal_node_details"]} internal details aggregated'
+    lines.append(f'<text x="20" y="{height-25}" font-size="11" fill="#526777">{esc(footer)}</text>')
+    lines.append('</svg>')
+    return "".join(lines)
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _semantic_delta(previous: DfdModel, current: DfdModel) -> dict:
+    def changed_ids(old_items, new_items, field_names):
+        old_by_id = {item.id: item for item in old_items}
+        new_by_id = {item.id: item for item in new_items}
+        changed = []
+        for item_id in sorted(set(old_by_id) | set(new_by_id)):
+            old, new = old_by_id.get(item_id), new_by_id.get(item_id)
+            if old is None or new is None or any(getattr(old, field) != getattr(new, field) for field in field_names):
+                changed.append(item_id)
+        return changed
+
+    old_views = {view.id: view.projection_mappings for view in previous.views}
+    new_views = {view.id: view.projection_mappings for view in current.views}
+    return {
+        "scope_changed_node_ids": changed_ids(previous.nodes, current.nodes, ["scope"]),
+        "parent_child_changed_node_ids": changed_ids(previous.nodes, current.nodes, ["parent_process_id"]),
+        "flow_mapping_changed_ids": changed_ids(previous.flows, current.flows, [
+            "source_id", "target_id", "data_object_ids", "boundary_crossings", "grounding_status",
+        ]),
+        "boundary_review_changed_ids": changed_ids(previous.boundaries, current.boundaries, ["status", "transition_scope"]),
+        "projection_mapping_changed_view_ids": sorted(
+            view_id for view_id in set(old_views) | set(new_views) if old_views.get(view_id) != new_views.get(view_id)
+        ),
+    }
 
 
 def _stale(report: dict, reason: str):
@@ -130,8 +315,8 @@ def _hydrate_model_evidence(model: DfdModel, project: dict | None) -> DfdModel:
 
 
 def _load_model(project_id: str) -> tuple[dict, DfdModel]:
-    report = get_report(project_id)
-    stored_payload = get_dfd_model(project_id)
+    report, stored_payload = get_project_report_and_dfd(project_id)
+    report = report if isinstance(report, dict) else {}
     report_payload = report.get("dfd_model") if isinstance(report, dict) else None
     if not report and not stored_payload:
         raise HTTPException(status_code=404, detail="No canonical DFD model yet — run analysis first")
@@ -144,6 +329,12 @@ def _load_model(project_id: str) -> tuple[dict, DfdModel]:
         payload = report_payload
     if not isinstance(payload, dict):
         raise HTTPException(status_code=404, detail="No canonical DFD model yet — run analysis first")
+    # load_dfd_model rebuilds deterministic projections while normalizing the
+    # model, so detect the pre-migration payload before that enrichment occurs.
+    legacy_hierarchy = bool(payload.get("nodes")) and any(
+        not isinstance(view, dict) or not view.get("projection_nodes")
+        for view in (payload.get("views") or [])
+    )
     try:
         model, migrated = load_dfd_model(payload, project_id=project_id)
     except (ValidationError, TypeError, ValueError) as exc:
@@ -152,8 +343,30 @@ def _load_model(project_id: str) -> tuple[dict, DfdModel]:
     sync_dfd_views(model)
     recalculate_boundary_crossings(model)
     hydrated_payload = model.model_dump()
-    if migrated or not stored_payload or payload is report_payload or hydrated_payload != payload:
-        save_dfd_model(project_id, hydrated_payload)
+    expected_dfd_revision = int((stored_payload or report_payload or {}).get("revision", 0) or 0)
+    hierarchy_semantic_changed = legacy_hierarchy
+    if hierarchy_semantic_changed:
+        model.revision = max(model.revision, expected_dfd_revision) + 1
+        hydrated_payload = model.model_dump()
+        report["dfd_model"] = hydrated_payload
+        report["dfd_validation"] = validate_dfd_model(model)
+        _stale(report, "DFD hierarchy projections were migrated; rerun dependent analysis and review the new level mappings.")
+        _refresh_quality_gate(report)
+        save_report_and_dfd(
+            project_id,
+            report,
+            hydrated_payload,
+            expected_report_revision=int(report.get("report_revision", 0) or 0),
+            expected_dfd_revision=expected_dfd_revision,
+        )
+        log_event("dfd.hierarchy_migrated", details={
+            "project_id": project_id,
+            "from_revision": expected_dfd_revision,
+            "to_revision": model.revision,
+            "validation_status": "valid" if validate_dfd_model(model)["valid"] else "review",
+        })
+    elif migrated or not stored_payload or payload is report_payload or hydrated_payload != payload:
+        save_dfd_model(project_id, hydrated_payload, expected_revision=expected_dfd_revision)
     return report or {}, model
 
 
@@ -164,17 +377,23 @@ def _project_for_request(project_id: str, request: Request = None) -> dict | Non
 
 
 @router.get("/{project_id}/dfd")
-async def get_dfd(project_id: str, request: Request = None):
+async def get_dfd(project_id: str, request: Request = None, view_id: str | None = None):
     if not _project_for_request(project_id, request):
         raise HTTPException(status_code=404, detail="Project not found")
     report, model = _load_model(project_id)
-    return {
+    response = {
         "model": model.model_dump(),
         "validation": validate_dfd_model(model),
     }
+    if view_id:
+        view = _resolve_dfd_view(model, view_id)
+        if not view:
+            raise HTTPException(status_code=404, detail=f"Unknown DFD view: {view_id}")
+        response["projection"] = _projection_payload(model, view, response["validation"])
+    return response
 
 
-@router.put("/{project_id}/dfd")
+@router.put("/{project_id}/dfd", dependencies=[require_roles("analyst", "admin")])
 async def save_dfd(project_id: str, body: dict, request: Request = None):
     """Persist a validated semantic model without overwriting newer edits."""
     if not _project_for_request(project_id, request):
@@ -222,23 +441,31 @@ async def save_dfd(project_id: str, body: dict, request: Request = None):
     report["dfd_validation"] = validation
     if semantic_changed:
         _stale(report, "Canonical DFD semantic model edited. Refresh dependent analysis stages.")
-    save_dfd_model(project_id, model_payload)
-    save_report(project_id, report)
+    quality_gate = _refresh_quality_gate(report)
+    save_report_and_dfd(
+        project_id,
+        report,
+        model_payload,
+        expected_report_revision=int(report.get("report_revision", 0) or 0),
+        expected_dfd_revision=current.revision,
+    )
     log_event("dfd.saved", details={
         "project_id": project_id,
         "revision": model.revision,
         "layout_revision": model.layout_revision,
         "semantic_changed": semantic_changed,
+        "semantic_delta": _semantic_delta(current, model) if semantic_changed else {},
     })
     return {
         "success": True,
         "model": model.model_dump(),
         "validation": validation,
         "semantic_changed": semantic_changed,
+        "quality_gate": quality_gate,
     }
 
 
-@router.post("/{project_id}/dfd/proposal/apply")
+@router.post("/{project_id}/dfd/proposal/apply", dependencies=[require_roles("analyst", "admin")])
 async def apply_dfd_regeneration_proposal(project_id: str, body: dict, request: Request = None):
     """Apply only an explicitly reviewed source-regeneration proposal."""
     if not _project_for_request(project_id, request):
@@ -321,8 +548,14 @@ async def apply_dfd_regeneration_proposal(project_id: str, body: dict, request: 
     report["dfd_model"] = model_payload
     report["dfd_validation"] = validation
     _stale(report, "A reviewed DFD regeneration proposal changed the canonical semantic model. Refresh dependent analysis stages.")
-    save_dfd_model(project_id, model_payload)
-    save_report(project_id, report)
+    quality_gate = _refresh_quality_gate(report)
+    save_report_and_dfd(
+        project_id,
+        report,
+        model_payload,
+        expected_report_revision=int(report.get("report_revision", 0) or 0),
+        expected_dfd_revision=current.revision,
+    )
     log_event("dfd.proposal_applied", details={
         "project_id": project_id,
         "revision": model.revision,
@@ -335,26 +568,71 @@ async def apply_dfd_regeneration_proposal(project_id: str, body: dict, request: 
         "validation": validation,
         "proposal": report.get("dfd_proposal"),
         "semantic_changed": True,
+        "quality_gate": quality_gate,
     }
 
 
 @router.get("/{project_id}/dfd/export")
-async def export_dfd(project_id: str, format: str = "svg", request: Request = None):
-    """Export the canonical model as schema-versioned JSON or escaped SVG."""
+async def export_dfd(
+    project_id: str,
+    format: str = "svg",
+    request: Request = None,
+    view_id: str | None = None,
+    level: str | None = None,
+):
+    """Export the canonical model or one mapped DFD level as JSON/SVG."""
     normalized_format = format.lower()
-    if normalized_format not in {"svg", "json"}:
-        raise HTTPException(status_code=400, detail="Unsupported DFD export format. Use: json or svg")
+    if normalized_format not in {"svg", "json", "projection-json"}:
+        raise HTTPException(status_code=400, detail="Unsupported DFD export format. Use: json, projection-json, or svg")
     if not _project_for_request(project_id, request):
         raise HTTPException(status_code=404, detail="Project not found")
     _, model = _load_model(project_id)
     validation = validate_dfd_model(model)
     if not validation["valid"]:
         raise HTTPException(status_code=422, detail={"message": "Cannot export invalid DFD", **validation})
+    selector = view_id or level
+    if selector and selector.lower() in {"l0", "l1", "l2"}:
+        selector = {"l0": "context", "l1": "system"}.get(selector.lower())
+        if selector is None:
+            raise HTTPException(status_code=400, detail="L2 has multiple feature projections; provide view_id=feature:<parent_process_id>")
+    selected_view = _resolve_dfd_view(model, selector) if selector else None
+    if selector and not selected_view:
+        raise HTTPException(status_code=404, detail=f"Unknown DFD view or level: {selector}")
+    if normalized_format == "projection-json":
+        if not selected_view:
+            raise HTTPException(status_code=400, detail="projection-json requires view_id or level")
+        projection = _projection_payload(model, selected_view, validation)
+        log_event("dfd.projection_exported", details={
+            "project_id": project_id,
+            "format": "projection-json",
+            "view_id": selected_view.id,
+            "revision": model.revision,
+        })
+        return JSONResponse(
+            content=projection,
+            headers={"Content-Disposition": f"attachment; filename=dfd-{project_id}-{selected_view.id}.json"},
+        )
     if normalized_format == "json":
+        if selector:
+            raise HTTPException(status_code=400, detail="Use format=projection-json for a selected DFD view; json always exports the full canonical model")
         log_event("dfd.exported", details={"project_id": project_id, "format": "json", "revision": model.revision})
         return JSONResponse(
             content=model.model_dump(),
             headers={"Content-Disposition": f"attachment; filename=dfd-{project_id}.json"},
+        )
+
+    if selected_view:
+        svg_content = _render_projection_svg(model, selected_view, validation)
+        log_event("dfd.projection_exported", details={
+            "project_id": project_id,
+            "format": "svg",
+            "view_id": selected_view.id,
+            "revision": model.revision,
+        })
+        return Response(
+            content=svg_content,
+            media_type="image/svg+xml",
+            headers={"Content-Disposition": f"attachment; filename=dfd-{project_id}-{selected_view.id}.svg"},
         )
 
     node_by_id = {node.id: node for node in model.nodes}
@@ -485,7 +763,7 @@ async def export_dfd(project_id: str, format: str = "svg", request: Request = No
     )
 
 
-@router.post("/{project_id}/dfd/proposal/resolve")
+@router.post("/{project_id}/dfd/proposal/resolve", dependencies=[require_roles("reviewer", "admin")])
 async def resolve_dfd_regeneration_proposal(project_id: str, body: dict, request: Request = None):
     """Resolve a pending regeneration proposal without silently changing the model."""
     if not _project_for_request(project_id, request):
@@ -526,6 +804,7 @@ async def resolve_dfd_regeneration_proposal(project_id: str, body: dict, request
     stale = report.get("analysis_stale")
     if isinstance(stale, dict) and str(stale.get("reason") or "").startswith("Source context changed while a human-edited DFD exists"):
         report.pop("analysis_stale", None)
+    quality_gate = _refresh_quality_gate(report)
     save_report(project_id, report)
     log_event("dfd.proposal_dismissed", details={"project_id": project_id, "revision": current.revision})
     return {
@@ -533,10 +812,11 @@ async def resolve_dfd_regeneration_proposal(project_id: str, body: dict, request
         "resolution": report["dfd_proposal_resolution"],
         "model": current.model_dump(),
         "proposal": None,
+        "quality_gate": quality_gate,
     }
 
 
-@router.post("/{project_id}/dfd/import")
+@router.post("/{project_id}/dfd/import", dependencies=[require_roles("analyst", "admin")])
 async def import_dfd(project_id: str, body: dict, request: Request = None):
     """Import a schema-validated canonical DFD through the normal save path."""
     if not isinstance(body, dict) or not isinstance(body.get("model"), dict):
@@ -544,7 +824,7 @@ async def import_dfd(project_id: str, body: dict, request: Request = None):
     return await save_dfd(project_id, body, request=request)
 
 
-@router.post("/{project_id}/dfd/impact-preview")
+@router.post("/{project_id}/dfd/impact-preview", dependencies=[require_roles("analyst", "reviewer", "admin")])
 async def dfd_impact_preview(project_id: str, body: dict, request: Request = None):
     """Return deletion dependencies without mutating the canonical model."""
     if not _project_for_request(project_id, request):

@@ -18,7 +18,9 @@ from backend.services.provider_policy import (
 
 def _get_client(base_url: Optional[str] = None, api_key: Optional[str] = None) -> AsyncOpenAI:
     timeout_seconds = normalize_timeout_seconds(os.getenv("LLM_TIMEOUT_SECONDS", "180"))
-    max_retries = normalize_max_retries(os.getenv("LLM_MAX_RETRIES", "0"))
+    # Bounded transport retries let the provider honor Retry-After for transient
+    # rate limits and server errors. Re-running an analysis remains user-driven.
+    max_retries = normalize_max_retries(os.getenv("LLM_MAX_RETRIES", "1"))
     resolved_base_url = base_url or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
     validate_provider_url(resolved_base_url)
     return AsyncOpenAI(
@@ -140,9 +142,16 @@ async def chat_complete(
                 continue
             raise
 
+    reported_model = getattr(response, "model", None)
+    reported_model = reported_model.strip() if isinstance(reported_model, str) and reported_model.strip() else None
     response_metadata = {
         "provider_attempts": provider_attempts,
-        "model": getattr(response, "model", None) or resolved_model,
+        # Keep the compatibility field used by existing report code, while
+        # recording whether the model name came from the provider response.
+        "model": reported_model or resolved_model,
+        "configured_model": resolved_model,
+        "response_model": reported_model,
+        "model_source": "provider_response" if reported_model else "configured_fallback",
         "finish_reason": None,
         "usage": _serialize_usage(getattr(response, "usage", None)),
     }
@@ -332,6 +341,7 @@ async def chat_complete_json(
     api_key: Optional[str] = None,
     max_tokens: int = 4096,
     return_metadata: bool = False,
+    max_format_retries: int = 2,
 ) -> dict | list | StructuredJSONResult:
     """Chat complete and parse JSON from response. Works with local and cloud LLMs."""
     last_error = None
@@ -345,7 +355,8 @@ async def chat_complete_json(
         "usage": {},
         "provider_attempts": 0,
     }
-    for attempt in range(2):
+    retry_limit = max(0, min(int(max_format_retries), 2))
+    for attempt in range(retry_limit + 1):
         metadata["format_retry_count"] = attempt
         attempt_system = system_prompt
         attempt_user = user_prompt
@@ -442,7 +453,7 @@ async def chat_complete_json(
             last_error = exc
 
     raise AnalysisResponseError(
-        "Analysis engine could not produce valid structured data after one formatting retry.",
+        f"Analysis engine could not produce valid structured data after {retry_limit} formatting retries.",
         code=metadata.get("parse_status") or "structured_output_invalid",
         metadata=metadata,
     ) from last_error
@@ -479,10 +490,10 @@ def _looks_truncated_json(raw_text: str) -> bool:
     return bool(stack or in_quote)
 
 
-def get_active_provider_config(data_policy: str | None = None) -> dict:
+def get_active_provider_config(data_policy: str | None = None, workspace_id: str | None = None) -> dict:
     """Read active provider from settings or env vars."""
     from backend.utils.storage import get_settings
-    settings = get_settings()
+    settings = get_settings(workspace_id)
     if data_policy == "local_only":
         if settings.get("local_llm_endpoint") and settings.get("local_llm_model"):
             config = {

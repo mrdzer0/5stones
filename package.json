@@ -1,0 +1,30 @@
+{
+  "name": "5stones-ux-gates",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Reproducible UI/UX release gates for the 5STONES threat-modeling workspaces.",
+  "scripts": {
+    "cr8:fixture": "node tools/cr8_release_qualification.js --mode fixture",
+    "cr8:report": "node tools/cr8_release_qualification.js --mode fixture --no-fail",
+    "cr8:release": "node tools/cr8_release_gate.js",
+    "cr8:project-release": "node tools/project_release_consumer.js",
+    "test:release-gate": "node --test tests/test_cr8_release_gate.test.js tests/test_project_release_consumer.js tests/test_report_signoff_ui.test.js",
+    "cr8:ui-compare": "node tools/cr8_ui_only_comparator.js",
+    "u7:baseline": "node tools/u7_release_gate.js",
+    "u7:baseline:report": "node tools/u7_release_gate.js --report-only",
+    "u7:package-b": "node tools/u7_package_b_gate.js",
+    "u7:package-c": "node tools/u7_package_c_gate.js",
+    "u7:package-d": "node tools/u7_package_d_gate.js",
+    "u7:package-e": "node tools/u7_package_e_gate.js",
+    "u7:package-f": "node tools/u7_package_f_gate.js",
+    "u7:package-g": "node tools/u7_package_g_gate.js",
+    "u3:readability": "node tools/u3_readability_gate.js",
+    "u4:filters": "node tools/u4_unified_workspace_gate.js",
+    "u5:simplification": "node tools/u5_page_simplification_gate.js",
+    "u6:signoff": "node tools/u6_release_signoff_gate.js"
+  },
+  "devDependencies": {
+    "axe-core": "4.10.3",
+    "playwright": "1.57.0"
+  }
+}

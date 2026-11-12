@@ -1,5 +1,5 @@
 from __future__ import annotations
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List, Literal
 from datetime import datetime
 import uuid
@@ -8,7 +8,7 @@ import uuid
 # ── Enums & literals ────────────────────────────────────────────────────────
 
 ConfidenceLevel = Literal["High", "Medium", "Low"]
-RiskLevel = Literal["Critical", "High", "Medium", "Low"]
+RiskLevel = Literal["Critical", "High", "Medium", "Low", "Unknown"]
 ThreatStatus = Literal["Open", "Needs Info", "Reviewed", "Accepted", "Mitigation Planned", "Mitigated", "Verified"]
 # Unknown is explicit uncertainty; it must not be coerced into PII or another
 # sensitive class merely because a privacy engine omitted the field.
@@ -56,11 +56,16 @@ class Project(ProjectCreate):
     artifacts: List[str] = Field(default_factory=list)
     analysis_status: str = "pending"
     risk_summary: dict = Field(default_factory=dict)
+    signoff_ready: bool = False
+    signoff_status: Literal["ready", "not_ready"] = "not_ready"
+    quality_gate: dict = Field(default_factory=dict)
 
 
 # ── Artifact ─────────────────────────────────────────────────────────────────
 
 class ArtifactUpload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     artifact_type: Literal["prd", "openapi", "postman", "markdown", "database_schema", "csv", "text", "har"]
     content: str
     filename: Optional[str] = None
@@ -131,6 +136,10 @@ class Threat(BaseModel):
     destination: Optional[str] = None
     trust_boundary: Optional[str] = None
     trust_boundary_ids: List[str] = Field(default_factory=list)
+    primary_interaction_ref: Optional[str] = None
+    dfd_context_refs: List[str] = Field(default_factory=list)
+    interaction_mapping_status: Literal["mapped", "missing", "ambiguous", "stale"] = "missing"
+    interaction_mapping_reason: Optional[str] = None
     target_refs: List[dict] = Field(default_factory=list)
     mapping_status: Literal["mapped", "unmapped"] = "unmapped"
     asset: Optional[str] = None
@@ -144,6 +153,13 @@ class Threat(BaseModel):
     expected_result: Optional[str] = None
     evidence: List[str] = Field(default_factory=list)
     evidence_refs: List[str] = Field(default_factory=list)
+    scenario_evidence_refs: List[str] = Field(default_factory=list)
+    context_evidence_refs: List[str] = Field(default_factory=list)
+    control_gap_evidence_refs: List[str] = Field(default_factory=list)
+    verification_evidence_refs: List[str] = Field(default_factory=list)
+    verification_method: Optional[Literal["runtime_test", "code_review", "configuration_review"]] = None
+    verification_result: Optional[Literal["confirmed", "not_confirmed", "inconclusive"]] = None
+    verification_notes: Optional[str] = None
     evidence_type: Optional[Literal["direct", "context", "inference"]] = None
     evidence_source: Optional[str] = None
     evidence_locator: Optional[str] = None
@@ -151,12 +167,32 @@ class Threat(BaseModel):
     assumption: Optional[str] = None
     missing_info: Optional[str] = None
     confidence_reason: Optional[str] = None
+    finding_kind: Literal["threat_scenario"] = "threat_scenario"
+    finding_state: Literal["grounded", "hypothesis", "needs_context", "reviewed", "verified"] = "hypothesis"
+    grounding_reason: Optional[str] = None
+    vulnerability_status: Literal["not_verified", "verified"] = "not_verified"
+    risk_status: Literal["assessed", "scenario_only", "deferred"] = "scenario_only"
+    scenario_risk_level: Optional[Literal["Critical", "High", "Medium", "Low"]] = None
+    provider_risk_level: Optional[Literal["Critical", "High", "Medium", "Low"]] = None
+    risk_methodology_version: Optional[str] = None
+    risk_score: Optional[int] = Field(default=None, ge=1, le=25)
+    risk_source: Literal["deterministic", "reviewer_override", "deferred"] = "deferred"
+    risk_rationale: Optional[str] = None
+    risk_calculation: dict = Field(default_factory=dict)
+    risk_assessment_fingerprint: Optional[str] = None
+    risk_override_level: Optional[Literal["Critical", "High", "Medium", "Low"]] = None
+    risk_override_reason: Optional[str] = None
+    risk_override_by: Optional[str] = None
+    risk_override_at: Optional[str] = None
+    risk_override_history: List[dict] = Field(default_factory=list)
+    unverified_claim: Optional[str] = None
+    absence_of_evidence_guarded: bool = False
     needs_human_review: bool = True
     review_notes: Optional[str] = None
     reviewed_at: Optional[str] = None
     fingerprint: Optional[str] = None
     confidence: ConfidenceLevel = "Medium"
-    risk_level: RiskLevel = "Medium"
+    risk_level: RiskLevel = "Unknown"
     owner: Optional[str] = None
     status: ThreatStatus = "Open"
     created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
@@ -197,6 +233,10 @@ class Control(BaseModel):
     reported_implementation_status: Optional[str] = None
     analysis_revision: Optional[int] = None
     dfd_revision: Optional[int] = None
+    provider_priority: Optional[TestPriority] = None
+    priority_source: Optional[str] = None
+    priority_threat_ids: List[str] = Field(default_factory=list)
+    risk_methodology_version: Optional[str] = None
 
 
 # ── Test Scenario ─────────────────────────────────────────────────────────────
@@ -223,6 +263,9 @@ class TestScenario(BaseModel):
     test_fingerprint: Optional[str] = None
     analysis_revision: Optional[int] = None
     dfd_revision: Optional[int] = None
+    provider_priority: Optional[TestPriority] = None
+    priority_source: Optional[str] = None
+    risk_methodology_version: Optional[str] = None
 
 
 # ── Assumption ────────────────────────────────────────────────────────────────
@@ -263,6 +306,7 @@ class ThreatModelReport(BaseModel):
     assumptions: List[Assumption] = Field(default_factory=list)
     missing_info: List[MissingInfo] = Field(default_factory=list)
     completeness: dict = Field(default_factory=dict)
+    quality_gate: dict = Field(default_factory=dict)
     risk_summary: dict = Field(default_factory=dict)
 
 

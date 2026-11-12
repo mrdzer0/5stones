@@ -190,5 +190,53 @@
     "applicability": ["personal-data collection requiring notice or individual controls"],
     "evidence_requirements": ["published notice and control UX/API reference", "access/deletion/opt-out execution evidence"],
     "verification_method": "Review notice timing and exercise the applicable individual control; verify downstream state and audit evidence."
+  },
+  {
+    "id": "ctrl-017",
+    "name": "External AI Data Egress Minimization",
+    "description": "Limit personal or sensitive fields sent to an external AI provider to the documented purpose and prevent unintended retention or logging.",
+    "implementation_guidance": "Define an outbound field allowlist, redact unnecessary identifiers and precise location, and review provider retention and logging settings before sending requests.",
+    "mitigates": ["Information Disclosure", "Data Disclosure"],
+    "owner": "Backend",
+    "tags": ["external-ai", "provider", "egress", "redaction", "privacy"],
+    "applicability": ["personal or sensitive data sent to an external AI provider"],
+    "evidence_requirements": ["outbound field allowlist and purpose mapping", "redacted provider-bound payload sample", "provider retention/logging configuration"],
+    "verification_method": "Send tagged synthetic sensitive fields through the AI integration and verify unnecessary fields are absent from outbound payloads and protected logs."
+  },
+  {
+    "id": "ctrl-018",
+    "name": "Location Precision and Aggregation",
+    "description": "Reduce linkability from precise location data exposed through maps or shared data views.",
+    "implementation_guidance": "Apply purpose-based location rounding, aggregation, or fuzzing before disclosure; require appropriate authorization for higher precision.",
+    "mitigates": ["Linking", "Linkability", "Identifying"],
+    "owner": "Backend",
+    "tags": ["location", "map", "privacy", "fuzzing", "aggregation"],
+    "applicability": ["precise location displayed or exported to users or third parties"],
+    "evidence_requirements": ["location precision policy", "normal and restricted-view output samples"],
+    "verification_method": "Compare synthetic precise coordinates with public and authorized outputs; verify precision reduction and access decisions."
+  },
+  {
+    "id": "ctrl-019",
+    "name": "Identifier Separation and Unlinkability",
+    "description": "Prevent unnecessary joining of personal records across processing contexts.",
+    "implementation_guidance": "Separate direct identifiers from derived content, scope pseudonyms by purpose, and limit access to join keys and correlation metadata.",
+    "mitigates": ["Linking", "Linkability", "Identifying"],
+    "owner": "Backend",
+    "tags": ["identifier", "correlation", "pseudonymization", "privacy", "unlinkability"],
+    "applicability": ["records or identifiers that can be correlated across flows or stores"],
+    "evidence_requirements": ["identifier/data-flow inventory", "join-key access policy", "cross-context correlation test result"],
+    "verification_method": "Use two synthetic records in separate contexts and verify an unauthorized actor cannot join them through exposed identifiers or metadata."
+  },
+  {
+    "id": "ctrl-020",
+    "name": "Payment Provider Data Minimization and Scoped Tokens",
+    "description": "Limit payment-gateway fields and cross-merchant correlation to the documented payment purpose.",
+    "implementation_guidance": "Inventory fields sent to the payment provider; use provider-approved tokenization where available, avoid sending unrelated customer/order identifiers, and scope merchant-visible transaction identifiers by purpose. Confirm provider and merchant data-sharing settings before implementation.",
+    "mitigates": ["Linking", "Linkability", "Data Disclosure", "Information Disclosure"],
+    "owner": "Payments/Backend",
+    "tags": ["payment", "gateway", "merchant", "transaction", "tokenization", "privacy"],
+    "applicability": ["payment data transferred to a gateway or provider with possible cross-merchant linkage"],
+    "evidence_requirements": ["provider-bound field inventory", "payment purpose and recipient matrix", "merchant-scoped token configuration or provider contract"],
+    "verification_method": "Use synthetic transactions in two isolated merchant contexts; compare provider-bound identifiers and verify no unauthorized cross-merchant correlation is possible."
   }
 ]

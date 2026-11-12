@@ -21,6 +21,7 @@ from backend.services.dfd_model_service import (
     load_dfd_model,
     validate_dfd_model,
 )
+from backend.services.dfd_quality_service import build_dfd_quality
 from backend.services.trust_boundary_service import attach_boundary_refs, attach_target_refs, build_trust_model
 from backend.services.parser_service import parse_postman_document
 from backend.models.dfd import DfdFlow, DfdModel, DfdNode, DfdZone
@@ -75,13 +76,36 @@ class DfdSemanticModelTests(unittest.TestCase):
             ],
         }
 
+    def test_dfd_quality_uses_uniqueness_names_instead_of_precision_claims(self):
+        model = DfdModel(
+            id="model-quality-metrics",
+            project_id="project-1",
+            title="Duplicate flow quality metrics",
+            nodes=[
+                DfdNode(id="entity-a", display_id="E1", type="entity", name="Customer"),
+                DfdNode(id="process-a", display_id="P1", type="process", name="Registration API"),
+            ],
+            flows=[
+                DfdFlow(id="flow-a", display_id="F1", source_id="entity-a", target_id="process-a", name="submits request"),
+                DfdFlow(id="flow-b", display_id="F2", source_id="entity-a", target_id="process-a", name="submits request"),
+            ],
+        )
+
+        quality = build_dfd_quality(model)
+
+        self.assertEqual(quality.version, "dfd-quality-v2")
+        self.assertEqual(quality.metrics["node_uniqueness_rate"], 1.0)
+        self.assertEqual(quality.metrics["flow_uniqueness_rate"], 0.5)
+        self.assertNotIn("node_precision", quality.metrics)
+        self.assertNotIn("flow_precision", quality.metrics)
+
     def test_builds_canonical_model_with_stable_typed_refs(self):
         trust_model = build_trust_model(self.project)
         model = build_dfd_model(self.project, trust_model)
         validation = validate_dfd_model(model)
 
         self.assertTrue(validation["valid"], validation)
-        self.assertEqual(model.schema_version, "dfd-v1")
+        self.assertEqual(model.schema_version, "dfd-v2")
         self.assertEqual({node.type for node in model.nodes}, {"entity", "process", "data_store"})
         self.assertTrue({"Customer", "Customer Database"}.issubset({node.name for node in model.nodes}))
         self.assertTrue(all(flow.source_id in {node.id for node in model.nodes} for flow in model.flows))
@@ -96,6 +120,68 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertTrue(all(view.port_mappings.get("input") == view.input_flow_ids for view in feature_views))
         self.assertTrue(all(view.port_mappings.get("output") == view.output_flow_ids for view in feature_views))
         self.assertTrue(any(question.id == "question-data-privacy-context" for question in model.questions))
+
+    def test_isolated_inventory_node_gets_scoped_review_question_without_clearing_blocker(self):
+        project = json.loads(json.dumps(self.project))
+        project["components"].append("Audit Worker")
+        project["manual_context"]["components"].append("Audit Worker")
+
+        model = build_dfd_model(project, build_trust_model(project))
+        node = next(item for item in model.nodes if item.name == "Audit Worker")
+        question = next(item for item in model.questions if node.id in item.affected_refs)
+
+        self.assertIn(node.display_id, question.question)
+        self.assertIn(node.name, question.question)
+        self.assertTrue(question.source_refs)
+        self.assertIn("source locator or observed trace", question.question)
+
+        question.status = "answered"
+        question.resolution = "Owner reviewed the inventory entry."
+        validation = validate_dfd_model(model)
+        isolated_issue = next(
+            issue for issue in model.semantic_quality.issues
+            if issue.code == "isolated_node" and node.id in issue.affected_refs
+        )
+        self.assertEqual(isolated_issue.severity, "blocking")
+        self.assertFalse(validation["semantic_ready"])
+
+    def test_candidate_flow_gets_scoped_question_without_being_promoted(self):
+        project = json.loads(json.dumps(self.project))
+        project["extracted_data_flows"][0]["evidence_type"] = "inferred"
+        project["extracted_data_flows"][0]["evidence_refs"] = []
+
+        model = build_dfd_model(project, build_trust_model(project))
+        flow = next(item for item in model.flows if item.name == "email")
+        question = next(item for item in model.questions if flow.id in item.affected_refs)
+
+        self.assertEqual(flow.grounding_status, "candidate")
+        self.assertIn(flow.display_id, question.question)
+        self.assertIn("source locator or observed trace", question.question)
+        self.assertTrue(question.source_refs)
+        self.assertTrue(any(
+            issue.code == "unsupported_inferred_relationship" and flow.id in issue.affected_refs
+            for issue in model.semantic_quality.issues
+        ))
+
+    def test_empty_zone_gets_scoped_owner_question(self):
+        project = json.loads(json.dumps(self.project))
+        project["zone_metadata"] = [{
+            "id": "unused-zone",
+            "name": "Unused zone",
+            "evidence_refs": ["artifact:artifact-1"],
+        }]
+
+        model = build_dfd_model(project, build_trust_model(project))
+        zone = next(item for item in model.zones if item.id == "zone-unused-zone")
+        question = next(item for item in model.questions if zone.id in item.affected_refs)
+
+        self.assertIn(zone.display_id, question.question)
+        self.assertIn(zone.name, question.question)
+        self.assertIn("artifact:artifact-1", question.source_refs)
+        self.assertTrue(any(
+            issue.code == "isolated_zone" and zone.id in issue.affected_refs
+            for issue in model.semantic_quality.issues
+        ))
 
     def test_aliases_and_declared_endpoint_types_produce_grounded_zone_crossings(self):
         project = {
@@ -253,6 +339,21 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertTrue(all(node.ownership == "unknown" for node in model.nodes))
         self.assertTrue(all(node.exposure == "unknown" for node in model.nodes))
 
+    def test_explicit_scope_decisions_resolve_context_scope_blocker(self):
+        model = build_dfd_model(self.project, build_trust_model(self.project))
+        context = next(view for view in model.views if view.kind == "context")
+        self.assertTrue(any("context_scope_unknown: no canonical node" in issue for issue in context.projection_issues))
+        self.assertFalse(any(node.type == "system" for node in context.projection_nodes))
+
+        for node in model.nodes:
+            node.scope = "in_scope" if node.type in {"process", "data_store"} else "external_dependency"
+        sync_dfd_views(model)
+
+        context = next(view for view in model.views if view.kind == "context")
+        system = next(node for node in context.projection_nodes if node.type == "system")
+        self.assertFalse(any("context_scope_unknown: no canonical node" in issue for issue in context.projection_issues))
+        self.assertEqual(set(system.canonical_node_ids), {node.id for node in model.nodes if node.scope == "in_scope"})
+
     def test_canonical_operations_split_request_and_response_flows(self):
         project = {
             **self.project,
@@ -330,7 +431,12 @@ class DfdSemanticModelTests(unittest.TestCase):
             {"flow_id": "flow-4", "source": "Web App", "destination": "Registration API", "source_entity_type": "ingress", "destination_entity_type": "component", "data": ["registration form"], "evidence_refs": ["artifact:artifact-1"], "evidence_type": "direct"},
         ]}
         complete = build_dfd_model(complete_project, build_trust_model(complete_project))
-        self.assertTrue(validate_dfd_model(complete)["semantic_ready"])
+        for question in complete.questions:
+            question.status = "answered"
+            question.resolution = "Resolved with the fixture architecture evidence."
+        complete_validation = validate_dfd_model(complete)
+        self.assertFalse(complete_validation["semantic_ready"])
+        self.assertTrue(any("context_scope_unknown" in issue for issue in complete_validation["semantic_issues"]))
         complete.boundaries = []
         recalculate_boundary_crossings(complete)
         self.assertTrue(any("crosses zones without a trust boundary" in issue for issue in validate_dfd_model(complete)["semantic_issues"]))
@@ -381,7 +487,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         )
 
     def test_refresh_preserves_multiple_conflicting_assertions_for_a_field(self):
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         data_object = next(item for item in model.data_objects if item.id == "DO5")
         data_object.recipients = ["Vendor email service"]
@@ -541,7 +647,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertEqual(refreshed["dfd_validation"]["readiness"]["topology_coverage"]["status"], "empty")
 
     def test_readiness_separates_topology_and_knowledge_gaps(self):
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         model.nodes[1].zone_ids = []
         recalculate_boundary_crossings(model)
@@ -558,7 +664,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertTrue(any("unresolved zone membership" in item for item in readiness["knowledge_completeness"]["issues"]))
 
     def test_reviewer_acceptance_blocks_unconfirmed_logical_crossing(self):
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         boundary = next(item for item in model.boundaries if item.id == "TB3")
         boundary.transition_scope = "logical"
@@ -575,6 +681,27 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertEqual(reviewer["status"], "blocked")
         self.assertTrue(reviewer["blocking_issues"])
         self.assertTrue(any("reviewer confirmation" in item for item in reviewer["blocking_issues"]))
+
+    def test_open_dfd_question_and_candidate_boundary_block_readiness(self):
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
+        model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        model.questions.append(DfdQuestion(
+            id="question-enterprise-review",
+            question="Has the data retention period been confirmed?",
+            reason="The source document does not specify retention.",
+            status="open",
+            affected_refs=[model.flows[0].id],
+        ))
+        model.boundaries[0].status = "candidate"
+
+        validation = validate_dfd_model(model)
+
+        self.assertTrue(validation["valid"])
+        self.assertFalse(validation["semantic_ready"])
+        self.assertEqual(validation["readiness"]["status"], "not_ready")
+        blockers = validation["readiness"]["blocking_reasons"]
+        self.assertTrue(any("question-enterprise-review is open" in item for item in blockers))
+        self.assertTrue(any("is candidate and needs reviewer confirmation" in item for item in blockers))
 
     def test_loader_migrates_legacy_envelope_and_rejects_future_schema(self):
         payload = {
@@ -593,15 +720,29 @@ class DfdSemanticModelTests(unittest.TestCase):
 
         self.assertTrue(migrated)
         self.assertEqual(model.project_id, "project-1")
-        self.assertEqual(model.schema_version, "dfd-v1")
+        self.assertEqual(model.schema_version, "dfd-v2")
         self.assertEqual(model.assertions[0].object_id, "legacy-model")
         self.assertTrue(model.assertions[0].field_path.startswith("legacy_orphan[merged-away-entity]."))
         self.assertTrue(validate_dfd_model(model)["valid"])
         with self.assertRaises(ValueError):
-            load_dfd_model({**payload, "schema_version": "dfd-v2"}, project_id="project-1")
+            load_dfd_model({**payload, "schema_version": "dfd-v3"}, project_id="project-1")
+
+    def test_loader_dual_reads_v1_and_v2_migration_is_idempotent(self):
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
+        v2_payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+        v1_payload = {**v2_payload, "schema_version": "dfd-v1"}
+
+        migrated_model, migrated = load_dfd_model(v1_payload, project_id="fixture-customer-registration")
+        second_model, migrated_again = load_dfd_model(migrated_model.model_dump(), project_id="fixture-customer-registration")
+
+        self.assertTrue(migrated)
+        self.assertEqual(migrated_model.schema_version, "dfd-v2")
+        self.assertFalse(migrated_again)
+        self.assertEqual(second_model.model_dump(), migrated_model.model_dump())
+        self.assertEqual(v1_payload["schema_version"], "dfd-v1", "migration must not mutate the caller's snapshot")
 
     def test_validator_rejects_orphan_assertions_and_layout_positions(self):
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         model.assertions.append(DfdAssertion(
             object_id="missing-element",
@@ -656,7 +797,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertEqual(threats[0]["mapping_status"], "unmapped")
 
     def test_synthetic_customer_registration_covers_nested_and_logical_crossings(self):
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         payload = json.loads(fixture_path.read_text(encoding="utf-8"))
         from backend.models.dfd import DfdModel
         model = DfdModel.model_validate(payload)
@@ -687,8 +828,11 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertNotIn("TB-COMMON", flows["F4"].boundary_crossings)
 
     def test_nested_parent_zone_uses_descendant_membership_for_connectivity(self):
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        for question in model.questions:
+            question.status = "answered"
+            question.resolution = "Resolved with the reviewed fixture architecture."
         recalculate_boundary_crossings(model)
 
         validation = validate_dfd_model(model)
@@ -699,7 +843,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertGreaterEqual(validation["readiness"]["topology_coverage"]["connected_zones"], 4)
 
     def test_process_metadata_and_lineage_refs_are_graph_checked(self):
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         process = next(node for node in model.nodes if node.id == "P1")
         process.process_metadata.input_flow_ids.append("missing-flow")
@@ -740,7 +884,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertTrue(any("no data object label" in issue for issue in validation["semantic_issues"]))
 
     def test_analysis_context_keeps_flow_security_and_process_semantics(self):
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         context = format_dfd_analysis_context(model.model_dump())
 
@@ -753,7 +897,7 @@ class DfdSemanticModelTests(unittest.TestCase):
 
     def test_unknown_membership_is_reviewable_and_not_no_crossing(self):
         from backend.models.dfd import DfdModel
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         model.nodes[1].zone_ids = []
         recalculate_boundary_crossings(model)
@@ -763,7 +907,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertTrue(any("unresolved zone membership" in warning for warning in validation["warnings"]))
 
     def test_reviewer_can_represent_logical_boundary_on_same_zone_flow(self):
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         boundary = next(item for item in model.boundaries if item.id == "TB3")
         boundary.transition_scope = "logical"
@@ -781,7 +925,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertFalse(any("requires reviewer confirmation" in warning for warning in validation["warnings"]))
 
     def test_human_metadata_without_evidence_is_inferred_not_documented(self):
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         data_object = next(item for item in model.data_objects if item.id == "DO5")
         data_object.recipients = ["Vendor email service"]
@@ -796,7 +940,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertEqual(missing_assertion.status, "unknown")
 
     def test_feature_port_mapping_mismatch_is_blocking(self):
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         feature = next(view for view in model.views if view.kind == "feature")
         feature.input_flow_ids = ["F2"]
@@ -807,7 +951,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertTrue(any("input port flow F2" in error for error in validation["errors"]))
 
     def test_missing_canonical_evidence_reference_is_blocking(self):
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         model.flows[0].evidence_refs = ["EV-MISSING"]
         validation = validate_dfd_model(model)
@@ -817,7 +961,7 @@ class DfdSemanticModelTests(unittest.TestCase):
 
     def test_layout_only_save_does_not_increment_semantic_revision(self):
         from backend.models.dfd import DfdModel
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         recalculate_boundary_crossings(model)
         report = {"dfd_model": model.model_dump(), "dfd_validation": validate_dfd_model(model)}
@@ -827,9 +971,9 @@ class DfdSemanticModelTests(unittest.TestCase):
 
         with (
             patch("backend.routers.dfd.get_project", return_value={"project_id": "fixture-customer-registration"}),
-            patch("backend.routers.dfd.get_report", return_value=report),
-            patch("backend.routers.dfd.get_dfd_model", return_value=None),
-            patch("backend.routers.dfd.save_report"),
+            patch("backend.routers.dfd.get_project_report_and_dfd", return_value=(report, None)),
+            patch("backend.routers.dfd.save_dfd_model"),
+            patch("backend.routers.dfd.save_report_and_dfd"),
             patch("backend.routers.dfd.log_event"),
         ):
             response = __import__("asyncio").run(save_dfd(
@@ -843,7 +987,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertEqual(response["model"]["views"][0]["viewport"]["scale"], 1.25)
 
     def test_sync_dfd_views_rebuilds_context_system_and_feature_projections(self):
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         model.views = []
 
@@ -860,8 +1004,155 @@ class DfdSemanticModelTests(unittest.TestCase):
             self.assertEqual(view.port_mappings["output"], view.output_flow_ids)
             self.assertIn(view.parent_process_id, view.element_refs)
 
+    def test_hierarchy_projections_separate_context_from_system_and_trace_flows(self):
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
+        model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        views = {view.kind: view for view in model.views if view.kind in {"context", "system"}}
+        context = views["context"]
+        system = views["system"]
+
+        self.assertEqual(len(context.projection_nodes), 3)
+        self.assertEqual(len(context.projection_flows), 4)
+        self.assertEqual(len(system.projection_nodes), 5)
+        self.assertEqual(len(system.projection_flows), 6)
+        context_flow_ids = {flow_id for flow in context.projection_flows for flow_id in flow.canonical_flow_ids}
+        system_flow_ids = {flow_id for flow in system.projection_flows for flow_id in flow.canonical_flow_ids}
+        self.assertEqual(context_flow_ids, {"F1", "F2", "F5", "F6"})
+        self.assertEqual(system_flow_ids, {flow.id for flow in model.flows})
+        aggregate = next(node for node in context.projection_nodes if node.type == "system")
+        self.assertEqual(set(aggregate.canonical_node_ids), {"P1", "P2", "D1"})
+        self.assertEqual(validate_dfd_model(model)["hierarchy"]["views"]["context"]["mapped_canonical_flows"], 4)
+
+    def test_l2_is_labelled_detail_only_until_evidenced_child_activity_exists(self):
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
+        model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        view = next(view for view in model.views if view.kind == "feature" and view.parent_process_id == "P1")
+
+        self.assertEqual(view.decomposition_status, "detail_only")
+        self.assertTrue(any("no evidenced child-process decomposition" in issue for issue in view.projection_issues))
+
+        model.nodes.append(DfdNode(
+            id="P1-validate",
+            display_id="P1.1",
+            type="process",
+            name="Validate registration fields",
+            parent_process_id="P1",
+            scope="unknown",
+            ownership="organization",
+            exposure="internet_facing",
+            zone_ids=["zone-application"],
+            knowledge_status="documented",
+            evidence_refs=["EV-REG-001"],
+        ))
+        model.flows.append(DfdFlow(
+            id="F7",
+            display_id="F7",
+            source_id="P1-validate",
+            target_id="D1",
+            name="Validated customer record",
+            data_object_ids=["DO3"],
+            interaction_kind="write",
+            evidence_refs=["EV-REG-001"],
+            knowledge_status="documented",
+        ))
+        recalculate_boundary_crossings(model)
+        view = next(view for view in model.views if view.kind == "feature" and view.parent_process_id == "P1")
+        self.assertEqual(view.decomposition_status, "pending")
+        self.assertTrue(any("l2_scope_unknown" in issue for issue in view.projection_issues))
+        partial_validation = validate_dfd_model(model)
+        self.assertTrue(partial_validation["valid"], partial_validation)
+        self.assertFalse(partial_validation["semantic_ready"])
+        self.assertTrue(any("l2_scope_unknown" in issue for issue in partial_validation["readiness"]["blocking_reasons"]))
+
+        # Scope can be reviewed one element at a time. The semantic draft saves
+        # while L2 remains pending, then becomes decomposed after the child is
+        # explicitly classified in scope.
+        model.nodes[-1].scope = "in_scope"
+        recalculate_boundary_crossings(model)
+        view = next(view for view in model.views if view.kind == "feature" and view.parent_process_id == "P1")
+        self.assertEqual(view.decomposition_status, "decomposed")
+        mapped_flows = {flow_id for flow in view.projection_flows for flow_id in flow.canonical_flow_ids}
+        self.assertTrue({"F1", "F2", "F3", "F4", "F7"}.issubset(mapped_flows))
+        self.assertEqual(view.port_mappings["input"], view.input_flow_ids)
+        self.assertEqual(view.port_mappings["output"], view.output_flow_ids)
+        self.assertTrue(validate_dfd_model(model)["valid"])
+
+    def test_dfd_save_accepts_scope_incomplete_child_decomposition_as_pending(self):
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
+        current = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        recalculate_boundary_crossings(current)
+        candidate = current.model_copy(deep=True)
+        candidate.nodes.append(DfdNode(
+            id="P1-validate",
+            display_id="P1.1",
+            type="process",
+            name="Validate registration fields",
+            parent_process_id="P1",
+            scope="unknown",
+            ownership="organization",
+            exposure="internet_facing",
+            zone_ids=["zone-application"],
+            knowledge_status="documented",
+            evidence_refs=["EV-REG-001"],
+        ))
+        recalculate_boundary_crossings(candidate)
+        report = {"dfd_model": current.model_dump(), "dfd_validation": validate_dfd_model(current)}
+
+        with (
+            patch("backend.routers.dfd.get_project", return_value={"project_id": "fixture-customer-registration"}),
+            patch("backend.routers.dfd.get_project_report_and_dfd", return_value=(report, None)),
+            patch("backend.routers.dfd.save_dfd_model"),
+            patch("backend.routers.dfd.save_report_and_dfd"),
+            patch("backend.routers.dfd.log_event"),
+        ):
+            response = __import__("asyncio").run(save_dfd(
+                "fixture-customer-registration",
+                {"model": candidate.model_dump(), "expected_revision": current.revision},
+            ))
+
+        feature_view = next(
+            view for view in response["model"]["views"]
+            if view["kind"] == "feature" and view["parent_process_id"] == "P1"
+        )
+        self.assertTrue(response["success"])
+        self.assertEqual(feature_view["decomposition_status"], "pending")
+        self.assertTrue(response["validation"]["valid"])
+        self.assertFalse(response["validation"]["semantic_ready"])
+        self.assertTrue(any(
+            "l2_scope_unknown" in issue
+            for issue in response["validation"]["readiness"]["blocking_reasons"]
+        ))
+
+    def test_hierarchy_semantics_affect_semantic_hash_but_layout_does_not(self):
+        from backend.services.dfd_model_service import _semantic_hash
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
+        model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        original_hash = _semantic_hash(model)
+        model.views[0].positions["SYS1"] = {"x": 180, "y": 90}
+        model.views[0].viewport = {"x": 30, "y": 40, "scale": 1.2}
+        self.assertEqual(_semantic_hash(model), original_hash)
+        model.views[0].projection_issues.append("context_scope_unknown: reviewer must set system scope")
+        self.assertNotEqual(_semantic_hash(model), original_hash)
+
+    def test_validator_rejects_grounded_flow_missing_from_all_views(self):
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
+        model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        for view in model.views:
+            view.projection_flows = [
+                flow for flow in view.projection_flows
+                if "F4" not in flow.canonical_flow_ids
+            ]
+            view.projection_mappings = {
+                key: value for key, value in view.projection_mappings.items()
+                if key != "F4" and "F4" not in value
+            }
+        validation = validate_dfd_model(model)
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(any("F4" in error and "missing from every hierarchy projection" in error for error in validation["errors"]))
+
     def test_validator_rejects_invalid_viewport_state(self):
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         model.views[0].viewport = {"x": 0, "y": 0, "scale": 0}
 
@@ -872,7 +1163,7 @@ class DfdSemanticModelTests(unittest.TestCase):
 
     def test_semantic_save_increments_revision_and_marks_downstream_analysis_stale(self):
         from backend.models.dfd import DfdModel
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         recalculate_boundary_crossings(model)
         report = {"dfd_model": model.model_dump(), "dfd_validation": validate_dfd_model(model)}
@@ -881,9 +1172,9 @@ class DfdSemanticModelTests(unittest.TestCase):
 
         with (
             patch("backend.routers.dfd.get_project", return_value={"project_id": "fixture-customer-registration"}),
-            patch("backend.routers.dfd.get_report", return_value=report),
-            patch("backend.routers.dfd.get_dfd_model", return_value=None),
-            patch("backend.routers.dfd.save_report"),
+            patch("backend.routers.dfd.get_project_report_and_dfd", return_value=(report, None)),
+            patch("backend.routers.dfd.save_dfd_model"),
+            patch("backend.routers.dfd.save_report_and_dfd"),
             patch("backend.routers.dfd.log_event"),
         ):
             response = __import__("asyncio").run(save_dfd(
@@ -899,7 +1190,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         })
 
     def test_semantic_save_accepts_a_user_added_node(self):
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         recalculate_boundary_crossings(model)
         current = model.model_copy(deep=True)
@@ -917,9 +1208,9 @@ class DfdSemanticModelTests(unittest.TestCase):
 
         with (
             patch("backend.routers.dfd.get_project", return_value={"project_id": "fixture-customer-registration"}),
-            patch("backend.routers.dfd.get_report", return_value=report),
-            patch("backend.routers.dfd.get_dfd_model", return_value=None),
-            patch("backend.routers.dfd.save_report"),
+            patch("backend.routers.dfd.get_project_report_and_dfd", return_value=(report, None)),
+            patch("backend.routers.dfd.save_dfd_model"),
+            patch("backend.routers.dfd.save_report_and_dfd"),
             patch("backend.routers.dfd.log_event"),
         ):
             response = __import__("asyncio").run(save_dfd(
@@ -933,15 +1224,15 @@ class DfdSemanticModelTests(unittest.TestCase):
 
     def test_dfd_save_rejects_revision_conflict(self):
         from backend.models.dfd import DfdModel
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         recalculate_boundary_crossings(model)
         report = {"dfd_model": model.model_dump(), "dfd_validation": validate_dfd_model(model)}
 
         with (
             patch("backend.routers.dfd.get_project", return_value={"project_id": "fixture-customer-registration"}),
-            patch("backend.routers.dfd.get_report", return_value=report),
-            patch("backend.routers.dfd.get_dfd_model", return_value=None),
+            patch("backend.routers.dfd.get_project_report_and_dfd", return_value=(report, None)),
+            patch("backend.routers.dfd.save_dfd_model"),
         ):
             with self.assertRaises(HTTPException) as raised:
                 __import__("asyncio").run(save_dfd(
@@ -952,7 +1243,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 409)
 
     def test_source_change_preserves_human_dfd_and_returns_regeneration_proposal(self):
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         previous = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         recalculate_boundary_crossings(previous)
         previous.nodes[0].ownership = "customer"
@@ -977,7 +1268,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertIn(previous.nodes[0].id, proposal["sections"]["nodes"]["changed"])
 
     def test_reviewed_regeneration_proposal_can_be_applied_without_resetting_layout(self):
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         current = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         recalculate_boundary_crossings(current)
         context_view = next(view for view in current.views if view.kind == "context")
@@ -993,9 +1284,9 @@ class DfdSemanticModelTests(unittest.TestCase):
 
         with (
             patch("backend.routers.dfd.get_project", return_value={"project_id": "fixture-customer-registration"}),
-            patch("backend.routers.dfd.get_report", return_value=report),
-            patch("backend.routers.dfd.get_dfd_model", return_value=None),
-            patch("backend.routers.dfd.save_report"),
+            patch("backend.routers.dfd.get_project_report_and_dfd", return_value=(report, None)),
+            patch("backend.routers.dfd.save_dfd_model"),
+            patch("backend.routers.dfd.save_report_and_dfd"),
             patch("backend.routers.dfd.log_event"),
         ):
             response = __import__("asyncio").run(apply_dfd_regeneration_proposal(
@@ -1011,7 +1302,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertTrue(report["analysis_stale"]["stages"])
 
     def test_regeneration_proposal_includes_store_metadata(self):
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         current = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         candidate = current.model_copy(deep=True)
         store_id = next(iter(candidate.stores))
@@ -1024,7 +1315,7 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertEqual(current.stores[store_id].retention, "unknown")
 
     def test_regeneration_proposal_can_be_dismissed_without_mutating_model(self):
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         current = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         recalculate_boundary_crossings(current)
         candidate = current.model_copy(deep=True)
@@ -1047,8 +1338,8 @@ class DfdSemanticModelTests(unittest.TestCase):
 
         with (
             patch("backend.routers.dfd.get_project", return_value={"project_id": "fixture-customer-registration"}),
-            patch("backend.routers.dfd.get_report", return_value=report),
-            patch("backend.routers.dfd.get_dfd_model", return_value=None),
+            patch("backend.routers.dfd.get_project_report_and_dfd", return_value=(report, None)),
+            patch("backend.routers.dfd.save_dfd_model"),
             patch("backend.routers.dfd.save_report"),
             patch("backend.routers.dfd.log_event"),
         ):
@@ -1065,14 +1356,15 @@ class DfdSemanticModelTests(unittest.TestCase):
 
     def test_svg_export_is_escaped_and_contains_canonical_elements(self):
         from backend.models.dfd import DfdModel
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         recalculate_boundary_crossings(model)
         report = {"dfd_model": model.model_dump(), "dfd_validation": validate_dfd_model(model)}
 
         with (
             patch("backend.routers.dfd.get_project", return_value={"project_id": "fixture-customer-registration"}),
-            patch("backend.routers.dfd.get_report", return_value=report),
+            patch("backend.routers.dfd.get_project_report_and_dfd", return_value=(report, None)),
+            patch("backend.routers.dfd.save_dfd_model"),
         ):
             response = __import__("asyncio").run(export_dfd("fixture-customer-registration", "svg"))
 
@@ -1085,15 +1377,65 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertIn("stroke-dasharray=\"8 6\"", content)
         self.assertNotIn("<script", content.lower())
 
+    def test_selected_projection_api_and_exports_share_level_metadata_and_mapping(self):
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
+        model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
+        report = {"dfd_model": model.model_dump(), "dfd_validation": validate_dfd_model(model)}
+        with (
+            patch("backend.routers.dfd.get_project", return_value={"project_id": "fixture-customer-registration"}),
+            patch("backend.routers.dfd.get_project_report_and_dfd", return_value=(report, None)),
+            patch("backend.routers.dfd.save_dfd_model"),
+            patch("backend.routers.dfd.log_event"),
+        ):
+            from backend.routers.dfd import get_dfd
+            api_result = asyncio.run(get_dfd("fixture-customer-registration", view_id="context"))
+            svg_result = asyncio.run(export_dfd("fixture-customer-registration", "svg", view_id="context"))
+            projection_json = asyncio.run(export_dfd("fixture-customer-registration", "projection-json", view_id="context"))
+            canonical_json = asyncio.run(export_dfd("fixture-customer-registration", "json"))
+
+        projection = api_result["projection"]
+        svg = svg_result.body.decode("utf-8")
+        exported_projection = json.loads(projection_json.body)
+        exported_canonical = json.loads(canonical_json.body)
+        self.assertEqual(projection["view_id"], "view-context")
+        self.assertEqual(projection["level"], "L0")
+        self.assertEqual(projection["revision"], model.revision)
+        self.assertEqual(exported_projection["semantic_hash"], projection["semantic_hash"])
+        self.assertEqual(exported_projection["counts"], projection["counts"])
+        self.assertIn('data-view-id="view-context"', svg)
+        self.assertIn('data-view-kind="context"', svg)
+        self.assertIn("data-canonical-flow-ids=", svg)
+        self.assertEqual(exported_canonical["nodes"], model.model_dump()["nodes"])
+
+    def test_legacy_hierarchy_migration_bumps_revision_and_marks_analysis_stale(self):
+        legacy_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
+        previous_revision = legacy.get("revision", 1)
+        report = {"dfd_model": legacy, "report_revision": 7}
+        with (
+            patch("backend.routers.dfd.get_project", return_value={"project_id": "fixture-customer-registration"}),
+            patch("backend.routers.dfd.get_project_report_and_dfd", return_value=(report, None)),
+            patch("backend.routers.dfd.save_report_and_dfd") as atomic_save,
+            patch("backend.routers.dfd.log_event"),
+        ):
+            from backend.routers.dfd import get_dfd
+            result = asyncio.run(get_dfd("fixture-customer-registration"))
+
+        self.assertTrue(result["model"]["revision"] > previous_revision)
+        self.assertTrue(any(view["projection_nodes"] is not None for view in result["model"]["views"]))
+        self.assertIn("hierarchy projections were migrated", report["analysis_stale"]["reason"])
+        atomic_save.assert_called_once()
+
     def test_svg_export_hydrates_legacy_evidence_refs(self):
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         model.evidence = []
         report = {"dfd_model": model.model_dump()}
 
         with (
             patch("backend.routers.dfd.get_project", return_value={"project_id": "fixture-customer-registration"}),
-            patch("backend.routers.dfd.get_report", return_value=report),
+            patch("backend.routers.dfd.get_project_report_and_dfd", return_value=(report, None)),
+            patch("backend.routers.dfd.save_dfd_model"),
         ):
             response = __import__("asyncio").run(export_dfd("fixture-customer-registration", "svg"))
 
@@ -1101,33 +1443,40 @@ class DfdSemanticModelTests(unittest.TestCase):
         self.assertIn("Z2 · Organization", response.body.decode("utf-8"))
 
     def test_json_export_and_import_round_trip_preserve_canonical_contract(self):
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         recalculate_boundary_crossings(model)
         report = {"dfd_model": model.model_dump(), "dfd_validation": validate_dfd_model(model)}
 
         with (
             patch("backend.routers.dfd.get_project", return_value={"project_id": "fixture-customer-registration"}),
-            patch("backend.routers.dfd.get_report", return_value=report),
-            patch("backend.routers.dfd.get_dfd_model", return_value=None),
-            patch("backend.routers.dfd.save_report"),
+            patch("backend.routers.dfd.get_project_report_and_dfd", return_value=(report, None)),
+            patch("backend.routers.dfd.save_dfd_model"),
+            patch("backend.routers.dfd.save_report_and_dfd"),
             patch("backend.routers.dfd.log_event"),
         ):
             exported = __import__("asyncio").run(export_dfd("fixture-customer-registration", "json"))
             exported_model = json.loads(exported.body)
-            self.assertEqual(exported_model["schema_version"], "dfd-v1")
+            self.assertEqual(exported_model["schema_version"], "dfd-v2")
             exported_model["nodes"][0]["description"] = "Reviewed in JSON round trip"
             imported = __import__("asyncio").run(import_dfd(
                 "fixture-customer-registration",
                 {"model": exported_model, "expected_revision": model.revision},
             ))
+            legacy_v1 = {**exported_model, "schema_version": "dfd-v1"}
+            imported_legacy = __import__("asyncio").run(import_dfd(
+                "fixture-customer-registration",
+                {"model": legacy_v1, "expected_revision": imported["model"]["revision"]},
+            ))
 
         self.assertTrue(imported["success"])
         self.assertEqual(imported["model"]["nodes"][0]["description"], "Reviewed in JSON round trip")
-        self.assertEqual(imported["model"]["schema_version"], "dfd-v1")
+        self.assertEqual(imported["model"]["schema_version"], "dfd-v2")
+        self.assertTrue(imported_legacy["success"])
+        self.assertEqual(imported_legacy["model"]["schema_version"], "dfd-v2")
 
     def test_delete_impact_preview_surfaces_semantic_dependents(self):
-        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_dfd.json"
+        fixture_path = Path(__file__).parents[1] / "fixtures" / "customer_registration_hierarchical_dfd.json"
         model = DfdModel.model_validate(json.loads(fixture_path.read_text(encoding="utf-8")))
         recalculate_boundary_crossings(model)
         threats = [{

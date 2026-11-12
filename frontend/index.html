@@ -72,7 +72,7 @@
         <div class="topbar-left">
           <div>
             <div class="page-title">Dashboard</div>
-            <div class="page-subtitle">All threat modeling projects</div>
+            <div class="page-subtitle">Your threat modeling projects</div>
           </div>
         </div>
         <div class="topbar-actions">
@@ -109,12 +109,12 @@
           <div class="stat-card">
             <div class="stat-label">Total Projects</div>
             <div class="stat-value" id="stat-total">—</div>
-            <div class="stat-sub">All workspaces</div>
+            <div class="stat-sub">Your account</div>
           </div>
           <div class="stat-card danger">
             <div class="stat-label">Critical Threats</div>
             <div class="stat-value" id="stat-critical">—</div>
-            <div class="stat-sub">Across all projects</div>
+            <div class="stat-sub">In this account</div>
           </div>
           <div class="stat-card warning">
             <div class="stat-label">High Risk</div>
@@ -122,7 +122,7 @@
             <div class="stat-sub">Need attention</div>
           </div>
           <div class="stat-card">
-            <div class="stat-label">Open Threats</div>
+            <div class="stat-label">Threat Scenarios</div>
             <div class="stat-value" id="stat-open">—</div>
             <div class="stat-sub">Pending review</div>
           </div>
@@ -131,11 +131,18 @@
         <!-- Project List -->
         <div class="section-header">
           <h2 class="section-title">Projects</h2>
-          <div style="display:flex;gap:var(--space-3);align-items:center;">
+          <div class="dashboard-project-actions">
             <input type="search" class="form-input" style="width:220px;" placeholder="Search projects…"
               id="search-input" />
+            <input type="file" id="project-archive-input" accept=".zip,application/zip" hidden />
+            <button type="button" class="btn btn-secondary" id="project-archive-import">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 16V4m0 0L7 9m5-5 5 5"/><path d="M5 14v5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-5"/></svg>
+              Import archive
+            </button>
           </div>
         </div>
+
+        <div id="legacy-import-notice" class="legacy-import-notice" hidden></div>
 
         <div id="projects-container">
           <!-- Skeleton loading -->
@@ -151,7 +158,8 @@
   </div>
 
   <script src="/static/js/sidebar.js"></script>
-  <script src="/static/js/api.js"></script>
+  <script src="/static/js/ui-state.js?v=20260922u0"></script>
+  <script src="/static/js/api.js?v=20261112-archive1"></script>
   <script src="/static/js/dashboard.js"></script>
 </body>
 

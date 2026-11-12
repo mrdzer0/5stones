@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 from backend.services.threat_validation_service import ThreatGenerationResult
 from backend.services.threat_validation_service import ThreatGenerationContractError
+from backend.services.threat_batch_service import ThreatGenerationProviderError
 from backend.services.trust_boundary_service import build_trust_model
 from backend.services.dfd_model_service import build_dfd_model
 from backend.services.ai_service import AnalysisResponseError
@@ -12,6 +13,14 @@ from backend.routers.analysis import _run_analysis_pipeline, run_full_analysis
 
 
 class DfdPipelineAcceptanceTests(unittest.TestCase):
+    @staticmethod
+    def _capture_atomic_save(saved_reports):
+        def save(_project_id, report, dfd_model, *, expected_report_revision, **_kwargs):
+            report["report_revision"] = expected_report_revision + 1
+            saved_reports.append(copy.deepcopy(report))
+            return report, dfd_model
+        return save
+
     def setUp(self):
         self.project = {
             "project_id": "acceptance-registration",
@@ -71,7 +80,9 @@ class DfdPipelineAcceptanceTests(unittest.TestCase):
         with (
             patch("backend.routers.analysis.get_project", return_value=copy.deepcopy(self.project)),
             patch("backend.routers.analysis.get_report", return_value=None),
+            patch("backend.routers.analysis.get_dfd_model", return_value=None),
             patch("backend.routers.analysis.save_report", side_effect=lambda project_id, report: saved_reports.append(copy.deepcopy(report))),
+            patch("backend.routers.analysis.save_report_and_dfd", side_effect=self._capture_atomic_save(saved_reports)),
             patch("backend.routers.analysis.save_project", side_effect=lambda project: saved_projects.append(copy.deepcopy(project))),
             patch("backend.routers.analysis.generate_stride_threats", new=AsyncMock(return_value=stride)),
             patch("backend.routers.analysis.generate_linddun_threats", new=AsyncMock(return_value=linddun)),
@@ -84,7 +95,7 @@ class DfdPipelineAcceptanceTests(unittest.TestCase):
                 "analysis_types": ["trust_boundary", "stride", "linddun", "controls", "tests", "missing_info", "assumptions"],
             }))
 
-        self.assertEqual(result["analysis_run"]["status"], "completed")
+        self.assertEqual(result["analysis_run"]["status"], "completed_with_warnings")
         self.assertTrue(result["dfd_model"]["nodes"])
         self.assertTrue(result["dfd_validation"]["valid"])
         self.assertIn("privacy_assessment", result)
@@ -96,8 +107,8 @@ class DfdPipelineAcceptanceTests(unittest.TestCase):
         self.assertEqual(linddun_result["status"], "Needs Info")
         self.assertTrue(linddun_result["target_refs"])
         self.assertGreaterEqual(len(saved_reports), 2)  # running state and completed state
-        self.assertEqual(saved_reports[-1]["analysis_run"]["status"], "completed")
-        self.assertEqual(saved_projects[-1]["analysis_status"], "completed")
+        self.assertEqual(saved_reports[-1]["analysis_run"]["status"], "completed_with_warnings")
+        self.assertEqual(saved_projects[-1]["analysis_status"], "completed_with_warnings")
 
     def test_valid_empty_assessment_is_persisted_without_fallback(self):
         empty_stride = ThreatGenerationResult([], [])
@@ -111,7 +122,9 @@ class DfdPipelineAcceptanceTests(unittest.TestCase):
         with (
             patch("backend.routers.analysis.get_project", return_value=copy.deepcopy(self.project)),
             patch("backend.routers.analysis.get_report", return_value=None),
+            patch("backend.routers.analysis.get_dfd_model", return_value=None),
             patch("backend.routers.analysis.save_report", side_effect=lambda project_id, report: saved_reports.append(copy.deepcopy(report))),
+            patch("backend.routers.analysis.save_report_and_dfd", side_effect=self._capture_atomic_save(saved_reports)),
             patch("backend.routers.analysis.save_project", side_effect=lambda project: saved_projects.append(copy.deepcopy(project))),
             patch("backend.routers.analysis.generate_stride_threats", new=AsyncMock(return_value=empty_stride)),
             patch("backend.routers.analysis.generate_linddun_threats", new=AsyncMock(return_value=empty_linddun)),
@@ -121,7 +134,10 @@ class DfdPipelineAcceptanceTests(unittest.TestCase):
                 "analysis_types": ["trust_boundary", "stride", "linddun", "assumptions"],
             }))
 
-        self.assertEqual(result["analysis_run"]["status"], "completed")
+        self.assertEqual(result["analysis_run"]["status"], "completed_with_warnings")
+        self.assertTrue(result["analysis_run"]["review_required"])
+        self.assertFalse(result["analysis_run"]["quality_gate"]["signoff_ready"])
+        self.assertFalse(result["analysis_run"]["retryable"])
         self.assertTrue(result["ai_status"]["stride"]["ok"])
         self.assertEqual(result["ai_status"]["stride"]["assessment_status"], "valid_empty")
         self.assertTrue(result["ai_status"]["linddun"]["ok"])
@@ -139,7 +155,9 @@ class DfdPipelineAcceptanceTests(unittest.TestCase):
         with (
             patch("backend.routers.analysis.get_project", return_value=copy.deepcopy(self.project)),
             patch("backend.routers.analysis.get_report", return_value=None),
+            patch("backend.routers.analysis.get_dfd_model", return_value=None),
             patch("backend.routers.analysis.save_report", side_effect=lambda project_id, report: saved_reports.append(copy.deepcopy(report))),
+            patch("backend.routers.analysis.save_report_and_dfd", side_effect=self._capture_atomic_save(saved_reports)),
             patch("backend.routers.analysis.save_project", side_effect=lambda project: saved_projects.append(copy.deepcopy(project))),
             patch(
                 "backend.routers.analysis.generate_stride_threats",
@@ -167,6 +185,49 @@ class DfdPipelineAcceptanceTests(unittest.TestCase):
             for item in result["analysis_quarantine"]
         ))
 
+    def test_provider_outage_fallback_is_visible_but_never_validated_or_signoff_ready(self):
+        saved_reports = []
+        saved_projects = []
+        fallback_result = ThreatGenerationResult(
+            [], [], assessment_status="fallback", warnings=["provider unavailable"]
+        )
+        empty_linddun = ThreatGenerationResult([], [], assessment_status="valid_empty")
+
+        async def stride(_project, _boundaries, *, force_fallback=False, **_kwargs):
+            if force_fallback:
+                return fallback_result
+            raise ThreatGenerationProviderError(
+                "Synthetic provider outage",
+                code="provider_unavailable",
+                metadata={"generation_manifest": {"deferred_refs": ["flow-register"]}},
+            )
+
+        async def assumptions(project, threats):
+            return []
+
+        with (
+            patch("backend.routers.analysis.get_project", return_value=copy.deepcopy(self.project)),
+            patch("backend.routers.analysis.get_report", return_value=None),
+            patch("backend.routers.analysis.get_dfd_model", return_value=None),
+            patch("backend.routers.analysis.save_report", side_effect=lambda project_id, report: saved_reports.append(copy.deepcopy(report))),
+            patch("backend.routers.analysis.save_report_and_dfd", side_effect=self._capture_atomic_save(saved_reports)),
+            patch("backend.routers.analysis.save_project", side_effect=lambda project: saved_projects.append(copy.deepcopy(project))),
+            patch("backend.routers.analysis.generate_stride_threats", new=AsyncMock(side_effect=stride)),
+            patch("backend.routers.analysis.generate_linddun_threats", new=AsyncMock(return_value=empty_linddun)),
+            patch("backend.routers.analysis.generate_assumptions", new=assumptions),
+        ):
+            result = asyncio.run(run_full_analysis(self.project["project_id"], {
+                "analysis_types": ["trust_boundary", "stride", "linddun", "assumptions"],
+            }))
+
+        self.assertEqual(result["analysis_run"]["status"], "completed_with_warnings")
+        self.assertEqual(result["ai_status"]["stride"]["engine"], "fallback")
+        self.assertEqual(result["ai_status"]["stride"]["assessment_status"], "fallback")
+        self.assertFalse(result["ai_status"]["stride"]["ok"])
+        self.assertFalse(result["analysis_run"]["quality_gate"]["signoff_ready"])
+        self.assertEqual(result["threats"], [])
+        self.assertFalse(any(item.get("is_fallback") for item in result["threats"]))
+
     def test_malformed_candidate_is_quarantined_and_not_sent_downstream(self):
         malformed = ThreatGenerationResult([{
             "threat_id": "malformed-stride",
@@ -185,7 +246,9 @@ class DfdPipelineAcceptanceTests(unittest.TestCase):
         with (
             patch("backend.routers.analysis.get_project", return_value=copy.deepcopy(self.project)),
             patch("backend.routers.analysis.get_report", return_value=None),
+            patch("backend.routers.analysis.get_dfd_model", return_value=None),
             patch("backend.routers.analysis.save_report", side_effect=lambda project_id, report: saved_reports.append(copy.deepcopy(report))),
+            patch("backend.routers.analysis.save_report_and_dfd", side_effect=self._capture_atomic_save(saved_reports)),
             patch("backend.routers.analysis.save_project", side_effect=lambda project: saved_projects.append(copy.deepcopy(project))),
             patch("backend.routers.analysis.generate_stride_threats", new=AsyncMock(return_value=malformed)),
             patch("backend.routers.analysis.generate_linddun_threats", new=AsyncMock(return_value=empty_linddun)),
@@ -242,7 +305,9 @@ class DfdPipelineAcceptanceTests(unittest.TestCase):
         with (
             patch("backend.routers.analysis.get_project", return_value=copy.deepcopy(self.project)),
             patch("backend.routers.analysis.get_report", return_value=copy.deepcopy(prior_report)),
+            patch("backend.routers.analysis.get_dfd_model", return_value=None),
             patch("backend.routers.analysis.save_report", side_effect=lambda project_id, report: saved_reports.append(copy.deepcopy(report))),
+            patch("backend.routers.analysis.save_report_and_dfd", side_effect=self._capture_atomic_save(saved_reports)),
             patch("backend.routers.analysis.save_project", side_effect=lambda project: saved_projects.append(copy.deepcopy(project))),
             patch("backend.routers.analysis.generate_stride_threats", new=AsyncMock(return_value=fallback_stride)),
             patch("backend.routers.analysis.generate_linddun_threats", new=AsyncMock(return_value=fallback_linddun)),

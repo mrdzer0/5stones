@@ -1,0 +1,132 @@
+{
+  "schema_version": "prd-corpus-metrics-v1",
+  "contract_id": "prd-corpus-release-v1",
+  "corpus_result_schema_version": "prd-corpus-e2e-v2",
+  "accepted_legacy_result_schema_versions": ["prd-corpus-e2e-v1"],
+  "evaluator_version": "prd-corpus-evaluator-v1.2",
+  "required_provenance": [
+    "application_commit",
+    "provider",
+    "model",
+    "timeout_seconds",
+    "retry_config",
+    "batch_config",
+    "source_revision",
+    "source_hash",
+    "dfd_revision",
+    "dfd_semantic_hash",
+    "run_id"
+  ],
+  "thresholds": {
+    "min_ingestion_coverage": 0.98,
+    "min_dfd_entity_recall": 0.95,
+    "min_dfd_precision": 0.90,
+    "max_duplicate_rate": 0.05,
+    "min_topology_validity": 1.0,
+    "min_framework_validation": 1.0,
+    "min_finding_precision": 0.90,
+    "min_finding_recall": 0.85,
+    "max_unsupported_finding_rate": 0.05,
+    "min_deferred_recall": 0.85,
+    "min_control_mapping_precision": 0.95,
+    "min_control_mapping_recall": 0.90,
+    "min_test_executability": 0.90
+  },
+  "metrics": [
+    {
+      "name": "ingestion_coverage",
+      "unit": "ratio",
+      "requires_counts": true,
+      "source": "case.metrics.ingestion_coverage",
+      "description": "Processed and verified source sections divided by total source sections."
+    },
+    {
+      "name": "dfd_entity_recall",
+      "unit": "ratio",
+      "requires_counts": true,
+      "source": "case.metrics.dfd_entity_recall",
+      "description": "Expected canonical entities found without counting duplicate aliases as new entities."
+    },
+    {
+      "name": "dfd_precision",
+      "unit": "ratio",
+      "requires_counts": true,
+      "source": "case.metrics.dfd_precision",
+      "description": "Canonical entities, data objects, and flows independently adjudicated as supported by source evidence or an explicit allowed inference, divided by all adjudicated canonical claims. Required-entity recall labels alone cannot measure precision."
+    },
+    {
+      "name": "duplicate_rate",
+      "unit": "ratio",
+      "requires_counts": true,
+      "source": "case.metrics.duplicate_rate",
+      "description": "Semantically duplicate canonical nodes and flows divided by canonical nodes and flows."
+    },
+    {
+      "name": "topology_validity",
+      "unit": "ratio",
+      "requires_counts": true,
+      "source": "case.metrics.topology_validity",
+      "description": "Structural endpoint, direction, zone membership, boundary crossing, and connectedness checks divided by all required structural checks. This does not measure whether the documented flow itself is correct."
+    },
+    {
+      "name": "framework_validation",
+      "unit": "ratio",
+      "requires_counts": true,
+      "source": "case.metrics.framework_validation",
+      "description": "Framework cases with a validated or legitimate valid-empty assessment divided by framework cases."
+    },
+    {
+      "name": "finding_precision",
+      "unit": "ratio",
+      "requires_counts": true,
+      "source": "case.metrics.finding_precision",
+      "description": "Supported expected findings divided by generated findings, measured only from independently adjudicated blind labels. Structural DFD flow binding is a separate diagnostic and cannot satisfy this metric."
+    },
+    {
+      "name": "finding_recall",
+      "unit": "ratio",
+      "requires_counts": true,
+      "source": "case.metrics.finding_recall",
+      "description": "Supported expected findings divided by expected findings, measured only from independently adjudicated blind labels. Manifest keyword matching is diagnostic only and cannot satisfy this metric."
+    },
+    {
+      "name": "deferred_recall",
+      "unit": "ratio",
+      "requires_counts": true,
+      "source": "case.metrics.deferred_recall",
+      "description": "Expected unresolved decisions surfaced as actionable gaps divided by adjudicated expected deferred decisions. Manifest keyword matching is diagnostic only and cannot satisfy this metric."
+    },
+    {
+      "name": "control_mapping_precision",
+      "unit": "ratio",
+      "requires_counts": true,
+      "source": "case.metrics.control_mapping_precision",
+      "description": "Independently adjudicated correct finding-to-control edges divided by all adjudicated generated mapping edges. Structural finding-ID binding alone cannot measure semantic correctness."
+    },
+    {
+      "name": "control_mapping_recall",
+      "unit": "ratio",
+      "requires_counts": true,
+      "source": "case.metrics.control_mapping_recall",
+      "description": "Independently adjudicated correct finding-to-control edges divided by all independently labeled expected applicable control edges. Generated finding counts alone cannot measure recall."
+    },
+    {
+      "name": "test_executability",
+      "unit": "ratio",
+      "requires_counts": true,
+      "source": "case.metrics.test_executability",
+      "description": "Expected applicable tests that pass the agreed target, mechanism, assertion, evidence, and execution-quality rubric divided by all independently labeled applicable expected tests. Generated scenario count alone cannot measure recall or quality."
+    }
+  ],
+  "rules": [
+    "A reported percentage without numerator and denominator is legacy context and is never a release metric.",
+    "Missing or invalid required metrics fail the gate; they are not treated as zero or one silently.",
+    "Framework fallback, timeout, malformed, or truncated output cannot satisfy framework_validation.",
+    "A valid-empty framework result requires complete applicable coverage and no failed or deferred interaction.",
+    "A metric marked eligible_for_gate=false is diagnostic only and must fail closed even when it has numerator and denominator counts.",
+    "Finding precision, finding recall, and deferred recall require independent blind AppSec labels; flow linkage or manifest keyword matching cannot make them gate eligible.",
+    "Required-entity labels measure recall only; unlabeled canonical candidates are not false positives. DFD precision must remain not_measured until every candidate entity, data object, and flow has a blinded adjudicated disposition.",
+    "Control mapping precision/recall and test executability must fail closed when they use generated records as their own denominator instead of independent expected labels and the agreed review rubric.",
+    "The evaluation fingerprint excludes evaluation time and output paths so the same snapshot/config is deterministic."
+  ]
+}

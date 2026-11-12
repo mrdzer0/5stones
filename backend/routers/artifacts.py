@@ -1,12 +1,13 @@
 """Artifact upload and parsing router."""
 from __future__ import annotations
 import hashlib
+import copy
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request
 from datetime import datetime
 from backend.models.schemas import ArtifactUpload
 from backend.utils.storage import save_project
 from backend.services.artifact_file_service import allowed_file_policy, read_validated_artifact_file
-from backend.services.parser_service import parse_artifact
+from backend.services.parser_service import parse_artifact, PARSER_VERSION
 from backend.services.artifact_reconciliation_service import (
     capture_manual_context,
     project_client_view,
@@ -15,12 +16,12 @@ from backend.services.artifact_reconciliation_service import (
 from backend.services.posture_service import compute_completeness
 from backend.utils.redaction import redact_text
 from backend.utils.audit import log_event
-from backend.utils.access_control import get_authorized_project, workspace_access_dependency
+from backend.utils.access_control import get_authorized_project, require_roles, workspace_access_dependency
 
 router = APIRouter(
     prefix="/api/projects",
     tags=["artifacts"],
-    dependencies=[workspace_access_dependency],
+    dependencies=[workspace_access_dependency, require_roles("analyst", "reviewer", "admin")],
 )
 
 
@@ -165,14 +166,52 @@ def _verified_use_cases(items: list, content: str, filename: str, artifact_type:
     return verified[:24]
 
 
-@router.post("/{project_id}/artifact")
+def _public_parsed(parsed: dict) -> dict:
+    """Return coverage diagnostics without exposing resumable provider payloads."""
+    view = copy.deepcopy(parsed)
+    if isinstance(view.get("coverage_manifest"), dict):
+        view["coverage_manifest"].pop("checkpoints", None)
+    return view
+
+
+def _resume_source_for_revision(
+    sources: list[dict],
+    *,
+    filename: str,
+    artifact_type: str,
+    parser_version: str,
+) -> dict | None:
+    """Find the newest same-parser source whose successful chunks can be reused."""
+    candidates = [
+        source for source in sources
+        if isinstance(source, dict)
+        and source.get("filename") == filename
+        and source.get("artifact_type") == artifact_type
+        and (source.get("parser") or {}).get("version") == parser_version
+        and isinstance((source.get("coverage_manifest") or {}).get("checkpoints"), dict)
+        and (source.get("coverage_manifest") or {}).get("checkpoints")
+    ]
+    return max(candidates, key=lambda source: int(source.get("revision") or 0), default=None)
+
+
+@router.post("/{project_id}/artifact", dependencies=[require_roles("analyst", "admin")])
 async def upload_artifact(
     project_id: str,
     data: ArtifactUpload,
-    upload_meta: dict = None,
     request: Request = None,
 ):
-    """Upload and parse an artifact for a project."""
+    """Upload and parse JSON artifact content; metadata remains server-owned."""
+    return await _process_artifact_upload(project_id, data, upload_meta=None, request=request)
+
+
+async def _process_artifact_upload(
+    project_id: str,
+    data: ArtifactUpload,
+    *,
+    upload_meta: dict | None,
+    request: Request = None,
+):
+    """Parse an artifact using metadata produced by the trusted file reader."""
     project = get_authorized_project(project_id, request)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -183,7 +222,7 @@ async def upload_artifact(
         "filename": data.filename
     })
 
-    content_hash = hashlib.sha256(data.content.encode("utf-8")).hexdigest()
+    content_hash = (upload_meta or {}).get("source_hash") or hashlib.sha256(data.content.encode("utf-8")).hexdigest()
     filename = data.filename or f"{data.artifact_type}_artifact"
     existing_sources = [source for source in (project.get("artifact_sources") or []) if isinstance(source, dict)]
     duplicate = next((
@@ -193,34 +232,84 @@ async def upload_artifact(
         and source.get("content_hash") == content_hash
     ), None)
     if duplicate:
-        rebuild_project_from_artifacts(project)
-        completeness = compute_completeness(project)
-        project["completeness_score"] = completeness["score"]
-        project["completeness_level"] = completeness["level"]
-        save_project(project)
-        return {
-            "success": True,
-            "duplicate": True,
-            "message": f"{filename} is already included; no duplicate context was added.",
-            "parsed": duplicate.get("contribution", {}),
-            "project": project_client_view(project),
-            "completeness": completeness,
-            "reconciliation": project.get("artifact_inventory", {}),
-        }
+        # RG11: Only skip reparse if the same content was already processed by the
+        # current parser version AND coverage is complete. If the parser was upgraded
+        # or the previous run produced incomplete coverage, reparse the source so it
+        # can benefit from improved extraction without requiring a different file.
+        existing_parser_version = (duplicate.get("parser") or {}).get("version", "")
+        existing_coverage_status = (duplicate.get("coverage_manifest") or {}).get("status", "")
+        needs_reparse = (
+            existing_parser_version != PARSER_VERSION
+            or existing_coverage_status != "complete"
+        )
+        if not needs_reparse:
+            rebuild_project_from_artifacts(project)
+            completeness = compute_completeness(project)
+            project["completeness_score"] = completeness["score"]
+            project["completeness_level"] = completeness["level"]
+            save_project(project)
+            return {
+                "success": True,
+                "duplicate": True,
+                "message": f"{filename} is already included; no duplicate context was added.",
+                "parsed": _public_parsed(duplicate.get("contribution") or {}),
+                "project": project_client_view(project),
+                "completeness": completeness,
+                "reconciliation": project.get("artifact_inventory", {}),
+            }
+        # Fall through to reparse — mark the reparse reason for audit.
+        reparse_reason = (
+            f"parser_version_upgrade ({existing_parser_version!r} → {PARSER_VERSION!r})"
+            if existing_parser_version != PARSER_VERSION
+            else f"incomplete_coverage ({existing_coverage_status!r})"
+        )
+    else:
+        reparse_reason = None
+
+    resume_source = _resume_source_for_revision(
+        existing_sources,
+        filename=filename,
+        artifact_type=data.artifact_type,
+        parser_version=PARSER_VERSION,
+    )
+    if resume_source and not duplicate:
+        reparse_reason = (
+            f"source_revision_changed ({resume_source.get('revision')} → next); "
+            "unchanged validated sections will be reused by content hash"
+        )
 
     # Preserve user-entered context before adding the first structured source.
     capture_manual_context(project, legacy=bool(existing_sources))
+    # Pass truncation metadata to parse_artifact so the coverage manifest can
+    # report that the source was cut short before reaching the provider (RG10).
+    file_truncated = bool((upload_meta or {}).get("truncated"))
+    # Use the truncated_chars value from the file service when available (accurate
+    # char-level measurement). Fall back to byte-level estimate only when not provided.
+    truncated_chars = (upload_meta or {}).get("truncated_chars", 0) if file_truncated else 0
     try:
-        parsed = await parse_artifact(data.artifact_type, data.content, project.get("data_policy"))
+        parsed = await parse_artifact(
+            data.artifact_type, data.content, project.get("data_policy"),
+            workspace_id=project.get("workspace_id"),
+            source_truncated=file_truncated,
+            truncated_chars=truncated_chars,
+            extraction_omissions=(upload_meta or {}).get("extraction_omissions"),
+            resume_chunks=(resume_source.get("coverage_manifest") or {}).get("checkpoints")
+                if resume_source else None,
+            resume_source_revision=resume_source.get("revision") if resume_source else None,
+            resume_source_hash=resume_source.get("content_hash") if resume_source else None,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     parsed["artifact_type"] = data.artifact_type
     parsed["filename"] = filename
-    artifact_id = f"artifact-{content_hash[:16]}"
+    base_artifact_id = f"artifact-{content_hash[:16]}"
     revision = 1 + max((
         int(source.get("revision", 1)) for source in existing_sources
         if source.get("filename") == filename and source.get("artifact_type") == data.artifact_type
     ), default=0)
+    artifact_id = (f"{base_artifact_id}-r{revision}"
+                   if any(source.get("artifact_id") == base_artifact_id for source in existing_sources)
+                   else base_artifact_id)
     coverage_manifest = parsed.get("coverage_manifest")
     if isinstance(coverage_manifest, dict):
         coverage_manifest.update({
@@ -239,6 +328,22 @@ async def upload_artifact(
     parsed["use_cases"] = _verified_use_cases(
         parsed.get("use_cases", []), redact_text(data.content), filename, data.artifact_type
     )
+
+    # Preserve flow-level provenance from the parser into the reconciled
+    # project. The artifact identity is only known after upload metadata is
+    # finalized; without this bridge a direct parser flow is reclassified as a
+    # legacy/inference claim by build_grounded_data_flows.
+    enriched_flows = []
+    for raw_flow in parsed.get("data_flows", []) or []:
+        if not isinstance(raw_flow, dict):
+            continue
+        flow = dict(raw_flow)
+        flow["evidence_refs"] = list(dict.fromkeys([
+            *(str(ref) for ref in (flow.get("evidence_refs") or []) if ref),
+            *([f"artifact:{artifact_id}"] if flow.get("evidence_type") == "direct" else []),
+        ]))
+        enriched_flows.append(flow)
+    parsed["data_flows"] = enriched_flows
 
     replaced_count = 0
     for source in existing_sources:
@@ -276,6 +381,7 @@ async def upload_artifact(
         "evidence_items": verified_evidence,
         "contribution": contribution,
         "parsed_at": datetime.utcnow().isoformat(),
+        **({"reparse_reason": reparse_reason} if reparse_reason else {}),
     })
     project["artifact_sources"] = existing_sources
     rebuild_project_from_artifacts(project)
@@ -288,7 +394,7 @@ async def upload_artifact(
         "success": True,
         "duplicate": False,
         "message": f"{filename} parsed and reconciled successfully.",
-        "parsed": parsed,
+        "parsed": _public_parsed(parsed),
         "project": project_client_view(project),
         "completeness": completeness,
         "reconciliation": project.get("artifact_inventory", {}),
@@ -297,7 +403,7 @@ async def upload_artifact(
     }
 
 
-@router.post("/{project_id}/artifact/file")
+@router.post("/{project_id}/artifact/file", dependencies=[require_roles("analyst", "admin")])
 async def upload_artifact_file(
     project_id: str,
     artifact_type: str = Form(...),
@@ -320,8 +426,11 @@ async def upload_artifact_file(
         "filename": extracted["filename"],
         "size_bytes": extracted["size_bytes"],
         "truncated": extracted["truncated"],
+        "truncated_chars": extracted.get("truncated_chars", 0),
+        "source_hash": extracted.get("source_hash"),
+        "extraction_omissions": extracted.get("extraction_omissions", []),
         "structured": extracted.get("structured", False),
     }
-    result = await upload_artifact(project_id, payload, upload_meta=upload_meta, request=request)
+    result = await _process_artifact_upload(project_id, payload, upload_meta=upload_meta, request=request)
     result["upload"] = upload_meta
     return result

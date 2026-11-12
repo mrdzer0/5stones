@@ -26,6 +26,8 @@ def project_client_view(project: dict) -> dict:
     for source in view.get("artifact_sources") or []:
         if isinstance(source, dict):
             source.pop("contribution", None)
+            if isinstance(source.get("coverage_manifest"), dict):
+                source["coverage_manifest"].pop("checkpoints", None)
     view["canonical_operations"] = [
         {
             key: operation.get(key)
@@ -347,10 +349,17 @@ def _merge_flows(sources: list[dict]) -> list[dict]:
                 "protocol": key[2],
                 "data": [],
                 "artifact_ids": [],
+                "evidence_refs": [],
                 "evidence_type": "derived",
                 "basis": flow.get("basis") or "Derived from active artifact operations.",
                 "confidence": flow.get("confidence") or "Medium",
             })
             existing["data"] = unique_strings([*existing["data"], *(flow.get("data") or [])])[:24]
             existing["artifact_ids"] = unique_strings([*existing["artifact_ids"], source.get("artifact_id")])
+            existing["evidence_refs"] = unique_strings([*existing["evidence_refs"], *(flow.get("evidence_refs") or [])])
+            if flow.get("evidence_type") == "direct":
+                existing["evidence_type"] = "direct"
+                existing["basis"] = flow.get("basis") or existing.get("basis")
+            elif existing.get("evidence_type") != "direct" and flow.get("evidence_type"):
+                existing["evidence_type"] = flow.get("evidence_type")
     return [grouped[key] for key in sorted(grouped)]

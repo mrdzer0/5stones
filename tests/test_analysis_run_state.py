@@ -1,10 +1,17 @@
 import asyncio
 import unittest
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from backend.routers.analysis import _valid_completed_stages, run_full_analysis
+from backend.routers.analysis import (
+    AnalysisRunAdmission,
+    _ANALYSIS_RUN_ADMISSION,
+    _valid_completed_stages,
+    run_full_analysis,
+)
 
 
 class AnalysisRunStateTests(unittest.TestCase):
@@ -41,6 +48,7 @@ class AnalysisRunStateTests(unittest.TestCase):
                 asyncio.run(run_full_analysis(self.project["project_id"], {"analysis_types": ["stride"]}))
 
         self.assertEqual(raised.exception.status_code, 500)
+        self.assertFalse(_ANALYSIS_RUN_ADMISSION.is_active(self.project["project_id"]))
         failed = saved_reports[-1]
         self.assertEqual(failed["analysis_run"]["status"], "failed")
         self.assertTrue(failed["analysis_run"]["retryable"])
@@ -167,6 +175,69 @@ class AnalysisRunStateTests(unittest.TestCase):
         self.assertEqual(completed["analysis_run"]["final_snapshot"]["dfd_revision"], 4)
         self.assertEqual(completed["analysis_run"]["completed_stages"], ["stride"])
         self.assertEqual(completed["analysis_run"]["stage_timings"]["stride"], 1.25)
+
+
+class AnalysisRunAdmissionTests(unittest.TestCase):
+    def setUp(self):
+        self.project = {"project_id": "admission-project", "name": "Admission fixture"}
+
+    def test_capacity_is_atomic_and_preserves_per_project_conflict(self):
+        admission = AnalysisRunAdmission(capacity=2)
+
+        self.assertIsNone(admission.reserve("project-a"))
+        self.assertEqual(admission.reserve("project-a"), "duplicate")
+        self.assertIsNone(admission.reserve("project-b"))
+        self.assertEqual(admission.reserve("project-c"), "capacity")
+        self.assertTrue(admission.is_active("project-a"))
+        admission.release("project-a")
+        self.assertIsNone(admission.reserve("project-c"))
+
+    def test_concurrent_distinct_reservations_never_exceed_capacity(self):
+        capacity = 4
+        admission = AnalysisRunAdmission(capacity=capacity)
+        barrier = threading.Barrier(16)
+
+        def reserve(index):
+            barrier.wait()
+            return admission.reserve(f"project-{index}")
+
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            outcomes = list(pool.map(reserve, range(16)))
+
+        self.assertEqual(outcomes.count(None), capacity)
+
+    def test_route_returns_429_with_retry_after_when_capacity_is_full(self):
+        admission = AnalysisRunAdmission(capacity=1)
+        self.assertIsNone(admission.reserve("other-project"))
+        with patch("backend.routers.analysis._ANALYSIS_RUN_ADMISSION", admission), \
+             patch("backend.routers.analysis.get_project", return_value=self.project):
+            with self.assertRaises(HTTPException) as raised:
+                asyncio.run(run_full_analysis(self.project["project_id"], {"analysis_types": ["stride"]}))
+
+        self.assertEqual(raised.exception.status_code, 429)
+        self.assertEqual(raised.exception.headers["Retry-After"], "30")
+        admission.release("other-project")
+
+    def test_route_preserves_409_for_a_project_that_already_has_a_run(self):
+        admission = AnalysisRunAdmission(capacity=2)
+        self.assertIsNone(admission.reserve(self.project["project_id"]))
+        with patch("backend.routers.analysis._ANALYSIS_RUN_ADMISSION", admission), \
+             patch("backend.routers.analysis.get_project", return_value=self.project):
+            with self.assertRaises(HTTPException) as raised:
+                asyncio.run(run_full_analysis(self.project["project_id"], {"analysis_types": ["stride"]}))
+
+        self.assertEqual(raised.exception.status_code, 409)
+        admission.release(self.project["project_id"])
+
+    def test_slot_is_released_when_setup_fails_before_pipeline(self):
+        admission = AnalysisRunAdmission(capacity=1)
+        with patch("backend.routers.analysis._ANALYSIS_RUN_ADMISSION", admission), \
+             patch("backend.routers.analysis.get_project", return_value=self.project), \
+             patch("backend.routers.analysis.get_report", side_effect=RuntimeError("storage unavailable")):
+            with self.assertRaisesRegex(RuntimeError, "storage unavailable"):
+                asyncio.run(run_full_analysis(self.project["project_id"], {"analysis_types": ["stride"]}))
+
+        self.assertFalse(admission.is_active(self.project["project_id"]))
 
 
 if __name__ == "__main__":

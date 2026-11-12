@@ -1,0 +1,1768 @@
+{
+  "id": "dfd-customer-registration",
+  "project_id": "fixture-customer-registration",
+  "schema_version": "dfd-v2",
+  "revision": 1,
+  "layout_revision": 1,
+  "human_edit_revision": 0,
+  "source_semantic_hash": null,
+  "semantic_hash": "05a825a39a99adbc63e07b25f97185e543cad12bfbb01d64e4bf6cf20ddb433f",
+  "title": "Synthetic Customer Registration",
+  "scope_description": "Customer registration and activation notification",
+  "source_refs": [
+    "fixture:customer_registration_source.md"
+  ],
+  "evidence": [
+    {
+      "id": "EV-REG-001",
+      "evidence_type": null,
+      "source": null,
+      "topics": [],
+      "document_id": "customer-registration-fixture",
+      "document_revision": 1,
+      "document_hash": "synthetic-customer-registration-v1",
+      "locator": "Synthetic Customer Registration",
+      "excerpt_redacted": "Vendor retention and deletion behavior are intentionally unknown."
+    }
+  ],
+  "assertions": [],
+  "nodes": [
+    {
+      "id": "E1",
+      "display_id": "E1",
+      "type": "entity",
+      "name": "Customer",
+      "identity_key": null,
+      "identity_aliases": [],
+      "environment": null,
+      "tenant_id": null,
+      "description": null,
+      "scope": "external_dependency",
+      "ownership": "customer",
+      "operator_control_party": null,
+      "grouping_status": "unknown",
+      "grouping_basis": null,
+      "exposure": "internet_facing",
+      "zone_ids": [
+        "zone-customer"
+      ],
+      "parent_process_id": null,
+      "knowledge_status": "documented",
+      "implementation_status": "unknown",
+      "evidence_refs": [],
+      "assertions": [],
+      "process_metadata": null
+    },
+    {
+      "id": "P1",
+      "display_id": "P1",
+      "type": "process",
+      "name": "Memproses registrasi",
+      "identity_key": null,
+      "identity_aliases": [],
+      "environment": null,
+      "tenant_id": null,
+      "description": null,
+      "scope": "in_scope",
+      "ownership": "organization",
+      "operator_control_party": null,
+      "grouping_status": "unknown",
+      "grouping_basis": null,
+      "exposure": "internet_facing",
+      "zone_ids": [
+        "zone-application"
+      ],
+      "parent_process_id": null,
+      "knowledge_status": "documented",
+      "implementation_status": "unknown",
+      "evidence_refs": [],
+      "assertions": [],
+      "process_metadata": {
+        "purpose": "Validate registration and persist customer record",
+        "execution_identity": null,
+        "privileges": [],
+        "input_flow_ids": [
+          "F1"
+        ],
+        "output_flow_ids": [
+          "F2",
+          "F3",
+          "F4"
+        ],
+        "transformations": [],
+        "control_refs": []
+      }
+    },
+    {
+      "id": "P2",
+      "display_id": "P2",
+      "type": "process",
+      "name": "Menyiapkan notifikasi",
+      "identity_key": null,
+      "identity_aliases": [],
+      "environment": null,
+      "tenant_id": null,
+      "description": null,
+      "scope": "in_scope",
+      "ownership": "organization",
+      "operator_control_party": null,
+      "grouping_status": "unknown",
+      "grouping_basis": null,
+      "exposure": "private",
+      "zone_ids": [
+        "zone-application"
+      ],
+      "parent_process_id": null,
+      "knowledge_status": "documented",
+      "implementation_status": "unknown",
+      "evidence_refs": [],
+      "assertions": [],
+      "process_metadata": {
+        "purpose": "Prepare activation notification",
+        "execution_identity": null,
+        "privileges": [],
+        "input_flow_ids": [
+          "F4",
+          "F6"
+        ],
+        "output_flow_ids": [
+          "F5"
+        ],
+        "transformations": [],
+        "control_refs": []
+      }
+    },
+    {
+      "id": "D1",
+      "display_id": "D1",
+      "type": "data_store",
+      "name": "Data customer",
+      "identity_key": null,
+      "identity_aliases": [],
+      "environment": null,
+      "tenant_id": null,
+      "description": null,
+      "scope": "in_scope",
+      "ownership": "organization",
+      "operator_control_party": null,
+      "grouping_status": "unknown",
+      "grouping_basis": null,
+      "exposure": "private",
+      "zone_ids": [
+        "zone-restricted-data"
+      ],
+      "parent_process_id": null,
+      "knowledge_status": "documented",
+      "implementation_status": "unknown",
+      "evidence_refs": [],
+      "assertions": [],
+      "process_metadata": null
+    },
+    {
+      "id": "E2",
+      "display_id": "E2",
+      "type": "entity",
+      "name": "Layanan email",
+      "identity_key": null,
+      "identity_aliases": [],
+      "environment": null,
+      "tenant_id": null,
+      "description": null,
+      "scope": "external_dependency",
+      "ownership": "vendor",
+      "operator_control_party": null,
+      "grouping_status": "unknown",
+      "grouping_basis": null,
+      "exposure": "private",
+      "zone_ids": [
+        "zone-vendor"
+      ],
+      "parent_process_id": null,
+      "knowledge_status": "documented",
+      "implementation_status": "unknown",
+      "evidence_refs": [],
+      "assertions": [],
+      "process_metadata": null
+    }
+  ],
+  "data_objects": [
+    {
+      "id": "DO1",
+      "display_id": "DO1",
+      "name": "Data registrasi",
+      "fields": [
+        "email",
+        "name"
+      ],
+      "classification": "PII",
+      "data_subjects": [
+        "Customer"
+      ],
+      "identifiers": [
+        "email"
+      ],
+      "direct_identifiers": [],
+      "indirect_identifiers": [],
+      "sensitivity": "sensitive",
+      "purpose": "registration",
+      "recipients": [],
+      "linkability": null,
+      "notice": null,
+      "individual_control": null,
+      "legal_basis": null,
+      "transformation_refs": [],
+      "lineage_refs": [],
+      "knowledge_status": "documented",
+      "evidence_refs": [],
+      "assertions": []
+    },
+    {
+      "id": "DO2",
+      "display_id": "DO2",
+      "name": "Status registrasi",
+      "fields": [],
+      "classification": "Internal",
+      "data_subjects": [],
+      "identifiers": [],
+      "direct_identifiers": [],
+      "indirect_identifiers": [],
+      "sensitivity": null,
+      "purpose": "registration response",
+      "recipients": [],
+      "linkability": null,
+      "notice": null,
+      "individual_control": null,
+      "legal_basis": null,
+      "transformation_refs": [],
+      "lineage_refs": [],
+      "knowledge_status": "documented",
+      "evidence_refs": [],
+      "assertions": []
+    },
+    {
+      "id": "DO3",
+      "display_id": "DO3",
+      "name": "Record customer",
+      "fields": [
+        "email",
+        "name",
+        "activation_token"
+      ],
+      "classification": "PII",
+      "data_subjects": [
+        "Customer"
+      ],
+      "identifiers": [
+        "email"
+      ],
+      "direct_identifiers": [],
+      "indirect_identifiers": [],
+      "sensitivity": "sensitive",
+      "purpose": "customer account",
+      "recipients": [],
+      "linkability": null,
+      "notice": null,
+      "individual_control": null,
+      "legal_basis": null,
+      "transformation_refs": [],
+      "lineage_refs": [],
+      "knowledge_status": "documented",
+      "evidence_refs": [],
+      "assertions": []
+    },
+    {
+      "id": "DO4",
+      "display_id": "DO4",
+      "name": "Email dan referensi aktivasi",
+      "fields": [
+        "recipient",
+        "activation_token"
+      ],
+      "classification": "PII",
+      "data_subjects": [
+        "Customer"
+      ],
+      "identifiers": [
+        "email"
+      ],
+      "direct_identifiers": [],
+      "indirect_identifiers": [],
+      "sensitivity": "sensitive",
+      "purpose": "activation notification",
+      "recipients": [],
+      "linkability": null,
+      "notice": null,
+      "individual_control": null,
+      "legal_basis": null,
+      "transformation_refs": [],
+      "lineage_refs": [],
+      "knowledge_status": "documented",
+      "evidence_refs": [],
+      "assertions": []
+    },
+    {
+      "id": "DO5",
+      "display_id": "DO5",
+      "name": "Penerima dan pesan aktivasi",
+      "fields": [],
+      "classification": "PII",
+      "data_subjects": [
+        "Customer"
+      ],
+      "identifiers": [],
+      "direct_identifiers": [],
+      "indirect_identifiers": [],
+      "sensitivity": null,
+      "purpose": "vendor delivery",
+      "recipients": [],
+      "linkability": null,
+      "notice": null,
+      "individual_control": null,
+      "legal_basis": null,
+      "transformation_refs": [],
+      "lineage_refs": [],
+      "knowledge_status": "documented",
+      "evidence_refs": [],
+      "assertions": []
+    },
+    {
+      "id": "DO6",
+      "display_id": "DO6",
+      "name": "Status penerimaan pesan",
+      "fields": [],
+      "classification": "Internal",
+      "data_subjects": [],
+      "identifiers": [],
+      "direct_identifiers": [],
+      "indirect_identifiers": [],
+      "sensitivity": null,
+      "purpose": "delivery tracking",
+      "recipients": [],
+      "linkability": null,
+      "notice": null,
+      "individual_control": null,
+      "legal_basis": null,
+      "transformation_refs": [],
+      "lineage_refs": [],
+      "knowledge_status": "documented",
+      "evidence_refs": [],
+      "assertions": []
+    }
+  ],
+  "flows": [
+    {
+      "id": "F1",
+      "display_id": "F1",
+      "source_id": "E1",
+      "target_id": "P1",
+      "name": "Data registrasi",
+      "data_object_ids": [
+        "DO1"
+      ],
+      "protocol": "HTTPS",
+      "interaction_kind": "request",
+      "authn": null,
+      "authz": null,
+      "boundary_crossings": [
+        "TB1"
+      ],
+      "crossing_rationales": {
+        "TB1": "Derived from zone membership (source-to-target); E1 → P1 crosses Customer ↔ Organization."
+      },
+      "crossing_origins": {
+        "TB1": "derived"
+      },
+      "crossing_status": "resolved",
+      "grounding_status": "grounded",
+      "grounding_reason": null,
+      "endpoint_classification": {},
+      "evidence_refs": [
+        "EV-REG-001"
+      ],
+      "knowledge_status": "documented",
+      "implementation_status": "unknown"
+    },
+    {
+      "id": "F2",
+      "display_id": "F2",
+      "source_id": "P1",
+      "target_id": "E1",
+      "name": "Status registrasi",
+      "data_object_ids": [
+        "DO2"
+      ],
+      "protocol": "HTTPS",
+      "interaction_kind": "response",
+      "authn": null,
+      "authz": null,
+      "boundary_crossings": [
+        "TB1"
+      ],
+      "crossing_rationales": {
+        "TB1": "Derived from zone membership (target-to-source); P1 → E1 crosses Customer ↔ Organization."
+      },
+      "crossing_origins": {
+        "TB1": "derived"
+      },
+      "crossing_status": "resolved",
+      "grounding_status": "grounded",
+      "grounding_reason": null,
+      "endpoint_classification": {},
+      "evidence_refs": [
+        "EV-REG-001"
+      ],
+      "knowledge_status": "documented",
+      "implementation_status": "unknown"
+    },
+    {
+      "id": "F3",
+      "display_id": "F3",
+      "source_id": "P1",
+      "target_id": "D1",
+      "name": "Record customer",
+      "data_object_ids": [
+        "DO3"
+      ],
+      "protocol": "Database protocol unknown",
+      "interaction_kind": "write",
+      "authn": null,
+      "authz": null,
+      "boundary_crossings": [
+        "TB2"
+      ],
+      "crossing_rationales": {
+        "TB2": "Derived from zone membership (source-to-target); P1 → D1 crosses Application ↔ Restricted data."
+      },
+      "crossing_origins": {
+        "TB2": "derived"
+      },
+      "crossing_status": "resolved",
+      "grounding_status": "grounded",
+      "grounding_reason": null,
+      "endpoint_classification": {},
+      "evidence_refs": [
+        "EV-REG-001"
+      ],
+      "knowledge_status": "documented",
+      "implementation_status": "unknown"
+    },
+    {
+      "id": "F4",
+      "display_id": "F4",
+      "source_id": "P1",
+      "target_id": "P2",
+      "name": "Email dan referensi aktivasi",
+      "data_object_ids": [
+        "DO4"
+      ],
+      "protocol": "Internal channel unknown",
+      "interaction_kind": "event",
+      "authn": null,
+      "authz": null,
+      "boundary_crossings": [
+        "TB3"
+      ],
+      "crossing_rationales": {
+        "TB3": "Reviewer-added privilege transition within application zone"
+      },
+      "crossing_origins": {
+        "TB3": "reviewer"
+      },
+      "crossing_status": "resolved",
+      "grounding_status": "grounded",
+      "grounding_reason": null,
+      "endpoint_classification": {},
+      "evidence_refs": [
+        "EV-REG-001"
+      ],
+      "knowledge_status": "documented",
+      "implementation_status": "unknown"
+    },
+    {
+      "id": "F5",
+      "display_id": "F5",
+      "source_id": "P2",
+      "target_id": "E2",
+      "name": "Penerima dan pesan aktivasi",
+      "data_object_ids": [
+        "DO5"
+      ],
+      "protocol": "HTTPS",
+      "interaction_kind": "request",
+      "authn": null,
+      "authz": null,
+      "boundary_crossings": [
+        "TB4"
+      ],
+      "crossing_rationales": {
+        "TB4": "Derived from zone membership (source-to-target); P2 → E2 crosses Organization ↔ Vendor."
+      },
+      "crossing_origins": {
+        "TB4": "derived"
+      },
+      "crossing_status": "resolved",
+      "grounding_status": "grounded",
+      "grounding_reason": null,
+      "endpoint_classification": {},
+      "evidence_refs": [
+        "EV-REG-001"
+      ],
+      "knowledge_status": "documented",
+      "implementation_status": "unknown"
+    },
+    {
+      "id": "F6",
+      "display_id": "F6",
+      "source_id": "E2",
+      "target_id": "P2",
+      "name": "Status penerimaan pesan",
+      "data_object_ids": [
+        "DO6"
+      ],
+      "protocol": "HTTPS",
+      "interaction_kind": "response",
+      "authn": null,
+      "authz": null,
+      "boundary_crossings": [
+        "TB4"
+      ],
+      "crossing_rationales": {
+        "TB4": "Derived from zone membership (target-to-source); E2 → P2 crosses Organization ↔ Vendor."
+      },
+      "crossing_origins": {
+        "TB4": "derived"
+      },
+      "crossing_status": "resolved",
+      "grounding_status": "grounded",
+      "grounding_reason": null,
+      "endpoint_classification": {},
+      "evidence_refs": [
+        "EV-REG-001"
+      ],
+      "knowledge_status": "documented",
+      "implementation_status": "unknown"
+    }
+  ],
+  "deferred_interactions": [],
+  "primary_interaction_ids": [],
+  "primary_interactions_by_feature": {},
+  "semantic_quality": null,
+  "stores": {
+    "D1": {
+      "data_object_ids": [
+        "DO3"
+      ],
+      "readers": [
+        "P1"
+      ],
+      "writers": [
+        "P1"
+      ],
+      "retention": "unknown",
+      "deletion": "unknown",
+      "backup": "unknown",
+      "protection_controls": [],
+      "evidence_refs": [],
+      "assertions": []
+    }
+  },
+  "zones": [
+    {
+      "id": "zone-customer",
+      "display_id": "Z1",
+      "name": "Customer-controlled",
+      "description": null,
+      "parent_zone_id": null,
+      "ownership_group_id": null,
+      "trust_assumptions": [],
+      "knowledge_status": "documented",
+      "evidence_refs": []
+    },
+    {
+      "id": "zone-organization",
+      "display_id": "Z2",
+      "name": "Organization",
+      "description": null,
+      "parent_zone_id": null,
+      "ownership_group_id": "org-group",
+      "trust_assumptions": [],
+      "knowledge_status": "documented",
+      "evidence_refs": []
+    },
+    {
+      "id": "zone-application",
+      "display_id": "Z3",
+      "name": "Application",
+      "description": null,
+      "parent_zone_id": "zone-organization",
+      "ownership_group_id": "org-group",
+      "trust_assumptions": [],
+      "knowledge_status": "documented",
+      "evidence_refs": []
+    },
+    {
+      "id": "zone-restricted-data",
+      "display_id": "Z4",
+      "name": "Restricted data",
+      "description": null,
+      "parent_zone_id": "zone-organization",
+      "ownership_group_id": "org-group",
+      "trust_assumptions": [],
+      "knowledge_status": "documented",
+      "evidence_refs": []
+    },
+    {
+      "id": "zone-vendor",
+      "display_id": "Z5",
+      "name": "Vendor",
+      "description": null,
+      "parent_zone_id": null,
+      "ownership_group_id": null,
+      "trust_assumptions": [],
+      "knowledge_status": "documented",
+      "evidence_refs": []
+    }
+  ],
+  "boundaries": [
+    {
+      "id": "TB1",
+      "display_id": "TB1",
+      "name": "Customer ↔ Organization",
+      "types": [
+        "network",
+        "organization"
+      ],
+      "rationale": "Customer-controlled client crosses into organization application",
+      "source_zone_ids": [
+        "zone-customer"
+      ],
+      "target_zone_ids": [
+        "zone-organization"
+      ],
+      "crossing_flow_ids": [
+        "F1",
+        "F2"
+      ],
+      "transition_scope": "zone",
+      "controls": [],
+      "assertions": [],
+      "status": "confirmed",
+      "derived": true,
+      "evidence_refs": []
+    },
+    {
+      "id": "TB2",
+      "display_id": "TB2",
+      "name": "Application ↔ Restricted data",
+      "types": [
+        "privilege"
+      ],
+      "rationale": "Application process accesses restricted data",
+      "source_zone_ids": [
+        "zone-application"
+      ],
+      "target_zone_ids": [
+        "zone-restricted-data"
+      ],
+      "crossing_flow_ids": [
+        "F3"
+      ],
+      "transition_scope": "zone",
+      "controls": [],
+      "assertions": [],
+      "status": "confirmed",
+      "derived": true,
+      "evidence_refs": []
+    },
+    {
+      "id": "TB3",
+      "display_id": "TB3",
+      "name": "Application privilege boundary",
+      "types": [
+        "privilege"
+      ],
+      "rationale": "Reviewer recorded a logical privilege transition in the same application zone",
+      "source_zone_ids": [
+        "zone-application"
+      ],
+      "target_zone_ids": [
+        "zone-application"
+      ],
+      "crossing_flow_ids": [
+        "F4"
+      ],
+      "transition_scope": "logical",
+      "controls": [],
+      "assertions": [],
+      "status": "confirmed",
+      "derived": false,
+      "evidence_refs": []
+    },
+    {
+      "id": "TB4",
+      "display_id": "TB4",
+      "name": "Organization ↔ Vendor",
+      "types": [
+        "organization",
+        "network"
+      ],
+      "rationale": "Notification provider is vendor-controlled",
+      "source_zone_ids": [
+        "zone-organization"
+      ],
+      "target_zone_ids": [
+        "zone-vendor"
+      ],
+      "crossing_flow_ids": [
+        "F5",
+        "F6"
+      ],
+      "transition_scope": "zone",
+      "controls": [],
+      "assertions": [],
+      "status": "confirmed",
+      "derived": true,
+      "evidence_refs": []
+    }
+  ],
+  "views": [
+    {
+      "id": "view-context",
+      "kind": "context",
+      "parent_process_id": null,
+      "element_refs": [
+        "D1",
+        "DO1",
+        "DO2",
+        "DO5",
+        "DO6",
+        "E1",
+        "E2",
+        "F1",
+        "F2",
+        "F5",
+        "F6",
+        "P1",
+        "P2",
+        "TB1",
+        "TB4"
+      ],
+      "projection_mappings": {
+        "E1": [
+          "E1"
+        ],
+        "E2": [
+          "E2"
+        ],
+        "projection-system-53b284b957898a41": [
+          "D1",
+          "P1",
+          "P2"
+        ],
+        "projection-flow-3757105154fa72f8": [
+          "F1"
+        ],
+        "projection-flow-922d5ffbbc10d0af": [
+          "F2"
+        ],
+        "projection-flow-975c01d76b0f0744": [
+          "F6"
+        ],
+        "projection-flow-c6942f1c07562406": [
+          "F5"
+        ],
+        "TB1": [
+          "TB1"
+        ],
+        "TB4": [
+          "TB4"
+        ],
+        "DO1": [
+          "DO1"
+        ],
+        "DO2": [
+          "DO2"
+        ],
+        "DO5": [
+          "DO5"
+        ],
+        "DO6": [
+          "DO6"
+        ]
+      },
+      "input_flow_ids": [],
+      "output_flow_ids": [],
+      "port_mappings": {},
+      "projection_nodes": [
+        {
+          "id": "projection-system-53b284b957898a41",
+          "display_id": "SYS1",
+          "type": "system",
+          "name": "Synthetic Customer Registration",
+          "canonical_node_ids": [
+            "D1",
+            "P1",
+            "P2"
+          ],
+          "scope": "in_scope",
+          "ownership": "organization",
+          "exposure": "unknown",
+          "zone_ids": [],
+          "knowledge_status": "documented",
+          "implementation_status": "unknown",
+          "evidence_refs": []
+        },
+        {
+          "id": "E1",
+          "display_id": "E1",
+          "type": "entity",
+          "name": "Customer",
+          "canonical_node_ids": [
+            "E1"
+          ],
+          "scope": "external_dependency",
+          "ownership": "customer",
+          "exposure": "internet_facing",
+          "zone_ids": [
+            "zone-customer"
+          ],
+          "knowledge_status": "documented",
+          "implementation_status": "unknown",
+          "evidence_refs": []
+        },
+        {
+          "id": "E2",
+          "display_id": "E2",
+          "type": "entity",
+          "name": "Layanan email",
+          "canonical_node_ids": [
+            "E2"
+          ],
+          "scope": "external_dependency",
+          "ownership": "vendor",
+          "exposure": "private",
+          "zone_ids": [
+            "zone-vendor"
+          ],
+          "knowledge_status": "documented",
+          "implementation_status": "unknown",
+          "evidence_refs": []
+        }
+      ],
+      "projection_flows": [
+        {
+          "id": "projection-flow-3757105154fa72f8",
+          "display_id": "F1",
+          "source_id": "E1",
+          "target_id": "projection-system-53b284b957898a41",
+          "name": "Data registrasi",
+          "canonical_flow_ids": [
+            "F1"
+          ],
+          "data_object_ids": [
+            "DO1"
+          ],
+          "protocol": "HTTPS",
+          "interaction_kind": "request",
+          "boundary_crossings": [
+            "TB1"
+          ],
+          "crossing_status": "resolved",
+          "grounding_status": "grounded",
+          "evidence_refs": [
+            "EV-REG-001"
+          ]
+        },
+        {
+          "id": "projection-flow-922d5ffbbc10d0af",
+          "display_id": "F2",
+          "source_id": "projection-system-53b284b957898a41",
+          "target_id": "E1",
+          "name": "Status registrasi",
+          "canonical_flow_ids": [
+            "F2"
+          ],
+          "data_object_ids": [
+            "DO2"
+          ],
+          "protocol": "HTTPS",
+          "interaction_kind": "response",
+          "boundary_crossings": [
+            "TB1"
+          ],
+          "crossing_status": "resolved",
+          "grounding_status": "grounded",
+          "evidence_refs": [
+            "EV-REG-001"
+          ]
+        },
+        {
+          "id": "projection-flow-975c01d76b0f0744",
+          "display_id": "F6",
+          "source_id": "E2",
+          "target_id": "projection-system-53b284b957898a41",
+          "name": "Status penerimaan pesan",
+          "canonical_flow_ids": [
+            "F6"
+          ],
+          "data_object_ids": [
+            "DO6"
+          ],
+          "protocol": "HTTPS",
+          "interaction_kind": "response",
+          "boundary_crossings": [
+            "TB4"
+          ],
+          "crossing_status": "resolved",
+          "grounding_status": "grounded",
+          "evidence_refs": [
+            "EV-REG-001"
+          ]
+        },
+        {
+          "id": "projection-flow-c6942f1c07562406",
+          "display_id": "F5",
+          "source_id": "projection-system-53b284b957898a41",
+          "target_id": "E2",
+          "name": "Penerima dan pesan aktivasi",
+          "canonical_flow_ids": [
+            "F5"
+          ],
+          "data_object_ids": [
+            "DO5"
+          ],
+          "protocol": "HTTPS",
+          "interaction_kind": "request",
+          "boundary_crossings": [
+            "TB4"
+          ],
+          "crossing_status": "resolved",
+          "grounding_status": "grounded",
+          "evidence_refs": [
+            "EV-REG-001"
+          ]
+        }
+      ],
+      "decomposition_status": "not_applicable",
+      "projection_issues": [],
+      "positions": {},
+      "collapsed_groups": [],
+      "viewport": {}
+    },
+    {
+      "id": "view-system",
+      "kind": "system",
+      "parent_process_id": null,
+      "element_refs": [
+        "D1",
+        "DO1",
+        "DO2",
+        "DO3",
+        "DO4",
+        "DO5",
+        "DO6",
+        "E1",
+        "E2",
+        "F1",
+        "F2",
+        "F3",
+        "F4",
+        "F5",
+        "F6",
+        "P1",
+        "P2",
+        "TB1",
+        "TB2",
+        "TB3",
+        "TB4"
+      ],
+      "projection_mappings": {
+        "D1": [
+          "D1"
+        ],
+        "E1": [
+          "E1"
+        ],
+        "E2": [
+          "E2"
+        ],
+        "P1": [
+          "P1"
+        ],
+        "P2": [
+          "P2"
+        ],
+        "F1": [
+          "F1"
+        ],
+        "F2": [
+          "F2"
+        ],
+        "F3": [
+          "F3"
+        ],
+        "F4": [
+          "F4"
+        ],
+        "F5": [
+          "F5"
+        ],
+        "F6": [
+          "F6"
+        ],
+        "DO1": [
+          "DO1"
+        ],
+        "DO2": [
+          "DO2"
+        ],
+        "DO3": [
+          "DO3"
+        ],
+        "DO4": [
+          "DO4"
+        ],
+        "DO5": [
+          "DO5"
+        ],
+        "DO6": [
+          "DO6"
+        ],
+        "TB1": [
+          "TB1"
+        ],
+        "TB2": [
+          "TB2"
+        ],
+        "TB3": [
+          "TB3"
+        ],
+        "TB4": [
+          "TB4"
+        ]
+      },
+      "input_flow_ids": [],
+      "output_flow_ids": [],
+      "port_mappings": {},
+      "projection_nodes": [
+        {
+          "id": "D1",
+          "display_id": "D1",
+          "type": "data_store",
+          "name": "Data customer",
+          "canonical_node_ids": [
+            "D1"
+          ],
+          "scope": "in_scope",
+          "ownership": "organization",
+          "exposure": "private",
+          "zone_ids": [
+            "zone-restricted-data"
+          ],
+          "knowledge_status": "documented",
+          "implementation_status": "unknown",
+          "evidence_refs": []
+        },
+        {
+          "id": "E1",
+          "display_id": "E1",
+          "type": "entity",
+          "name": "Customer",
+          "canonical_node_ids": [
+            "E1"
+          ],
+          "scope": "external_dependency",
+          "ownership": "customer",
+          "exposure": "internet_facing",
+          "zone_ids": [
+            "zone-customer"
+          ],
+          "knowledge_status": "documented",
+          "implementation_status": "unknown",
+          "evidence_refs": []
+        },
+        {
+          "id": "E2",
+          "display_id": "E2",
+          "type": "entity",
+          "name": "Layanan email",
+          "canonical_node_ids": [
+            "E2"
+          ],
+          "scope": "external_dependency",
+          "ownership": "vendor",
+          "exposure": "private",
+          "zone_ids": [
+            "zone-vendor"
+          ],
+          "knowledge_status": "documented",
+          "implementation_status": "unknown",
+          "evidence_refs": []
+        },
+        {
+          "id": "P1",
+          "display_id": "P1",
+          "type": "process",
+          "name": "Memproses registrasi",
+          "canonical_node_ids": [
+            "P1"
+          ],
+          "scope": "in_scope",
+          "ownership": "organization",
+          "exposure": "internet_facing",
+          "zone_ids": [
+            "zone-application"
+          ],
+          "knowledge_status": "documented",
+          "implementation_status": "unknown",
+          "evidence_refs": []
+        },
+        {
+          "id": "P2",
+          "display_id": "P2",
+          "type": "process",
+          "name": "Menyiapkan notifikasi",
+          "canonical_node_ids": [
+            "P2"
+          ],
+          "scope": "in_scope",
+          "ownership": "organization",
+          "exposure": "private",
+          "zone_ids": [
+            "zone-application"
+          ],
+          "knowledge_status": "documented",
+          "implementation_status": "unknown",
+          "evidence_refs": []
+        }
+      ],
+      "projection_flows": [
+        {
+          "id": "F1",
+          "display_id": "F1",
+          "source_id": "E1",
+          "target_id": "P1",
+          "name": "Data registrasi",
+          "canonical_flow_ids": [
+            "F1"
+          ],
+          "data_object_ids": [
+            "DO1"
+          ],
+          "protocol": "HTTPS",
+          "interaction_kind": "request",
+          "boundary_crossings": [
+            "TB1"
+          ],
+          "crossing_status": "resolved",
+          "grounding_status": "grounded",
+          "evidence_refs": [
+            "EV-REG-001"
+          ]
+        },
+        {
+          "id": "F2",
+          "display_id": "F2",
+          "source_id": "P1",
+          "target_id": "E1",
+          "name": "Status registrasi",
+          "canonical_flow_ids": [
+            "F2"
+          ],
+          "data_object_ids": [
+            "DO2"
+          ],
+          "protocol": "HTTPS",
+          "interaction_kind": "response",
+          "boundary_crossings": [
+            "TB1"
+          ],
+          "crossing_status": "resolved",
+          "grounding_status": "grounded",
+          "evidence_refs": [
+            "EV-REG-001"
+          ]
+        },
+        {
+          "id": "F3",
+          "display_id": "F3",
+          "source_id": "P1",
+          "target_id": "D1",
+          "name": "Record customer",
+          "canonical_flow_ids": [
+            "F3"
+          ],
+          "data_object_ids": [
+            "DO3"
+          ],
+          "protocol": "Database protocol unknown",
+          "interaction_kind": "write",
+          "boundary_crossings": [
+            "TB2"
+          ],
+          "crossing_status": "resolved",
+          "grounding_status": "grounded",
+          "evidence_refs": [
+            "EV-REG-001"
+          ]
+        },
+        {
+          "id": "F4",
+          "display_id": "F4",
+          "source_id": "P1",
+          "target_id": "P2",
+          "name": "Email dan referensi aktivasi",
+          "canonical_flow_ids": [
+            "F4"
+          ],
+          "data_object_ids": [
+            "DO4"
+          ],
+          "protocol": "Internal channel unknown",
+          "interaction_kind": "event",
+          "boundary_crossings": [
+            "TB3"
+          ],
+          "crossing_status": "resolved",
+          "grounding_status": "grounded",
+          "evidence_refs": [
+            "EV-REG-001"
+          ]
+        },
+        {
+          "id": "F5",
+          "display_id": "F5",
+          "source_id": "P2",
+          "target_id": "E2",
+          "name": "Penerima dan pesan aktivasi",
+          "canonical_flow_ids": [
+            "F5"
+          ],
+          "data_object_ids": [
+            "DO5"
+          ],
+          "protocol": "HTTPS",
+          "interaction_kind": "request",
+          "boundary_crossings": [
+            "TB4"
+          ],
+          "crossing_status": "resolved",
+          "grounding_status": "grounded",
+          "evidence_refs": [
+            "EV-REG-001"
+          ]
+        },
+        {
+          "id": "F6",
+          "display_id": "F6",
+          "source_id": "E2",
+          "target_id": "P2",
+          "name": "Status penerimaan pesan",
+          "canonical_flow_ids": [
+            "F6"
+          ],
+          "data_object_ids": [
+            "DO6"
+          ],
+          "protocol": "HTTPS",
+          "interaction_kind": "response",
+          "boundary_crossings": [
+            "TB4"
+          ],
+          "crossing_status": "resolved",
+          "grounding_status": "grounded",
+          "evidence_refs": [
+            "EV-REG-001"
+          ]
+        }
+      ],
+      "decomposition_status": "not_applicable",
+      "projection_issues": [],
+      "positions": {},
+      "collapsed_groups": [],
+      "viewport": {}
+    },
+    {
+      "id": "view-feature-P1",
+      "kind": "feature",
+      "parent_process_id": "P1",
+      "element_refs": [
+        "D1",
+        "DO1",
+        "DO2",
+        "DO3",
+        "DO4",
+        "E1",
+        "F1",
+        "F2",
+        "F3",
+        "F4",
+        "P1",
+        "P2",
+        "TB1",
+        "TB2",
+        "TB3"
+      ],
+      "projection_mappings": {
+        "P1": [
+          "P1"
+        ],
+        "E1": [
+          "E1"
+        ],
+        "D1": [
+          "D1"
+        ],
+        "P2": [
+          "P2"
+        ],
+        "F1": [
+          "F1"
+        ],
+        "F2": [
+          "F2"
+        ],
+        "F3": [
+          "F3"
+        ],
+        "F4": [
+          "F4"
+        ],
+        "DO1": [
+          "DO1"
+        ],
+        "DO2": [
+          "DO2"
+        ],
+        "DO3": [
+          "DO3"
+        ],
+        "DO4": [
+          "DO4"
+        ],
+        "TB1": [
+          "TB1"
+        ],
+        "TB2": [
+          "TB2"
+        ],
+        "TB3": [
+          "TB3"
+        ]
+      },
+      "input_flow_ids": [
+        "F1"
+      ],
+      "output_flow_ids": [
+        "F2",
+        "F3",
+        "F4"
+      ],
+      "port_mappings": {
+        "input": [
+          "F1"
+        ],
+        "output": [
+          "F2",
+          "F3",
+          "F4"
+        ]
+      },
+      "projection_nodes": [
+        {
+          "id": "D1",
+          "display_id": "D1",
+          "type": "data_store",
+          "name": "Data customer",
+          "canonical_node_ids": [
+            "D1"
+          ],
+          "scope": "in_scope",
+          "ownership": "organization",
+          "exposure": "private",
+          "zone_ids": [
+            "zone-restricted-data"
+          ],
+          "knowledge_status": "documented",
+          "implementation_status": "unknown",
+          "evidence_refs": []
+        },
+        {
+          "id": "E1",
+          "display_id": "E1",
+          "type": "entity",
+          "name": "Customer",
+          "canonical_node_ids": [
+            "E1"
+          ],
+          "scope": "external_dependency",
+          "ownership": "customer",
+          "exposure": "internet_facing",
+          "zone_ids": [
+            "zone-customer"
+          ],
+          "knowledge_status": "documented",
+          "implementation_status": "unknown",
+          "evidence_refs": []
+        },
+        {
+          "id": "P1",
+          "display_id": "P1",
+          "type": "process",
+          "name": "Memproses registrasi",
+          "canonical_node_ids": [
+            "P1"
+          ],
+          "scope": "in_scope",
+          "ownership": "organization",
+          "exposure": "internet_facing",
+          "zone_ids": [
+            "zone-application"
+          ],
+          "knowledge_status": "documented",
+          "implementation_status": "unknown",
+          "evidence_refs": []
+        },
+        {
+          "id": "P2",
+          "display_id": "P2",
+          "type": "process",
+          "name": "Menyiapkan notifikasi",
+          "canonical_node_ids": [
+            "P2"
+          ],
+          "scope": "in_scope",
+          "ownership": "organization",
+          "exposure": "private",
+          "zone_ids": [
+            "zone-application"
+          ],
+          "knowledge_status": "documented",
+          "implementation_status": "unknown",
+          "evidence_refs": []
+        }
+      ],
+      "projection_flows": [
+        {
+          "id": "F1",
+          "display_id": "F1",
+          "source_id": "E1",
+          "target_id": "P1",
+          "name": "Data registrasi",
+          "canonical_flow_ids": [
+            "F1"
+          ],
+          "data_object_ids": [
+            "DO1"
+          ],
+          "protocol": "HTTPS",
+          "interaction_kind": "request",
+          "boundary_crossings": [
+            "TB1"
+          ],
+          "crossing_status": "resolved",
+          "grounding_status": "grounded",
+          "evidence_refs": [
+            "EV-REG-001"
+          ]
+        },
+        {
+          "id": "F2",
+          "display_id": "F2",
+          "source_id": "P1",
+          "target_id": "E1",
+          "name": "Status registrasi",
+          "canonical_flow_ids": [
+            "F2"
+          ],
+          "data_object_ids": [
+            "DO2"
+          ],
+          "protocol": "HTTPS",
+          "interaction_kind": "response",
+          "boundary_crossings": [
+            "TB1"
+          ],
+          "crossing_status": "resolved",
+          "grounding_status": "grounded",
+          "evidence_refs": [
+            "EV-REG-001"
+          ]
+        },
+        {
+          "id": "F3",
+          "display_id": "F3",
+          "source_id": "P1",
+          "target_id": "D1",
+          "name": "Record customer",
+          "canonical_flow_ids": [
+            "F3"
+          ],
+          "data_object_ids": [
+            "DO3"
+          ],
+          "protocol": "Database protocol unknown",
+          "interaction_kind": "write",
+          "boundary_crossings": [
+            "TB2"
+          ],
+          "crossing_status": "resolved",
+          "grounding_status": "grounded",
+          "evidence_refs": [
+            "EV-REG-001"
+          ]
+        },
+        {
+          "id": "F4",
+          "display_id": "F4",
+          "source_id": "P1",
+          "target_id": "P2",
+          "name": "Email dan referensi aktivasi",
+          "canonical_flow_ids": [
+            "F4"
+          ],
+          "data_object_ids": [
+            "DO4"
+          ],
+          "protocol": "Internal channel unknown",
+          "interaction_kind": "event",
+          "boundary_crossings": [
+            "TB3"
+          ],
+          "crossing_status": "resolved",
+          "grounding_status": "grounded",
+          "evidence_refs": [
+            "EV-REG-001"
+          ]
+        }
+      ],
+      "decomposition_status": "detail_only",
+      "projection_issues": [
+        "unsupported_decomposition: P1 has connection detail but no evidenced child-process decomposition"
+      ],
+      "positions": {},
+      "collapsed_groups": [],
+      "viewport": {}
+    },
+    {
+      "id": "view-feature-P2",
+      "kind": "feature",
+      "parent_process_id": "P2",
+      "element_refs": [
+        "DO4",
+        "DO5",
+        "DO6",
+        "E2",
+        "F4",
+        "F5",
+        "F6",
+        "P1",
+        "P2",
+        "TB3",
+        "TB4"
+      ],
+      "projection_mappings": {
+        "P2": [
+          "P2"
+        ],
+        "P1": [
+          "P1"
+        ],
+        "E2": [
+          "E2"
+        ],
+        "F4": [
+          "F4"
+        ],
+        "F5": [
+          "F5"
+        ],
+        "F6": [
+          "F6"
+        ],
+        "DO4": [
+          "DO4"
+        ],
+        "DO5": [
+          "DO5"
+        ],
+        "DO6": [
+          "DO6"
+        ],
+        "TB3": [
+          "TB3"
+        ],
+        "TB4": [
+          "TB4"
+        ]
+      },
+      "input_flow_ids": [
+        "F4",
+        "F6"
+      ],
+      "output_flow_ids": [
+        "F5"
+      ],
+      "port_mappings": {
+        "input": [
+          "F4",
+          "F6"
+        ],
+        "output": [
+          "F5"
+        ]
+      },
+      "projection_nodes": [
+        {
+          "id": "E2",
+          "display_id": "E2",
+          "type": "entity",
+          "name": "Layanan email",
+          "canonical_node_ids": [
+            "E2"
+          ],
+          "scope": "external_dependency",
+          "ownership": "vendor",
+          "exposure": "private",
+          "zone_ids": [
+            "zone-vendor"
+          ],
+          "knowledge_status": "documented",
+          "implementation_status": "unknown",
+          "evidence_refs": []
+        },
+        {
+          "id": "P1",
+          "display_id": "P1",
+          "type": "process",
+          "name": "Memproses registrasi",
+          "canonical_node_ids": [
+            "P1"
+          ],
+          "scope": "in_scope",
+          "ownership": "organization",
+          "exposure": "internet_facing",
+          "zone_ids": [
+            "zone-application"
+          ],
+          "knowledge_status": "documented",
+          "implementation_status": "unknown",
+          "evidence_refs": []
+        },
+        {
+          "id": "P2",
+          "display_id": "P2",
+          "type": "process",
+          "name": "Menyiapkan notifikasi",
+          "canonical_node_ids": [
+            "P2"
+          ],
+          "scope": "in_scope",
+          "ownership": "organization",
+          "exposure": "private",
+          "zone_ids": [
+            "zone-application"
+          ],
+          "knowledge_status": "documented",
+          "implementation_status": "unknown",
+          "evidence_refs": []
+        }
+      ],
+      "projection_flows": [
+        {
+          "id": "F4",
+          "display_id": "F4",
+          "source_id": "P1",
+          "target_id": "P2",
+          "name": "Email dan referensi aktivasi",
+          "canonical_flow_ids": [
+            "F4"
+          ],
+          "data_object_ids": [
+            "DO4"
+          ],
+          "protocol": "Internal channel unknown",
+          "interaction_kind": "event",
+          "boundary_crossings": [
+            "TB3"
+          ],
+          "crossing_status": "resolved",
+          "grounding_status": "grounded",
+          "evidence_refs": [
+            "EV-REG-001"
+          ]
+        },
+        {
+          "id": "F5",
+          "display_id": "F5",
+          "source_id": "P2",
+          "target_id": "E2",
+          "name": "Penerima dan pesan aktivasi",
+          "canonical_flow_ids": [
+            "F5"
+          ],
+          "data_object_ids": [
+            "DO5"
+          ],
+          "protocol": "HTTPS",
+          "interaction_kind": "request",
+          "boundary_crossings": [
+            "TB4"
+          ],
+          "crossing_status": "resolved",
+          "grounding_status": "grounded",
+          "evidence_refs": [
+            "EV-REG-001"
+          ]
+        },
+        {
+          "id": "F6",
+          "display_id": "F6",
+          "source_id": "E2",
+          "target_id": "P2",
+          "name": "Status penerimaan pesan",
+          "canonical_flow_ids": [
+            "F6"
+          ],
+          "data_object_ids": [
+            "DO6"
+          ],
+          "protocol": "HTTPS",
+          "interaction_kind": "response",
+          "boundary_crossings": [
+            "TB4"
+          ],
+          "crossing_status": "resolved",
+          "grounding_status": "grounded",
+          "evidence_refs": [
+            "EV-REG-001"
+          ]
+        }
+      ],
+      "decomposition_status": "detail_only",
+      "projection_issues": [
+        "unsupported_decomposition: P2 has connection detail but no evidenced child-process decomposition"
+      ],
+      "positions": {},
+      "collapsed_groups": [],
+      "viewport": {}
+    }
+  ],
+  "questions": [
+    {
+      "id": "Q1",
+      "affected_refs": [
+        "E2",
+        "DO5",
+        "D1"
+      ],
+      "question": "What retention and deletion controls apply to vendor email data and stored customer records?",
+      "reason": "Lifecycle metadata is not documented in the synthetic source.",
+      "source_refs": [
+        "EV-REG-001"
+      ],
+      "status": "open",
+      "resolution": null
+    }
+  ]
+}

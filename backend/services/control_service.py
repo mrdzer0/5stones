@@ -39,11 +39,34 @@ _MATCH_STOPWORDS = {
     "ensure", "every", "using", "required", "sensitive", "all", "use",
 }
 
+# Category alone is insufficient for domain-specific controls. These guards
+# prevent a generic Tampering finding from receiving a webhook/payment control
+# or a generic disclosure finding from receiving an IDOR/error-page control.
+_CATALOG_CONTEXT_GUARDS = {
+    "ctrl-001": r"\b(?:idor|ownership|object[- ]level|cross[- ]user|multi[- ]tenant|other user|resource authorization)\b",
+    "ctrl-002": r"\b(?:webhook|callback|hmac|signed payload|signature)\b",
+    "ctrl-003": r"\b(?:amount|price|payment|financial|transaction value|critical value)\b",
+    "ctrl-005": r"\b(?:replay|nonce|timestamp|signed message|duplicate request)\b",
+    "ctrl-006": r"\b(?:rbac|abac|role|privilege|authorization|access control|permission)\b",
+    "ctrl-011": r"\b(?:jwt|token|session|authentication|identity)\b",
+    "ctrl-012": r"\b(?:https|tls|transport|network|in transit|plaintext|http)\b",
+    "ctrl-013": r"\b(?:retention|deletion|delete|ttl|expiry|expire)\b",
+    "ctrl-014": r"\b(?:error|exception|stack trace|debug response|sql message)\b",
+    "ctrl-015": r"\b(?:consent|opt[- ]out|withdrawal|lawful purpose)\b",
+    "ctrl-016": r"\b(?:notice|individual control|access request|correction|opt[- ]out)\b",
+    "ctrl-017": r"\b(?:external|third[- ]party|vendor|provider)\b.{0,100}\b(?:ai|llm|gpt|gemini|language model)\b|\b(?:ai|llm|gpt|gemini|language model)\b.{0,100}\b(?:external|third[- ]party|vendor|provider)\b",
+    "ctrl-008": r"\b(?:logs?|logging|telemetry|traces?)\b",
+    "ctrl-018": r"\b(?:geolocat\w*|coordinates?|fuzz\w*)\b|\bprecis\w*\s+location\b|\bmap\s+(?:view|interface|marker|pin)s?\b",
+    "ctrl-019": r"\b(?:identifiers?|pseudonym\w*|anonymiz\w*|join keys?)\b",
+    "ctrl-020": r"\b(?:payment|transaction|card|billing)\b",
+}
+
 
 async def map_controls(
     threats: List[dict],
     force_fallback: bool = False,
     data_policy: str | None = None,
+    workspace_id: str | None = None,
     dfd_model: dict | None = None,
     evidence_ids: set[str] | None = None,
     evidence_catalog: list[dict] | None = None,
@@ -68,7 +91,7 @@ async def map_controls(
             response_metadata={"engine": "fallback"},
         )
 
-    cfg = get_active_provider_config(data_policy)
+    cfg = get_active_provider_config(data_policy, workspace_id)
 
     catalog_summary = "\n".join([
         f"- {c.get('name')}: {c.get('description')} | applicability={c.get('applicability') or []} | "
@@ -160,7 +183,9 @@ Return one JSON object with a "controls" array:
 
 Deduplicate: one control can address multiple threats."""
 
-    stage_budget = min(int(cfg.get("max_tokens") or 3000), 3000)
+    # Controls can produce 10-15 objects each with ~15 fields. The previous
+    # 3000-token cap caused truncated_json on projects with more than ~5 threats.
+    stage_budget = min(int(cfg.get("max_tokens") or 6000), 6000)
     result = await chat_complete_json(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
@@ -291,9 +316,39 @@ def _catalog_fallback(threats: list, catalog: list) -> list:
             str(threat.get("asset") or ""),
             str(threat.get("component") or ""),
         ]))
+        threat_context = " ".join(str(threat.get(field) or "") for field in (
+            "threat_description", "recommended_control", "asset", "component",
+            "source", "destination", "scenario", "abuse_case",
+        )).casefold()
         ranked = []
         for ctrl in catalog or []:
             ctrl_id = str(ctrl.get("id") or ctrl.get("name") or "")
+            guard = _CATALOG_CONTEXT_GUARDS.get(ctrl_id)
+            if guard and not re.search(guard, threat_context):
+                continue
+            if ctrl_id == "ctrl-008":
+                description = str(threat.get("threat_description") or "").casefold()
+                if category not in {"Information Disclosure", "Data Disclosure", "Linking", "Identifying"} or not (
+                    re.search(r"\b(?:logs?|logging|telemetry|traces?)\b", description)
+                    and re.search(r"\b(?:pii|sensitive|raw|unmasked|leak\w*|expos\w*|personal|secret\w*)\b", description)
+                ):
+                    continue
+            if ctrl_id == "ctrl-004" and category not in {
+                "Information Disclosure", "Data Disclosure", "Linking", "Identifying",
+                "Non-compliance", "Unawareness & Unintervenability",
+            }:
+                # PII words in an unrelated integrity/availability finding do
+                # not make a privacy-minimization control applicable.
+                continue
+            if ctrl_id == "ctrl-010" and category not in {"Tampering", "Spoofing"} and not re.search(
+                r"\b(?:validat\w*|saniti[sz]\w*|inject\w*|untrusted input|unexpected field|malformed input)\b",
+                threat_context,
+            ):
+                continue
+            if ctrl_id == "ctrl-018" and not re.search(r"\b(?:precis\w*|aggregat\w*|public|expos\w*|disclos\w*|shar\w*|link\w*)\b", threat_context):
+                continue
+            if ctrl_id == "ctrl-020" and not re.search(r"\b(?:gateway|provider|merchant|third[- ]party|external)\b", threat_context):
+                continue
             ctrl_tokens = tokens(" ".join([
                 str(ctrl.get("name") or ""),
                 str(ctrl.get("description") or ""),
@@ -306,6 +361,8 @@ def _catalog_fallback(threats: list, catalog: list) -> list:
                 for value in (ctrl.get("mitigates") or [])
                 if str(value).strip()
             }
+            if ctrl_id == "ctrl-020" and not any(str(alias).casefold() in mitigates for alias in aliases):
+                continue
             category_hits = [
                 alias for alias in aliases
                 if str(alias).strip() and str(alias).strip().casefold() in mitigates
@@ -341,6 +398,8 @@ def _catalog_fallback(threats: list, catalog: list) -> list:
                 "mapping_status": "unassigned",
                 "mapping_basis": "no_catalog_applicability_match",
                 "mapping_rationale": "No exact category/alias match or two-signal keyword match was found.",
+                "applicability_rationale": "No exact category/alias match or two-signal keyword match was found; reviewer applicability decision is required.",
+                "mitigated_mechanism": "Threat-specific mechanism requires review",
                 "threat_mappings": [{
                     "threat_id": threat_id,
                     "match_type": "unassigned",
@@ -372,6 +431,8 @@ def _catalog_fallback(threats: list, catalog: list) -> list:
                 "mapping_status": "mapped",
                 "mapping_basis": match_type,
                 "mapping_rationale": "",
+                "applicability_rationale": "",
+                "mitigated_mechanism": ", ".join(str(value) for value in (ctrl.get("mitigates") or []) if str(value).strip()),
                 "threat_mappings": [],
             })
             if threat_id not in item["threat_ids"]:
@@ -389,5 +450,6 @@ def _catalog_fallback(threats: list, catalog: list) -> list:
             item["mapping_rationale"] = " ".join(
                 mapping["rationale"] for mapping in item["threat_mappings"]
             )
+            item["applicability_rationale"] = item["mapping_rationale"]
 
     return list(grouped.values())

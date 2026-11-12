@@ -1,0 +1,157 @@
+{
+  "version": "1.0",
+  "purpose": "Synthetic PRD corpus for DFD-grounded STRIDE, LINDDUN, control, and test-scenario evaluation.",
+  "reference": "tests/PRD - J1 Dukcapil FR Check.pdf",
+  "cases": [
+    {
+      "id": "prd-complete-digital-banking",
+      "file": "01_complete_digital_banking.md",
+      "completeness": "complete",
+      "domain": "digital banking",
+      "product_type": "consumer web and mobile banking",
+      "expected": {
+        "must_detect_actors": ["Customer", "Operations analyst", "Fraud service"],
+        "must_detect_components": ["Mobile app", "API gateway", "Account service", "Payment orchestration", "Ledger database"],
+        "must_detect_external_systems": ["Identity provider", "Payment network", "SMS provider"],
+        "must_detect_data": ["Account profile", "Payment instruction", "Device signal", "One-time code", "Transaction record"],
+        "must_surface_topics": ["credential theft", "payment tampering", "fraud decision integrity", "PII disclosure", "auditability"],
+        "must_not_invent": ["A specific bank core vendor", "An endpoint not stated in the PRD"],
+        "expected_deferred_topics": ["Exact token rotation interval", "Payment network incident response owner"]
+      }
+    },
+    {
+      "id": "prd-complete-telemedicine",
+      "file": "02_complete_telemedicine.md",
+      "completeness": "complete",
+      "domain": "healthcare",
+      "product_type": "telemedicine web and mobile application",
+      "expected": {
+        "must_detect_actors": ["Patient", "Clinician", "Care coordinator"],
+        "must_detect_components": ["Patient app", "Scheduling service", "Consultation service", "Clinical record store"],
+        "must_detect_external_systems": ["Video provider", "Payment provider", "Notification provider"],
+        "must_detect_data": ["Medical history", "Prescription", "Consultation notes", "Video session token", "Consent record"],
+        "must_surface_topics": ["unauthorized clinician access", "health-data disclosure", "consent traceability", "video session privacy", "record integrity"],
+        "must_not_invent": ["A diagnosis", "A clinical decision not present in the PRD"],
+        "expected_deferred_topics": ["Exact jurisdictional retention period", "Break-glass approval workflow owner"]
+      }
+    },
+    {
+      "id": "prd-half-ecommerce-checkout",
+      "file": "03_half_ecommerce_checkout.md",
+      "completeness": "half",
+      "domain": "e-commerce",
+      "product_type": "consumer checkout web application",
+      "expected": {
+        "must_detect_actors": ["Shopper", "Merchant operator"],
+        "must_detect_components": ["Storefront", "Checkout API", "Order database", "Inventory service"],
+        "must_detect_external_systems": ["Payment gateway", "Shipping partner"],
+        "must_detect_data": ["Cart", "Address", "Order", "Payment token"],
+        "must_surface_topics": ["price or order tampering", "payment replay", "address privacy", "inventory race"],
+        "must_not_invent": ["Strong customer authentication", "A declared card-data storage policy"],
+        "expected_deferred_topics": ["Session authentication details", "Order and address retention", "Webhook signature verification", "Refund authorization"]
+      }
+    },
+    {
+      "id": "prd-half-saas-project-management",
+      "file": "04_half_saas_project_management.md",
+      "completeness": "half",
+      "domain": "B2B SaaS",
+      "product_type": "multi-tenant project management platform",
+      "expected": {
+        "must_detect_actors": ["Workspace member", "Workspace admin", "Platform operator"],
+        "must_detect_components": ["Web client", "Workspace API", "Search index", "Object storage"],
+        "must_detect_external_systems": ["Enterprise identity provider", "Webhook consumer"],
+        "must_detect_data": ["Project task", "Comment", "Attachment", "Workspace membership"],
+        "must_surface_topics": ["cross-tenant access", "shared-link disclosure", "webhook replay", "attachment malware", "admin overreach"],
+        "must_not_invent": ["Tenant isolation implementation", "A default sharing policy"],
+        "expected_deferred_topics": ["Tenant keying strategy", "Search-index authorization", "Deletion propagation", "Webhook signing and retry ownership"]
+      }
+    },
+    {
+      "id": "prd-simple-hr-leave",
+      "file": "05_simple_hr_leave.md",
+      "completeness": "complete",
+      "domain": "internal HR",
+      "product_type": "simple employee leave workflow",
+      "expected": {
+        "must_detect_actors": ["Employee", "Manager", "HR administrator"],
+        "must_detect_components": ["HR web app", "Leave API", "HR database", "Email notification"],
+        "must_detect_external_systems": ["Corporate identity provider"],
+        "must_detect_data": ["Employee identity", "Leave dates", "Leave reason", "Approval decision"],
+        "must_surface_topics": ["role escalation", "confidential leave reason disclosure", "approval tampering", "audit trail"],
+        "must_not_invent": ["Payroll integration", "Medical documents"],
+        "expected_deferred_topics": ["Exact HR data retention period"]
+      }
+    },
+    {
+      "id": "prd-complete-public-service-document-verification",
+      "file": "06_complete_public_service_document_verification.md",
+      "completeness": "complete",
+      "domain": "public service and onboarding",
+      "product_type": "identity/document verification feature",
+      "expected": {
+        "must_detect_actors": ["Applicant", "Underwriting service", "Risk operations analyst"],
+        "must_detect_components": ["Underwriting workflow", "Document verification adapter", "Threshold configuration", "Decision store", "Quota monitor"],
+        "must_detect_external_systems": ["Government identity service", "Face recognition provider", "Alert channel"],
+        "must_detect_data": ["Government identifier", "Face image", "Match score", "Response code", "Threshold snapshot", "Quota counter"],
+        "must_surface_topics": ["biometric disclosure", "decision tampering", "provider impersonation", "quota abuse", "threshold auditability", "replay or duplicate check"],
+        "must_not_invent": ["Production government endpoint", "Real applicant data", "An unmentioned lender"],
+        "expected_deferred_topics": ["Biometric deletion schedule", "Provider certificate rotation owner"]
+      }
+    },
+    {
+      "id": "prd-incomplete-digital-wallet",
+      "file": "07_incomplete_digital_wallet.md",
+      "completeness": "incomplete",
+      "domain": "fintech",
+      "product_type": "digital wallet top-up and transfer",
+      "expected": {
+        "must_detect_actors": ["User"],
+        "must_detect_components": ["Wallet application"],
+        "must_detect_data": ["Wallet balance", "Transfer amount"],
+        "must_surface_topics": ["insufficient evidence", "missing authentication", "missing transaction integrity details"],
+        "must_not_invent": ["A database", "A payment provider", "A completed transfer flow", "A confirmed vulnerability from omission"],
+        "expected_deferred_topics": ["Actors and privileges", "Trust boundaries", "Authentication", "Ledger ownership", "Top-up provider", "Idempotency", "Retention", "Fraud review"]
+      }
+    },
+    {
+      "id": "prd-incomplete-ai-support-assistant",
+      "file": "08_incomplete_ai_support_assistant.md",
+      "completeness": "incomplete",
+      "domain": "customer support and AI",
+      "product_type": "LLM-assisted support console",
+      "expected": {
+        "must_detect_actors": ["Support agent", "Customer"],
+        "must_detect_components": ["Support console", "Conversation service", "AI assistant"],
+        "must_detect_external_systems": ["LLM provider"],
+        "must_detect_data": ["Customer message", "Conversation transcript", "Suggested reply"],
+        "must_surface_topics": ["prompt injection", "sensitive data sent to provider", "agent over-trust", "missing output validation"],
+        "must_not_invent": ["A guaranteed redaction control", "A model provider retention policy", "Autonomous customer action"],
+        "expected_deferred_topics": ["Tool permissions", "Provider data processing terms", "Prompt and transcript retention", "Human approval boundary", "Tenant isolation"]
+      }
+    },
+    {
+      "id": "prd-half-partner-webhook-integration",
+      "file": "09_half_partner_webhook_integration.md",
+      "completeness": "half",
+      "domain": "platform integration",
+      "product_type": "partner webhook ingestion API",
+      "expected": {
+        "must_detect_actors": ["Partner system", "Integration operator", "Internal event processor"],
+        "must_detect_components": ["Webhook gateway", "Event queue", "Order service", "Delivery log"],
+        "must_detect_external_systems": ["Partner platform"],
+        "must_detect_data": ["Webhook payload", "Signature header", "Order status", "Delivery attempt"],
+        "must_surface_topics": ["signature bypass", "replay", "queue poisoning", "duplicate event side effects", "payload privacy"],
+        "must_not_invent": ["A particular signing algorithm", "Exactly-once delivery", "A trusted partner by default"],
+        "expected_deferred_topics": ["Signature rotation", "Replay window", "Dead-letter ownership", "Payload schema versioning", "Partner offboarding"]
+      }
+    }
+  ],
+  "quality_gates": [
+    "Every scored finding has a canonical primary DFD interaction or an explicit deferred state.",
+    "Missing PRD information is represented as evidence gap, assumption, question, or applicability decision, not as a confirmed vulnerability.",
+    "Controls are specific to the relevant threat and interaction.",
+    "Tests contain unique target, action, expected observation, and evidence artifact.",
+    "The report records source revision, DFD revision, analysis run, methodology, and unresolved blockers."
+  ]
+}

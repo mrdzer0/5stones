@@ -1,6 +1,8 @@
 """Test scenario generation service."""
 from __future__ import annotations
+import asyncio
 import hashlib
+import re
 import uuid
 from typing import List
 from pydantic import ValidationError
@@ -17,6 +19,8 @@ from backend.services.generation_contracts import (
     model_ids,
 )
 from backend.services.threat_validation_service import LINDDUN_CATEGORY_ALIASES
+from backend.services.risk_service import RISK_METHODOLOGY_VERSION, threat_priority_level
+from backend.services.action_quality_service import validate_test_scenarios
 
 SYSTEM_PROMPT = """You are a security test engineer creating security test scenarios for QA and Security teams.
 Each scenario must be actionable, specific, and executable. Return one strict JSON object."""
@@ -42,15 +46,40 @@ async def generate_test_scenarios(
     """Generate test scenarios mapped to generated threats."""
     if force_fallback:
         fallback_warnings = _threat_quality_warnings(threats)
+        scenarios = _fallback_scenarios(threats, controls)
+        label_by_id = {
+            str(item.get("id")): str(item.get("name") or item.get("id"))
+            for collection in ("nodes", "flows", "data_objects", "boundaries")
+            for item in ((dfd_model or {}).get(collection) or [])
+            if isinstance(item, dict) and item.get("id")
+        }
+        threat_by_id = {str(item.get("threat_id")): item for item in threats if isinstance(item, dict) and item.get("threat_id")}
+        for scenario in scenarios:
+            threat = threat_by_id.get(str(scenario.get("threat_id"))) or {}
+            target = _test_target_label(threat, label_by_id)
+            if target and scenario.get("applicability_status") != "blocked":
+                scenario["scenario_name"] = f"{scenario['scenario_name']} — {target}"[:180]
+                scenario["steps"] = [f"Identify the canonical DFD target '{target}' and its authorized baseline",
+                                     *(scenario.get("steps") or [])]
+            source = str(threat.get("source") or "").strip()
+            destination = str(threat.get("destination") or "").strip()
+            asset = _test_data_label(threat)
+            if source and destination and scenario.get("applicability_status") != "blocked":
+                subject = f"synthetic {asset}" if asset else "representative synthetic data"
+                setup = f"Prepare {subject} for the reported {source} → {destination} path in the test environment"
+                scenario["steps"] = [setup, *(scenario.get("steps") or [])]
+                scenario["scenario_name"] = f"{scenario['scenario_name']} · {source} → {destination}"[:180]
+        normalized = normalize_test_scenarios(scenarios, threats, controls, dfd_model, evidence_ids)
+        normalized, quality_warnings = validate_test_scenarios(normalized, threats, controls, dfd_model)
         return StageGenerationResult(
-            normalize_test_scenarios(_fallback_scenarios(threats, controls), threats, controls, dfd_model, evidence_ids),
+            normalized,
             assessment_status="fallback",
             response_shape="deterministic_fallback",
-            warnings=["AI test generation was bypassed; generated scenarios require review.", *fallback_warnings],
+            warnings=["AI test generation was bypassed; generated scenarios require review.", *fallback_warnings, *quality_warnings],
             response_metadata={"engine": "fallback"},
         )
 
-    cfg = get_active_provider_config(project.get("data_policy"))
+    cfg = get_active_provider_config(project.get("data_policy"), project.get("workspace_id"))
 
     active_threats = _active_threat_records(threats)
     threats_summary = "\n".join([
@@ -97,7 +126,7 @@ Return one JSON object with a "scenarios" array:
     "evidence_needed": ["screenshot", "request-response log", etc],
     "related_control": "control name for display",
     "related_control_id": "stable control_id when a mapped control exists",
-    "priority": "Critical|High|Medium|Low",
+    "priority": "Critical|High|Medium|Low (advisory only; application derives final priority from threat risk)",
     "owner": "QA|Security|QA/Security",
     "threat_id": "the threat_id this test covers",
     "target_refs": [{{"type": "data_flow|process|data_store|entity|boundary|data_object", "id": "canonical DFD element ID"}}],
@@ -113,7 +142,9 @@ Return one JSON object with a "scenarios" array:
   ]
 }}"""
 
-    stage_budget = min(int(cfg.get("max_tokens") or 3500), 3500)
+    # Test scenarios per threat have 10+ fields. 5000 tokens could not fit a full
+    # response for projects with >6 threats, causing truncated_json.
+    stage_budget = min(int(cfg.get("max_tokens") or 8000), 8000)
     result = await chat_complete_json(
         system_prompt=SYSTEM_PROMPT,
         user_prompt=user_prompt,
@@ -190,12 +221,14 @@ Return one JSON object with a "scenarios" array:
         )
 
     normalized = normalize_test_scenarios(scenarios, threats, controls, dfd_model, evidence_ids)
+    normalized, quality_warnings = validate_test_scenarios(normalized, threats, controls, dfd_model)
     if not normalized:
         raise GenerationContractError(
             "Analysis engine returned no scenarios after normalization",
             code="test_scenarios_normalization_empty",
             metadata=response_metadata,
         )
+    warnings.extend(quality_warnings)
     partial = bool(warnings) or any(item.get("applicability_status") != "applicable" for item in normalized)
     response_metadata["validation_status"] = "partial" if partial else "complete"
     return StageGenerationResult(
@@ -213,34 +246,178 @@ def _unpack_structured_result(result) -> tuple[object, dict]:
     return result, {"instrumentation_status": "legacy_uninstrumented"}
 
 
+def _linked_controls(controls: list | None, threat_id: str) -> list[dict]:
+    return [
+        control for control in (controls or [])
+        if isinstance(control, dict)
+        and control.get("mapping_status") != "unassigned"
+        and threat_id in {str(ref) for ref in (control.get("threat_ids") or [])}
+    ]
+
+
+def _test_target_label(threat: dict, label_by_id: dict[str, str]) -> str | None:
+    refs = [ref for ref in (threat.get("target_refs") or []) if isinstance(ref, dict) and str(ref.get("id")) in label_by_id]
+    primary_ref = str(threat.get("primary_interaction_ref") or "")
+    if primary_ref in label_by_id:
+        return label_by_id[primary_ref]
+    source = str(threat.get("source") or "").casefold()
+    destination = str(threat.get("destination") or "").casefold()
+    for ref in refs:
+        label = label_by_id[str(ref["id"])]
+        if ref.get("type") == "data_flow" and source and destination and source in label.casefold() and destination in label.casefold():
+            return label
+    for ref in refs:
+        if ref.get("model_level") == "semantic" and ref.get("type") != "trust_boundary":
+            return label_by_id[str(ref["id"])]
+    for ref in refs:
+        if ref.get("type") != "trust_boundary":
+            return label_by_id[str(ref["id"])]
+    return label_by_id[str(refs[0]["id"])] if refs else None
+
+
+def _test_data_label(threat: dict) -> str | None:
+    asset = str(threat.get("asset") or "").strip()
+    if asset:
+        return asset[:120]
+    for ref in (threat.get("target_refs") or []):
+        if isinstance(ref, dict) and ref.get("type") in {"data_object", "data_asset"} and ref.get("label"):
+            return str(ref["label"])[:120]
+    context = " ".join(str(threat.get(field) or "") for field in ("threat_description", "recommended_control")).casefold()
+    for pattern, label in (
+        (r"\bemail\b", "email addresses"), (r"\bphone\b", "phone numbers"),
+        (r"\b(?:location|coordinates?|geolocat\w*)\b", "location data"),
+        (r"\b(?:identifier|user id|account id)\b", "identifiers"),
+        (r"\b(?:token|api key|secret)\b", "credentials or tokens"),
+    ):
+        if re.search(pattern, context):
+            return label
+    return None
+
+
+def _tailor_privacy_scenario(scenario: dict, threat: dict, category: str) -> None:
+    """Use a testable failure mechanism; leave unsupported cases blocked for design review."""
+    context = " ".join(str(threat.get(field) or "") for field in (
+        "threat_description", "recommended_control", "asset", "scenario", "abuse_case", "component",
+    )).casefold()
+    data = _test_data_label(threat) or "the affected data"
+    source, destination = (str(threat.get(field) or "").strip() for field in ("source", "destination"))
+    path = f"{source} → {destination}" if source and destination else "the affected DFD interaction"
+    if category in {"Data Disclosure", "Information Disclosure"}:
+        if re.search(r"\b(?:external|third[- ]party|vendor|provider)\b", context) and re.search(r"\b(?:ai|llm|gpt|gemini|language model)\b", context):
+            scenario.update({
+                "scenario_name": "External AI egress — verify field allowlist and redaction",
+                "preconditions": f"Isolated AI integration, tagged synthetic {data}, and an approved outbound field allowlist",
+                "steps": [f"Seed tagged synthetic {data} on {path} in the test environment",
+                          "Capture the provider-bound request before it leaves the application boundary",
+                          "Compare every outbound field with the documented AI-processing purpose and allowlist",
+                          "Verify unnecessary identifiers/content are removed or redacted; inspect integration logs and provider retention settings"],
+                "expected_result": "Only approved fields reach the external AI provider; unnecessary sensitive values are absent from outbound payloads and logs.",
+                "evidence_needed": ["Redacted provider-bound request", "Outbound field allowlist", "Integration log and retention configuration"],
+            })
+        elif re.search(r"\b(?:logs?|telemetry|traces?)\b", context):
+            scenario.update({
+                "scenario_name": "Sensitive logging — verify redaction at collection",
+                "preconditions": f"Test logging access and tagged synthetic {data}",
+                "steps": [f"Submit tagged synthetic {data} through {path}",
+                          "Capture application logs, traces, and error telemetry for the transaction",
+                          "Search for the raw tagged values and compare with the approved logging schema",
+                          "Verify sensitive fields are absent or masked before storage and forwarding"],
+                "expected_result": "Raw sensitive values are not persisted or forwarded in logs or telemetry.",
+                "evidence_needed": ["Tagged test request", "Redacted log/trace capture", "Logging schema"],
+            })
+        elif _test_data_label(threat) or re.search(r"\b(?:recipient|response|expos|disclos|read)\b", context):
+            scenario.update({
+                "scenario_name": f"Recipient-scope disclosure — verify {data}"[:180],
+                "preconditions": f"Tagged synthetic {data}, documented purpose and intended recipients for {path}",
+                "steps": [f"Seed tagged synthetic {data} and exercise {path} under an authorized test identity",
+                          "Capture the response or outbound payload and list the fields visible to the intended recipient",
+                          "Repeat with a recipient outside the documented scope, when that access path exists",
+                          f"Verify {data} is absent, masked, or access-denied outside the authorized purpose"],
+                "expected_result": f"Only intended recipients receive the minimum necessary {data}; out-of-scope access is denied or redacted.",
+                "evidence_needed": ["Authorized and out-of-scope captures", "Purpose/recipient matrix", "Field-level comparison"],
+            })
+        else:
+            scenario["applicability_status"] = "blocked"
+            scenario["applicability_reason"] = "Disclosure channel and affected data fields are not specific enough to design an executable test."
+    elif category == "Linking":
+        if re.search(r"\b(?:payment|transaction|billing|card)\b", context) and re.search(r"\b(?:gateway|provider|merchant|third[- ]party)\b", context):
+            scenario.update({
+                "scenario_name": "Payment-gateway linkability — test merchant isolation",
+                "preconditions": "Two isolated synthetic merchant contexts, test payment records, provider-bound field inventory, and approved payment-purpose policy",
+                "steps": [f"Create separate synthetic payment transactions for two merchant contexts on {path}",
+                          "Capture provider-bound payloads and merchant-visible transaction records for each context",
+                          "Compare customer, card/token, order, and transaction identifiers against the approved purpose and recipient scope",
+                          "Attempt cross-merchant correlation using only identifiers exposed to the lower-privilege merchant or provider integration",
+                          "Verify unrelated fields are omitted and identifiers or tokens are purpose/merchant scoped as documented"],
+                "expected_result": "A merchant cannot correlate another merchant's payment records beyond the documented purpose; provider-bound data is minimized.",
+                "evidence_needed": ["Redacted provider-bound payloads", "Merchant-scope records", "Payment field inventory and purpose policy", "Cross-merchant correlation result"],
+            })
+        elif re.search(r"\b(?:separat\w* identifiers?|join keys?|pseudonym\w*|anonymiz\w*|cross[- ]context)\b", context):
+            scenario.update({
+                "scenario_name": "Cross-context linkage — verify identifier separation",
+                "preconditions": f"Two synthetic records with distinguishable {data} across separate processing contexts",
+                "steps": [f"Create two synthetic records on {path} with distinct purpose-scoped identifiers",
+                          "Capture the exposed identifiers and metadata available to a lower-privilege actor",
+                          "Attempt to join the records using only those exposed fields",
+                          "Verify join keys and direct identifiers remain separated or inaccessible outside the approved purpose"],
+                "expected_result": "An unauthorized actor cannot correlate the synthetic records across contexts using exposed identifiers or metadata.",
+                "evidence_needed": ["Synthetic record inventory", "Captured identifier fields", "Cross-context join result"],
+            })
+        elif re.search(r"\b(?:location|geolocat\w*|coordinates?|map|fuzz\w*|precision)\b", context):
+            scenario.update({
+                "scenario_name": "Location linkability — verify precision and audience",
+                "preconditions": "Two synthetic records with known precise coordinates and documented public/privileged views",
+                "steps": [f"Create synthetic location records on {path} with distinguishable precise coordinates",
+                          "Capture public and authorized views of the same records",
+                          "Compare exposed precision and attempt to correlate records across views",
+                          "Verify public output is aggregated/fuzzed and detailed coordinates require the documented authorization"],
+                "expected_result": "Public location precision does not enable unintended linkage; detailed coordinates are restricted to authorized viewers.",
+                "evidence_needed": ["Synthetic coordinates", "Public and authorized view captures", "Precision and access policy"],
+            })
+        elif re.search(r"\b(?:identifier|correlat\w*|linkab\w*)\b", context):
+            scenario.update({
+                "scenario_name": "Identifier linkability — test cross-flow correlation",
+                "preconditions": f"Two synthetic records containing {data} and a documented separation policy",
+                "steps": [f"Create records in separate contexts associated with {path}",
+                          "Capture identifiers visible in each context to the same unprivileged actor",
+                          "Attempt cross-flow correlation using the captured identifiers",
+                          "Verify identifiers are scoped, rotated, or hidden as required by the separation policy"],
+                "expected_result": "Exposed identifiers do not permit correlation beyond the documented purpose.",
+                "evidence_needed": ["Identifier inventory", "Cross-flow captures", "Correlation result"],
+            })
+        else:
+            scenario["applicability_status"] = "blocked"
+            scenario["applicability_reason"] = "Linkability mechanism and identifiers are not specific enough to design an executable test."
+
+
 def _fallback_scenarios(threats: list, controls: list | None = None) -> list:
     templates = {
         "Information Disclosure": {
-            "scenario_name": "IDOR — Access Another User's Resource",
-            "preconditions": "Two accounts (User A, User B) with separate resources",
+            "scenario_name": "Sensitive Data Exposure — Verify Response and Recipient Scope",
+            "preconditions": "Representative test data, a documented recipient/purpose, and the affected read path",
             "steps": [
-                "Login as User A, note resource ID",
-                "Login as User B",
-                "Attempt to access User A's resource ID via API",
-                "Observe response code and body"
+                "Capture the normal response on the affected path using test data",
+                "Compare returned fields and recipients with the documented purpose and caller permissions",
+                "Attempt an unauthorized read using a lower-privilege test account where applicable",
+                "Check responses and logs for unnecessary sensitive values"
             ],
-            "expected_result": "API returns 403 Forbidden or 404 Not Found",
-            "evidence_needed": ["HTTP request/response", "Server logs"],
-            "related_control": "Object Ownership Validation",
+            "expected_result": "Unauthorized reads are rejected and responses contain only necessary data for the intended recipient",
+            "evidence_needed": ["Authorized and unauthorized request-response captures", "Data inventory", "Relevant audit logs"],
+            "related_control": "PII Data Minimization and Masking",
             "priority": "High",
             "owner": "QA/Security"
         },
         "Tampering": {
-            "scenario_name": "Parameter Tampering — Modify Critical Value",
-            "preconditions": "Authenticated session, intercepting proxy (Burp Suite)",
+            "scenario_name": "Request Tampering — Modify a Security-Relevant Field",
+            "preconditions": "A controlled test account, representative request, and expected server-side validation rules",
             "steps": [
-                "Login and initiate normal request",
-                "Intercept request with proxy",
-                "Modify critical parameter (amount, status, role)",
-                "Forward modified request"
+                "Capture a normal request on the affected flow",
+                "Modify a field or state transition relevant to the threat without changing unrelated fields",
+                "Replay the altered request in the test environment",
+                "Compare the response, stored state, and audit event with the expected behavior"
             ],
-            "expected_result": "Server rejects tampered value or recalculates server-side",
-            "evidence_needed": ["Intercepted request", "Server response", "DB state before/after"],
+            "expected_result": "Server rejects or safely validates the altered value and does not commit an unauthorized state change",
+            "evidence_needed": ["Altered request", "Server response", "Relevant state before/after"],
             "related_control": "Server-Side Validation",
             "priority": "High",
             "owner": "Security"
@@ -276,15 +453,15 @@ def _fallback_scenarios(threats: list, controls: list | None = None) -> list:
             "owner": "QA/Security"
         },
         "Denial of Service": {
-            "scenario_name": "Rate Limit Test — Flood Public Endpoint",
-            "preconditions": "Access to public endpoint",
+            "scenario_name": "Rate Limit Test — Controlled Request Burst",
+            "preconditions": "Approved test environment, documented rate threshold, and monitoring access",
             "steps": [
-                "Send 100 requests in 10 seconds to endpoint",
-                "Observe response codes",
-                "Check for 429 Too Many Requests response",
-                "Verify Retry-After header is present"
+                "Agree a safe test limit and observe baseline latency",
+                "Send a bounded burst just above the configured threshold",
+                "Observe response codes, retry guidance, and service health",
+                "Stop the test if error rate or latency exceeds the agreed safety limit"
             ],
-            "expected_result": "Rate limiting kicks in, returns 429 with Retry-After header",
+            "expected_result": "The configured throttle activates without degrading service; clients receive the documented retry behavior",
             "evidence_needed": ["Response codes", "Response times", "Server metrics"],
             "related_control": "Rate Limiting",
             "priority": "Medium",
@@ -392,11 +569,6 @@ def _fallback_scenarios(threats: list, controls: list | None = None) -> list:
     }
 
     scenarios = []
-    control_by_name = {
-        str(control.get("name") or "").casefold(): control
-        for control in (controls or [])
-        if isinstance(control, dict) and control.get("name")
-    }
     for i, threat in enumerate(threats or []):
         if not isinstance(threat, dict) or not threat.get("threat_id"):
             continue
@@ -440,9 +612,25 @@ def _fallback_scenarios(threats: list, controls: list | None = None) -> list:
             })
         s = dict(template)
         s["threat_id"] = threat.get("threat_id", "")
-        control = control_by_name.get(str(s.get("related_control") or "").casefold())
+        linked = _linked_controls(controls, str(threat["threat_id"]))
+        control = next((item for item in linked if str(item.get("name") or "").casefold() == str(s.get("related_control") or "").casefold()), None)
+        control = control or (linked[0] if linked else None)
         if control:
             s["related_control_id"] = control.get("control_id")
+            s["related_control"] = control.get("name")
+        elif controls is not None:
+            s["related_control"] = None
+            s["applicability_status"] = "blocked"
+            s["applicability_reason"] = "No mapped control is linked to this threat; review control applicability before execution."
+        _tailor_privacy_scenario(s, threat, canonical_category)
+        if s.get("scenario_name") == "Payment-gateway linkability — test merchant isolation":
+            payment_control = next(
+                (item for item in linked if item.get("catalog_id") == "ctrl-020"
+                 or item.get("control_id") == "CAT-ctrl-020"), None
+            )
+            if payment_control:
+                s["related_control_id"] = payment_control.get("control_id")
+                s["related_control"] = payment_control.get("name")
         s["target_refs"] = list(threat.get("target_refs") or [])
         scenarios.append(s)
 
@@ -477,14 +665,14 @@ def _has_webhook_evidence(threat: dict, controls: list | None = None) -> bool:
 
 
 def _blocked_scenario_for_threat(threat: dict, reason: str, controls: list | None = None) -> dict:
-    control = next((item for item in (controls or []) if isinstance(item, dict) and str(threat.get("threat_id")) in {str(ref) for ref in (item.get("threat_ids") or [])}), None)
+    control = next(iter(_linked_controls(controls, str(threat.get("threat_id")))), None)
     return {
         "scenario_name": "Verification blocked — review threat record",
         "preconditions": "Threat record and canonical DFD context must be reviewed before execution",
         "steps": ["Review the threat category and supporting evidence", "Confirm the applicable interaction and control", "Replace this blocked scenario with an executable verification case"],
         "expected_result": "A reviewed, evidence-backed test scenario is defined before execution.",
         "evidence_needed": ["Threat review decision", "DFD target evidence", "Applicable control evidence"],
-        "related_control": control.get("name") if control else threat.get("recommended_control"),
+        "related_control": control.get("name") if control else None,
         "related_control_id": control.get("control_id") if control else None,
         "priority": "High",
         "owner": "Security",
@@ -508,16 +696,6 @@ def normalize_test_scenarios(
         str(item.get("threat_id")): item
         for item in threats or []
         if isinstance(item, dict) and item.get("threat_id")
-    }
-    control_by_id = {
-        str(item.get("control_id")): item
-        for item in (controls or [])
-        if isinstance(item, dict) and item.get("control_id")
-    }
-    control_by_name = {
-        str(item.get("name") or "").casefold(): item
-        for item in (controls or [])
-        if isinstance(item, dict) and item.get("name")
     }
     valid_dfd_ids = {
         str(item.get("id"))
@@ -551,21 +729,27 @@ def normalize_test_scenarios(
             continue
         item = dict(raw)
         item["threat_id"] = threat_id
+        item["provider_priority"] = item.get("provider_priority") or item.get("priority")
+        item["priority"] = threat_priority_level(threat)
+        item["priority_source"] = "deterministic_threat_risk"
+        item["risk_methodology_version"] = RISK_METHODOLOGY_VERSION
         item["preconditions"] = preconditions
         item["expected_result"] = expected
         item["steps"] = [str(step).strip() for step in steps if str(step).strip()]
         if not item["steps"]:
             continue
+        linked = _linked_controls(controls, threat_id)
         related_id = str(item.get("related_control_id") or "")
-        related_control = control_by_id.get(related_id)
+        related_name = str(item.get("related_control") or "").casefold()
+        related_control = next((control for control in linked if related_id and str(control.get("control_id")) == related_id), None)
         if not related_control:
-            related_control = control_by_name.get(str(item.get("related_control") or "").casefold())
+            related_control = next((control for control in linked if related_name and str(control.get("name") or "").casefold() == related_name), None)
         if related_control:
             item["related_control_id"] = related_control.get("control_id")
             item["related_control"] = related_control.get("name")
         else:
             item.pop("related_control_id", None)
-            item["related_control"] = item.get("related_control") or None
+            item["related_control"] = None
         raw_refs = item.get("target_refs") if isinstance(item.get("target_refs"), list) else []
         refs = [
             {"type": str(ref.get("type") or "dfd_element"), "id": str(ref["id"])}
@@ -573,9 +757,17 @@ def normalize_test_scenarios(
             if isinstance(ref, dict) and ref.get("id") and (not valid_dfd_ids or str(ref["id"]) in valid_dfd_ids)
         ]
         item["target_refs"] = refs or list(threat.get("target_refs") or [])
+        primary_ref = str(threat.get("primary_interaction_ref") or "")
+        if primary_ref and (not valid_dfd_ids or primary_ref in valid_dfd_ids) and not any(
+            str(ref.get("id")) == primary_ref for ref in item["target_refs"] if isinstance(ref, dict)
+        ):
+            item["target_refs"].append({"type": "data_flow", "id": primary_ref})
         applicability_status = str(item.get("applicability_status") or "applicable").strip().casefold()
         if applicability_status not in {"applicable", "not_applicable", "blocked"}:
             applicability_status = "applicable"
+        if controls is not None and not related_control and applicability_status == "applicable":
+            applicability_status = "blocked"
+            item["applicability_reason"] = "No mapped control linked to this threat was verified for this scenario."
         item["applicability_status"] = applicability_status
         item["applicability_reason"] = str(item.get("applicability_reason") or "").strip()
         if applicability_status in {"not_applicable", "blocked"}:
@@ -630,7 +822,7 @@ async def generate_missing_info(project: dict, threats: List[dict], force_fallba
     if force_fallback:
         return _fallback_missing_info(project)
 
-    cfg = get_active_provider_config(project.get("data_policy"))
+    cfg = get_active_provider_config(project.get("data_policy"), project.get("workspace_id"))
 
     context = f"""Project: {project.get('name')}
 Description: {project.get('description', '')}
@@ -670,14 +862,15 @@ Return one JSON object with an "items" array:
 
 Generate 5-8 questions covering the most critical gaps. Phrase questions so they can be pasted directly into Jira, Slack, or a review comment."""
 
-    result = await chat_complete_json(
+    result = await asyncio.wait_for(chat_complete_json(
         system_prompt="You are a security analyst identifying information gaps for threat modeling. Return strict JSON.",
         user_prompt=user_prompt,
         base_url=cfg.get("base_url"),
         api_key=cfg.get("api_key"),
         model=cfg.get("model"),
-        max_tokens=2500,
-    )
+        max_tokens=1500,
+        max_format_retries=1,
+    ), timeout=20)
     items = result if isinstance(result, list) else result.get("items", [])
     if not items:
         raise ValueError("Analysis engine returned an empty or invalid evidence-gap list")

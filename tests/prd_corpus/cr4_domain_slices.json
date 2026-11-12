@@ -1,0 +1,25 @@
+{
+  "schema_version": "cr4-domain-slices-v1",
+  "purpose": "Qualification sampling contract for validated STRIDE/LINDDUN coverage.",
+  "expected_topics": [
+    "credential_theft_fraud_auditability",
+    "consent_video_privacy",
+    "inventory_race",
+    "shared_link_malware_admin_abuse",
+    "role_escalation",
+    "provider_impersonation_threshold_auditability",
+    "transaction_integrity",
+    "agent_overtrust",
+    "queue_poisoning"
+  ],
+  "slices": [
+    {"domain": "identity", "frameworks": ["STRIDE", "LINDDUN"], "source_case": "prd-complete-public-service-document-verification"},
+    {"domain": "payment", "frameworks": ["STRIDE", "LINDDUN"], "source_case": "prd-complete-digital-banking"},
+    {"domain": "healthcare", "frameworks": ["STRIDE", "LINDDUN"], "source_case": "prd-complete-telemedicine"},
+    {"domain": "saas_multi_tenant", "frameworks": ["STRIDE", "LINDDUN"], "source_case": "prd-half-saas-project-management"},
+    {"domain": "public_service_biometric", "frameworks": ["STRIDE", "LINDDUN"], "source_case": "prd-complete-public-service-document-verification"},
+    {"domain": "wallet", "frameworks": ["STRIDE", "LINDDUN"], "source_case": "prd-incomplete-digital-wallet"},
+    {"domain": "ai_agent_tool_use", "frameworks": ["STRIDE", "LINDDUN"], "source_case": "prd-incomplete-ai-support-assistant"},
+    {"domain": "webhook_event", "frameworks": ["STRIDE", "LINDDUN"], "source_case": "prd-half-partner-webhook-integration"}
+  ]
+}

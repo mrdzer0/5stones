@@ -1,15 +1,48 @@
 .venv
+node_modules/
 .env
 PRD.md
 .playwright-mcp
 tests
+!tests/
+tests/*
+!tests/prd_corpus/
+!tests/prd_corpus/**
+!tests/test_*.py
+!tests/test_*.js
 backend/data/projects/
 backend/data/reports
 backend/data/audit.log
 backend/data/settings.json
+# Runtime state and generated local data; never commit project/PRD contents.
+backend/data/ux_telemetry/
+backend/data/analysis_runs/
+backend/data/report_revisions/
+backend/data/backups/
+backend/data/artifacts/
 __pycache__/
 *.py[cod]
 *.log
 .DS_Store
 .env.*
 !.env.example
+DFD_Feature_AI_Agent_Prompt.md
+backend/data/dfd_models/
+backend/data/auth/
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-shm
+*.sqlite3-wal
+# Synthetic corpus source stays versioned; generated run artifacts stay local.
+tests/prd_corpus/artifacts/
+mermaid-diagram.png
+# Runtime data may contain threat models, reports, provider config, audit
+# history, auth records, and recovery backups. Keep only the reviewed static
+# controls catalog versioned.
+backend/data/**
+!backend/data/controls_catalog.json
+# Generated corpus evaluations can contain full model/report output.
+tests/prd_corpus/e2e_results.json
+tests/prd_corpus/e2e_report.md
+# Personal course/submission deliverables are kept locally, outside code PRs.
+docs/submission/

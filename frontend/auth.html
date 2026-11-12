@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Sign in to your 5STONES workspace." />
+  <title>Sign in · 5STONES</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <link rel="stylesheet" href="/static/css/components.css" />
+  <link rel="stylesheet" href="/static/css/pages.css?v=20261112-auth1" />
+</head>
+<body data-page="auth">
+  <main class="auth-page">
+    <section class="auth-card" aria-labelledby="auth-title">
+      <a class="auth-brand" href="/auth.html" aria-label="5STONES sign in">
+        <img src="/static/logo.png" alt="5STONES" />
+        <span>5STONES</span>
+      </a>
+      <div class="auth-heading">
+        <div class="eyebrow">SECURE WORKSPACE</div>
+        <h1 id="auth-title">Sign in</h1>
+        <p id="auth-description">Use your local workspace account to continue.</p>
+      </div>
+      <div class="auth-message" id="auth-message" role="status" aria-live="polite" hidden></div>
+      <form id="login-form" class="auth-form" autocomplete="on">
+        <label class="form-label" for="login-email">Email</label>
+        <input class="form-input" id="login-email" name="email" type="email" autocomplete="username" required maxlength="320" />
+        <label class="form-label" for="login-password">Password</label>
+        <input class="form-input" id="login-password" name="password" type="password" autocomplete="current-password" required maxlength="256" />
+        <button class="btn btn-primary auth-submit" type="submit">Sign in</button>
+      </form>
+      <form id="register-form" class="auth-form" autocomplete="on" hidden>
+        <label class="form-label" for="register-name">Name</label>
+        <input class="form-input" id="register-name" name="name" type="text" autocomplete="name" maxlength="120" />
+        <label class="form-label" for="register-email">Email</label>
+        <input class="form-input" id="register-email" name="email" type="email" autocomplete="username" required maxlength="320" />
+        <label class="form-label" for="register-password">Password</label>
+        <input class="form-input" id="register-password" name="password" type="password" autocomplete="new-password" required minlength="12" maxlength="256" />
+        <small class="auth-hint">Use at least 12 characters.</small>
+        <label class="form-label" for="register-confirm">Confirm password</label>
+        <input class="form-input" id="register-confirm" name="confirm" type="password" autocomplete="new-password" required minlength="12" maxlength="256" />
+        <label class="form-label" for="register-key">Registration key</label>
+        <input class="form-input" id="register-key" name="registration_key" type="password" autocomplete="off" required maxlength="512" />
+        <button class="btn btn-primary auth-submit" type="submit">Create account</button>
+      </form>
+      <div class="auth-switch" id="auth-switch" hidden>
+        <span id="auth-switch-copy">Need an account?</span>
+        <button type="button" class="btn btn-ghost btn-sm" id="auth-switch-button">Create account</button>
+      </div>
+      <p class="auth-footnote">Local accounts are limited to the local development workspace.</p>
+    </section>
+  </main>
+  <script src="/static/js/api.js?v=20261112-auth1"></script>
+  <script src="/static/js/auth.js?v=20261112-auth1"></script>
+</body>
+</html>

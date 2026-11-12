@@ -213,6 +213,14 @@ def annotate_privacy_threats(threats: Iterable[dict], dfd_model: dict | None) ->
             threat["privacy_question_refs"] = context["question_ids"]
         if context["status"] in {"unknown", "partial"}:
             threat["finding_status"] = "needs_context"
+            threat["finding_state"] = "needs_context"
+            threat["finding_kind"] = "threat_scenario"
+            threat["vulnerability_status"] = "not_verified"
+            threat["risk_status"] = "deferred"
+            risk_level = threat.get("risk_level")
+            if risk_level in {"Critical", "High", "Medium", "Low"}:
+                threat["scenario_risk_level"] = risk_level
+                threat["risk_level"] = "Unknown"
             if threat.get("status") in (None, "Open", "Candidate"):
                 threat["status"] = "Needs Info"
             missing_text = ", ".join(context["missing_fields"][:6]) or "documented privacy context"
@@ -222,4 +230,3 @@ def annotate_privacy_threats(threats: Iterable[dict], dfd_model: dict | None) ->
             threat["assumption"] = str(threat.get("assumption") or "").strip() or "Privacy context is incomplete; this candidate requires human review."
         annotated.append(threat)
     return annotated
-

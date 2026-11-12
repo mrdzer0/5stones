@@ -20,10 +20,15 @@ NodeType = Literal["entity", "process", "data_store"]
 BoundaryType = Literal["network", "identity", "privilege", "tenant", "organization", "unknown"]
 InteractionKind = Literal["request", "response", "event", "read", "write", "replication", "unknown"]
 ViewKind = Literal["context", "system", "feature"]
+ProjectionNodeType = Literal["system", "entity", "process", "data_store"]
+DecompositionStatus = Literal["decomposed", "detail_only", "pending", "not_applicable"]
 QuestionStatus = Literal["open", "answered", "deferred"]
 BoundaryStatus = Literal["candidate", "confirmed", "rejected", "unresolved"]
 CrossingOrigin = Literal["derived", "reviewer"]
 TransitionScope = Literal["zone", "logical", "mixed", "unknown"]
+FlowGroundingStatus = Literal["grounded", "candidate", "deferred"]
+SemanticIssueSeverity = Literal["info", "warning", "blocking"]
+SemanticIssueStatus = Literal["open", "accepted", "deferred", "resolved"]
 
 
 class DfdBase(BaseModel):
@@ -126,6 +131,9 @@ class DfdFlow(DfdBase):
     crossing_rationales: dict[str, str] = Field(default_factory=dict)
     crossing_origins: dict[str, CrossingOrigin] = Field(default_factory=dict)
     crossing_status: Literal["resolved", "unresolved"] = "resolved"
+    grounding_status: FlowGroundingStatus = "grounded"
+    grounding_reason: str | None = None
+    endpoint_classification: dict[str, str] = Field(default_factory=dict)
     evidence_refs: list[str] = Field(default_factory=list)
     knowledge_status: KnowledgeStatus = "unknown"
     implementation_status: ImplementationStatus = "unknown"
@@ -172,6 +180,39 @@ class DfdBoundary(DfdBase):
     evidence_refs: list[str] = Field(default_factory=list)
 
 
+class DfdProjectionNode(DfdBase):
+    """A view-only node mapped back to one or more canonical DFD nodes."""
+    id: str
+    display_id: str
+    type: ProjectionNodeType
+    name: str = Field(min_length=1, max_length=240)
+    canonical_node_ids: list[str] = Field(default_factory=list)
+    scope: ScopeValue = "unknown"
+    ownership: OwnershipValue = "unknown"
+    exposure: ExposureValue = "unknown"
+    zone_ids: list[str] = Field(default_factory=list)
+    knowledge_status: KnowledgeStatus = "unknown"
+    implementation_status: ImplementationStatus = "unknown"
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class DfdProjectionFlow(DfdBase):
+    """A view-only flow whose canonical constituent flows remain auditable."""
+    id: str
+    display_id: str
+    source_id: str
+    target_id: str
+    name: str = Field(min_length=1, max_length=240)
+    canonical_flow_ids: list[str] = Field(default_factory=list)
+    data_object_ids: list[str] = Field(default_factory=list)
+    protocol: str | None = None
+    interaction_kind: InteractionKind = "unknown"
+    boundary_crossings: list[str] = Field(default_factory=list)
+    crossing_status: Literal["resolved", "unresolved"] = "resolved"
+    grounding_status: FlowGroundingStatus = "candidate"
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
 class DfdView(DfdBase):
     id: str
     kind: ViewKind
@@ -181,6 +222,10 @@ class DfdView(DfdBase):
     input_flow_ids: list[str] = Field(default_factory=list)
     output_flow_ids: list[str] = Field(default_factory=list)
     port_mappings: dict[str, list[str]] = Field(default_factory=dict)
+    projection_nodes: list[DfdProjectionNode] = Field(default_factory=list)
+    projection_flows: list[DfdProjectionFlow] = Field(default_factory=list)
+    decomposition_status: DecompositionStatus = "not_applicable"
+    projection_issues: list[str] = Field(default_factory=list)
     positions: dict[str, dict[str, float]] = Field(default_factory=dict)
     collapsed_groups: list[str] = Field(default_factory=list)
     viewport: dict[str, float] = Field(default_factory=dict)
@@ -196,12 +241,64 @@ class DfdQuestion(DfdBase):
     resolution: str | None = None
 
 
+class DfdDeferredInteraction(DfdBase):
+    """A flow-shaped claim that is visible for review but not canonical analysis input."""
+
+    id: str
+    source: str | None = None
+    destination: str | None = None
+    data: list[str] = Field(default_factory=list)
+    reason: str
+    owner: str = "Product / Architecture"
+    next_action: str
+    evidence_refs: list[str] = Field(default_factory=list)
+    status: Literal["deferred", "resolved"] = "deferred"
+
+
+class DfdSemanticIssue(DfdBase):
+    id: str
+    code: str
+    severity: SemanticIssueSeverity = "warning"
+    status: SemanticIssueStatus = "open"
+    message: str
+    reason: str | None = None
+    next_action: str
+    owner: str = "Product / Architecture"
+    affected_refs: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class DfdAliasMapping(DfdBase):
+    canonical_id: str
+    canonical_label: str
+    alias: str
+    entity_type: str
+    decision: Literal["merged", "kept_separate", "unresolved"]
+    reason: str
+    identity_context: dict[str, str] = Field(default_factory=dict)
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class DfdSemanticQuality(DfdBase):
+    """Auditable DFD quality projection used by API, UI, and corpus evaluation."""
+
+    version: str = "dfd-quality-v1"
+    status: Literal["ready", "review", "blocked"] = "review"
+    metrics: dict[str, float | int | None] = Field(default_factory=dict)
+    counts: dict[str, int] = Field(default_factory=dict)
+    primary_interaction_ids: list[str] = Field(default_factory=list)
+    primary_interactions_by_feature: dict[str, list[str]] = Field(default_factory=dict)
+    deferred_interaction_ids: list[str] = Field(default_factory=list)
+    alias_mappings: list[DfdAliasMapping] = Field(default_factory=list)
+    issues: list[DfdSemanticIssue] = Field(default_factory=list)
+
+
 class DfdModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
     project_id: str
-    schema_version: str = "dfd-v1"
+    schema_version: str = "dfd-v2"
     revision: int = Field(default=1, ge=1)
     layout_revision: int = Field(default=1, ge=1)
     human_edit_revision: int = Field(default=0, ge=0)
@@ -215,6 +312,10 @@ class DfdModel(BaseModel):
     nodes: list[DfdNode] = Field(default_factory=list)
     data_objects: list[DfdDataObject] = Field(default_factory=list)
     flows: list[DfdFlow] = Field(default_factory=list)
+    deferred_interactions: list[DfdDeferredInteraction] = Field(default_factory=list)
+    primary_interaction_ids: list[str] = Field(default_factory=list)
+    primary_interactions_by_feature: dict[str, list[str]] = Field(default_factory=dict)
+    semantic_quality: DfdSemanticQuality | None = None
     stores: dict[str, DfdStoreMetadata] = Field(default_factory=dict)
     zones: list[DfdZone] = Field(default_factory=list)
     boundaries: list[DfdBoundary] = Field(default_factory=list)

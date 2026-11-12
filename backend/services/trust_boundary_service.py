@@ -16,7 +16,7 @@ BOUNDARY_TYPES = {"network", "identity", "privilege", "tenant", "organization", 
 ENTITY_SCOPES = {"in_scope", "external_dependency", "unknown"}
 ENTITY_OWNERSHIPS = {"organization", "customer", "vendor", "shared", "unknown"}
 ENTITY_EXPOSURES = {"internet_facing", "private", "local", "unknown"}
-ENTITY_CONTEXT_FIELDS = ("environment", "tenant_id", "control_party", "ownership")
+ENTITY_CONTEXT_FIELDS = ("environment", "tenant_id", "control_party", "ownership", "endpoint_identity")
 KNOWN_ENVIRONMENTS = {
     "dev", "development", "test", "testing", "qa", "sandbox", "stage", "staging",
     "prod", "production", "preview", "local",
@@ -111,6 +111,10 @@ def _identity_context(metadata: dict | None = None, extra: dict | None = None, l
                 "operatorControlParty", "provider", "provider_id", "providerId",
             ),
             "ownership": ("ownership", "owner_type", "ownerType"),
+            "endpoint_identity": (
+                "endpoint_identity", "endpointIdentity", "endpoint_id", "endpointId",
+                "host", "hostname", "base_url", "baseUrl",
+            ),
         }
         for field, names in aliases.items():
             if values.get(field):
@@ -236,6 +240,18 @@ def _endpoint_context(flow: dict, endpoint: str) -> dict[str, str]:
             if flow.get(key) not in (None, ""):
                 context[field] = flow.get(key)
                 break
+    # An explicit endpoint/host is identity context. A locator is provenance
+    # only and must not split one service into a new node for every paragraph.
+    for key in (
+        f"{endpoint}_endpoint", f"{endpoint}_endpoint_id", f"{endpoint}_endpointId",
+        f"{endpoint}_host", f"{endpoint}_hostname", f"{endpoint}_base_url",
+    ):
+        if flow.get(key) not in (None, ""):
+            context["endpoint_identity"] = flow.get(key)
+            break
+    locator = flow.get(f"{endpoint}_evidence_locator") or flow.get(f"{endpoint}_locator")
+    if locator:
+        context["evidence_locator"] = locator
     return context
 
 
@@ -359,6 +375,18 @@ def build_entity_registry(project: dict, flows: list[dict] | None = None) -> dic
         display = _display_label(label)
         if not display:
             return
+        declared_alias = str(entity_type or "").casefold().replace("-", "_")
+        if declared_alias in {"store", "database", "datastore", "data_store"}:
+            entity_type = "data_store"
+        elif declared_alias in {"external", "external_system", "vendor", "provider"}:
+            entity_type = "external_system"
+        elif declared_alias in {"user", "principal", "actor"}:
+            entity_type = "actor"
+        elif declared_alias in {"api", "service", "process", "component", "ingress"}:
+            # A declared generic component must not hide an explicit database
+            # or storage identity present in the endpoint label.
+            inferred_type = _entity_type(display)
+            entity_type = inferred_type if inferred_type == "data_store" else "component"
         canonical_display = _identity_label_base(display) or display
         if entity_type == "component" and _composite_external_endpoint(display, external_systems):
             entity_type = "external_system"
@@ -579,6 +607,12 @@ def build_grounded_data_flows(project: dict) -> list[dict]:
         }]
 
     grounded = []
+    declared_actors = {
+        _display_label(value).casefold() for value in (manual.get("actors") or project.get("actors") or [])
+    }
+    declared_external = {
+        _display_label(value).casefold() for value in (project.get("external_systems") or [])
+    }
     for index, flow in enumerate(extracted_flows):
         source = _display_label(flow.get("source"))
         destination = _display_label(flow.get("destination"))
@@ -586,23 +620,81 @@ def build_grounded_data_flows(project: dict) -> list[dict]:
             *(flow.get("evidence_refs") or []),
             *(f"artifact:{artifact_id}" for artifact_id in (flow.get("artifact_ids") or [])),
         ])
-        if not source or not destination or not evidence_refs:
+        if not source or not destination:
             continue
-        evidence_type = flow.get("evidence_type") or "derived"
+        legacy_claim = not evidence_refs
+        if legacy_claim:
+            # Old parsers persisted a structured flow but no document locator.
+            # Keep its topology visible, without promoting the claim to direct
+            # document evidence or pretending it is architecture-confirmed.
+            evidence_refs = [f"legacy-flow:{index}"]
+        evidence_type = "inference" if legacy_claim else flow.get("evidence_type") or "derived"
+
+        def endpoint_type(label: str) -> str:
+            if label.casefold() in declared_actors:
+                return "actor"
+            if label.casefold() in declared_external:
+                return "external_system"
+            return _entity_type(label)
+
         grounded.append({
             **flow,
             "flow_id": flow.get("flow_id") or _stable_id("flow", source, destination, index),
             "source": source,
             "destination": destination,
-            "source_entity_type": flow.get("source_entity_type") or "component",
-            "destination_entity_type": flow.get("destination_entity_type") or "component",
+            "source_entity_type": flow.get("source_entity_type") or endpoint_type(source),
+            "destination_entity_type": flow.get("destination_entity_type") or endpoint_type(destination),
             "evidence_type": evidence_type,
             "evidence_refs": evidence_refs,
-            "basis": flow.get("basis") or "Flow extracted from an artifact and retained as a candidate until architecture review.",
-            "confidence": flow.get("confidence") or ("High" if evidence_type == "direct" else "Medium"),
-            "status": "Confirmed" if evidence_type == "direct" else "Candidate",
+            "basis": (
+                "Legacy project extraction has source and destination but no per-flow document locator or source revision; confirm against the PRD and architecture."
+                if legacy_claim else flow.get("basis") or "Flow extracted from an artifact and retained as a candidate until architecture review."
+            ),
+            "confidence": "Low" if legacy_claim else flow.get("confidence") or ("High" if evidence_type == "direct" else "Medium"),
+            "status": "Candidate" if legacy_claim else "Confirmed" if evidence_type == "direct" else "Candidate",
         })
     return grounded
+
+
+def build_deferred_data_flows(project: dict) -> list[dict]:
+    """Expose flow-shaped claims that cannot become canonical interactions.
+
+    The previous adapter silently dropped malformed endpoints and represented
+    evidence-free legacy claims as if they were normal facts.  The canonical
+    graph still keeps legacy candidates visible for backward-compatible review,
+    but this manifest gives the UI and quality gate an explicit deferred state.
+    """
+    deferred: list[dict] = []
+    for index, raw in enumerate(project.get("extracted_data_flows") or []):
+        if not isinstance(raw, dict):
+            continue
+        source = str(raw.get("source") or "").strip()
+        destination = str(raw.get("destination") or "").strip()
+        evidence_refs = _unique_strings([
+            *(raw.get("evidence_refs") or []),
+            *(f"artifact:{artifact_id}" for artifact_id in (raw.get("artifact_ids") or [])),
+        ])
+        reasons = []
+        if not source or not destination:
+            reasons.append("source and destination endpoints are incomplete")
+        if not evidence_refs:
+            reasons.append("no source revision or locator is attached")
+        if not reasons:
+            continue
+        flow_id = str(raw.get("flow_id") or _stable_id("flow", source, destination, index))
+        deferred.append({
+            "id": _stable_id("deferred-flow", flow_id),
+            "flow_id": flow_id,
+            "source": source or None,
+            "destination": destination or None,
+            "data": _unique_strings(raw.get("data") or []),
+            "reason": "; ".join(reasons),
+            "owner": str(raw.get("owner") or "Product / Architecture"),
+            "next_action": "Attach a document locator or runtime observation and resolve both endpoint aliases.",
+            "evidence_refs": evidence_refs,
+            "status": "deferred",
+        })
+    return deferred
 
 
 def validate_boundary_candidates(boundaries: list[dict], registry: dict[str, dict], flows: list[dict]) -> tuple[list[dict], list[str]]:
@@ -1153,6 +1245,18 @@ def attach_target_refs(
         explicit_refs = {
             str(value) for value in (threat.get("affected_refs") or []) if value
         }
+        primary_interaction_ref = str(threat.get("primary_interaction_ref") or "")
+        if not primary_interaction_ref:
+            legacy_flow_refs = [
+                ref_id for ref_id in explicit_refs
+                if ref_id in canonical_targets and canonical_targets[ref_id][0] == "data_flow"
+            ]
+            if len(legacy_flow_refs) == 1:
+                primary_interaction_ref = legacy_flow_refs[0]
+                threat["primary_interaction_ref"] = primary_interaction_ref
+                threat["interaction_mapping_status"] = "mapped"
+                threat["interaction_mapping_reason"] = "A single legacy flow reference was migrated as the primary interaction."
+                threat["dfd_context_refs"] = sorted(ref_id for ref_id in explicit_refs if ref_id != primary_interaction_ref)
         available_ids = {str(item["boundary_id"]) for item in candidates}
         retained = sorted(known_ids.intersection(available_ids))
         retained.extend(sorted(
@@ -1189,6 +1293,8 @@ def attach_target_refs(
                 "label": element.get("name") or element.get("id"),
                 "model_level": "semantic",
                 "match_basis": "AI-provided DFD reference",
+                "target_role": "primary_interaction" if ref_id == primary_interaction_ref else "context",
+                "is_primary_interaction": ref_id == primary_interaction_ref,
             })
         for boundary in candidates:
             if str(boundary["boundary_id"]) not in retained:
@@ -1254,8 +1360,19 @@ def attach_target_refs(
                 continue
             seen_refs.add(key)
             deduped.append(item)
+        deduped.sort(key=lambda item: 0 if str(item.get("id")) == primary_interaction_ref else 1)
         threat["target_refs"] = deduped
-        threat["mapping_status"] = "mapped" if deduped else "unmapped"
+        primary_target = next(
+            (
+                item for item in deduped
+                if item.get("type") == "data_flow" and str(item.get("id")) == primary_interaction_ref
+            ),
+            None,
+        )
+        threat["mapping_status"] = "mapped" if primary_target else "unmapped"
+        if primary_target:
+            threat["interaction_mapping_status"] = "mapped"
+            threat["interaction_mapping_reason"] = "Primary interaction resolves to a canonical DFD flow target."
     return threats or []
 
 
@@ -1270,16 +1387,18 @@ def propagate_target_refs(report: dict) -> dict:
 
     def merged_refs(threat_ids, existing=None) -> list[dict]:
         refs = []
-        seen = set()
+        seen: dict[tuple[object, object], int] = {}
         for item in [*(existing or []), *[ref for threat_id in (threat_ids or []) for ref in threat_by_id.get(str(threat_id), {}).get("target_refs") or []]]:
             if not isinstance(item, dict) or not item.get("id"):
                 continue
             key = (item.get("type"), item.get("id"))
             if key in seen:
+                if item.get("is_primary_interaction"):
+                    refs[seen[key]] = {**refs[seen[key]], **item}
                 continue
-            seen.add(key)
+            seen[key] = len(refs)
             refs.append(item)
-        return refs
+        return sorted(refs, key=lambda item: 0 if item.get("is_primary_interaction") else 1)
 
     for control in report.get("controls") or []:
         control["target_refs"] = merged_refs(control.get("threat_ids") or [], control.get("target_refs"))
@@ -1292,6 +1411,7 @@ def propagate_target_refs(report: dict) -> dict:
 
 def build_trust_model(project: dict) -> dict:
     flows = build_grounded_data_flows(project)
+    deferred_flows = build_deferred_data_flows(project)
     registry = build_entity_registry(project, flows)
     zone_metadata = _zone_metadata_index(project)
     normalized_flows = []
@@ -1363,11 +1483,17 @@ def build_trust_model(project: dict) -> dict:
             )
     if not boundaries:
         warnings.append("No grounded cross-zone data flow is available; add or confirm architecture relationships.")
+    if deferred_flows:
+        warnings.extend(
+            f"Deferred flow {item['flow_id']}: {item['reason']}"
+            for item in deferred_flows
+        )
     return {
         "version": TRUST_MODEL_VERSION,
         "generation_method": "deterministic",
         "entities": sorted(registry.values(), key=lambda item: (item["zone_id"], item["name"].casefold())),
         "data_flows": flows,
+        "deferred_flows": deferred_flows,
         "boundaries": boundaries,
         "views": views,
         "warnings": _unique_strings(warnings),

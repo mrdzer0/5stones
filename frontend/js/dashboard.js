@@ -2,7 +2,12 @@
  * Dashboard — project list, stats, search
  */
 document.addEventListener('DOMContentLoaded', async () => {
+  document.getElementById('project-archive-import').addEventListener('click', () => {
+    document.getElementById('project-archive-input').click();
+  });
+  document.getElementById('project-archive-input').addEventListener('change', importProjectArchive);
   await loadDashboard();
+  await loadLegacyImportStatus();
 
   document.getElementById('search-input').addEventListener('input', (e) => {
     filterProjects(e.target.value.toLowerCase());
@@ -68,13 +73,18 @@ function projectCardHtml(p) {
       ${rs.high ? `<span class="risk-pill badge-high">${rs.high} High</span>` : ''}
       ${rs.medium ? `<span class="risk-pill badge-medium">${rs.medium} Medium</span>` : ''}
       ${rs.low ? `<span class="risk-pill badge-low">${rs.low} Low</span>` : ''}
+      ${rs.needs_context_total ? `<span class="risk-pill badge-neutral">${rs.needs_context_total} risk deferred</span>` : ''}
     </div>` : `<div class="text-sm text-muted">No analysis yet</div>`;
 
-  const status = p.analysis_status === 'completed'
-    ? `<span class="badge badge-mitigated">Analyzed</span>`
-    : `<span class="badge badge-neutral">Pending</span>`;
+  const status = p.signoff_ready === true
+    ? `<span class="badge badge-mitigated">Sign-off ready</span>`
+    : hasReport
+      ? `<span class="badge badge-medium">Review required</span>`
+      : `<span class="badge badge-neutral">Pending</span>`;
 
-  const href = hasReport ? `/report.html?id=${p.project_id}` : `/analysis.html?id=${p.project_id}`;
+  const href = window.UIState
+    ? window.UIState.route(hasReport ? 'report' : 'analysis', p.project_id)
+    : `${hasReport ? '/report.html' : '/analysis.html'}?id=${encodeURIComponent(p.project_id)}`;
   const readiness = Number.isFinite(p.completeness_score) ? p.completeness_score : (p.completeness_score || 0);
 
   return `
@@ -89,7 +99,7 @@ function projectCardHtml(p) {
         <div style="height:6px;background:var(--surface-3);border-radius:999px;overflow:hidden;flex:1;">
           <div style="height:100%;width:${Math.max(0, Math.min(100, readiness))}%;background:${readiness >= 85 ? 'var(--green)' : readiness >= 65 ? 'var(--orange)' : 'var(--accent)'};"></div>
         </div>
-        <span class="text-xs text-muted">${readiness}/100</span>
+        <span class="text-xs text-muted" title="Input context completeness">Input ${readiness}/100</span>
       </div>
       ${riskPills}
       <div class="project-card-meta">
@@ -97,16 +107,19 @@ function projectCardHtml(p) {
         <span>${relativeTime(p.updated_at)}</span>
       </div>
     </a>
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:var(--space-4);padding-top:var(--space-3);border-top:1px solid var(--border);gap:var(--space-2);">
+    <div class="project-card-actions">
       <a href="${href}" class="btn btn-secondary btn-sm" style="flex:1;justify-content:center;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
         View
       </a>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="exportProjectArchive('${escHtml(p.project_id)}')" title="Export this project and its report history">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 4v12m0 0 5-5m-5 5-5-5"/><path d="M5 16v3a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3"/></svg>
+        Export
+      </button>
       <button
-        class="btn btn-ghost btn-sm"
+        class="btn btn-ghost btn-sm btn-delete"
         onclick="deleteProject('${p.project_id}', '${escHtml(p.name).replace(/'/g, "&apos;")}')"
         title="Delete project"
-        style="color:var(--accent);flex-shrink:0;"
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
         Delete
@@ -132,5 +145,81 @@ window.deleteProject = async function(projectId, projectName) {
     await loadDashboard();
   } catch (err) {
     showToast('Failed to delete project: ' + err.message, 'error');
+  }
+};
+
+window.exportProjectArchive = async function(projectId) {
+  try {
+    const response = await API.projects.exportArchive(projectId);
+    if (!response.ok) {
+      let detail = `API error ${response.status}`;
+      try {
+        const payload = await response.json();
+        const value = payload?.detail;
+        detail = typeof value === 'string' ? value : (value?.message || detail);
+      } catch {}
+      throw new Error(detail);
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get('Content-Disposition') || '';
+    const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1] || `5stones-project-${projectId}.zip`;
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    showToast('Project archive downloaded', 'info');
+  } catch (err) {
+    showToast(`Could not export project archive: ${err.message}`, 'error');
+  }
+};
+
+async function importProjectArchive(event) {
+  const input = event.currentTarget;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  try {
+    const result = await API.projects.importArchive(file);
+    await loadDashboard();
+    showToast(`Imported "${result.project?.name || 'project'}" with its report history`, 'info');
+  } catch (err) {
+    showToast(`Could not import project archive: ${err.message}`, 'error');
+  }
+}
+
+async function loadLegacyImportStatus() {
+  const notice = document.getElementById('legacy-import-notice');
+  notice.hidden = true;
+  try {
+    const status = await API.projects.legacyImportStatus();
+    if (!status.available || !status.legacy_project_count) return;
+    notice.innerHTML = `
+      <div class="legacy-import-copy">
+        <strong>Previous local projects are available</strong>
+        <span>${status.legacy_project_count} project(s) have no account owner yet. Recovery assigns them to this account and keeps them private from other accounts.</span>
+      </div>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="recoverLegacyProjects(${Number(status.legacy_project_count)})">Recover previous data</button>`;
+    notice.hidden = false;
+  } catch {
+    // This action is intentionally hidden from non-admin and multi-account setups.
+  }
+}
+
+window.recoverLegacyProjects = async function(projectCount) {
+  const confirmed = confirm(
+    `Assign ${projectCount} previous local project(s) to this account?\n\nOnly this account will be able to read them. A local backup is created before ownership metadata changes.`
+  );
+  if (!confirmed) return;
+  try {
+    const result = await API.projects.importLegacy();
+    await loadDashboard();
+    await loadLegacyImportStatus();
+    showToast(`Recovered ${result.imported_count} previous project(s)`, 'info');
+  } catch (err) {
+    showToast(`Could not recover previous data: ${err.message}`, 'error');
   }
 };

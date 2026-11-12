@@ -1,6 +1,7 @@
 """Secure artifact file validation and text extraction."""
 from __future__ import annotations
 import io
+import hashlib
 import json
 import zipfile
 from pathlib import Path
@@ -57,18 +58,36 @@ async def read_validated_artifact_file(artifact_type: str, file: UploadFile) -> 
     # OpenAPI and Postman must retain their complete structure. Pretty-printing,
     # whitespace collapsing, or character truncation can corrupt YAML and JSON.
     structured_api_artifact = artifact_type in {"openapi", "postman"}
+    omissions = []
     if structured_api_artifact:
         text = _decode_text(content)
+    elif suffix == ".pdf":
+        extracted, omissions = _extract_pdf_with_omissions(content)
+        text = _clean_text(extracted)
+    elif suffix == ".docx":
+        extracted, omissions = _extract_docx_with_omissions(content)
+        text = _clean_text(extracted)
     else:
         text = _clean_text(_extract_text(suffix, content))
     if not text:
         raise HTTPException(status_code=422, detail="Could not extract readable text from the uploaded artifact")
 
+    truncated = False if structured_api_artifact else len(text) > MAX_EXTRACTED_CHARS
+    truncated_chars = max(0, len(text) - MAX_EXTRACTED_CHARS) if truncated else 0
+    if truncated:
+        omissions.append({
+            "kind": "character_range", "locator": f"characters {MAX_EXTRACTED_CHARS + 1}-{len(text)}",
+            "reason": "Extracted text exceeded the ingestion character limit",
+            "start_char": MAX_EXTRACTED_CHARS, "end_char": len(text),
+        })
     return {
         "filename": filename,
         "content": text if structured_api_artifact else text[:MAX_EXTRACTED_CHARS],
         "size_bytes": len(content),
-        "truncated": False if structured_api_artifact else len(text) > MAX_EXTRACTED_CHARS,
+        "source_hash": hashlib.sha256(content).hexdigest(),
+        "truncated": truncated or bool(omissions),
+        "truncated_chars": truncated_chars,
+        "extraction_omissions": omissions,
         "structured": structured_api_artifact,
     }
 
@@ -104,6 +123,10 @@ def _extract_text(suffix: str, content: bytes) -> str:
 
 
 def _extract_pdf(content: bytes) -> str:
+    return _extract_pdf_with_omissions(content)[0]
+
+
+def _extract_pdf_with_omissions(content: bytes) -> tuple[str, list[dict]]:
     try:
         from pypdf import PdfReader
     except ImportError as exc:
@@ -113,10 +136,18 @@ def _extract_pdf(content: bytes) -> str:
         reader = PdfReader(io.BytesIO(content))
         if reader.is_encrypted:
             raise HTTPException(status_code=415, detail="Encrypted PDF files are not supported")
+        total_pages = len(reader.pages)
+        page_limit = 80
         pages = []
-        for page in reader.pages[:80]:
+        for page in reader.pages[:page_limit]:
             pages.append(page.extract_text() or "")
-        return "\n\n".join(pages)
+        text = "\n\n".join(pages)
+        omissions = [{
+            "kind": "pdf_pages", "locator": f"pages {page_limit + 1}-{total_pages}",
+            "reason": "PDF page extraction limit", "start_page": page_limit + 1,
+            "end_page": total_pages,
+        }] if total_pages > page_limit else []
+        return text, omissions
     except HTTPException:
         raise
     except Exception as exc:
@@ -124,6 +155,10 @@ def _extract_pdf(content: bytes) -> str:
 
 
 def _extract_docx(content: bytes) -> str:
+    return _extract_docx_with_omissions(content)[0]
+
+
+def _extract_docx_with_omissions(content: bytes) -> tuple[str, list[dict]]:
     buffer = io.BytesIO(content)
     if not zipfile.is_zipfile(buffer):
         raise HTTPException(status_code=415, detail="Invalid DOCX file")
@@ -136,12 +171,19 @@ def _extract_docx(content: bytes) -> str:
     try:
         doc = Document(io.BytesIO(content))
         parts = [p.text for p in doc.paragraphs if p.text.strip()]
-        for table in doc.tables[:20]:
+        table_limit = 20
+        total_tables = len(doc.tables)
+        for table in doc.tables[:table_limit]:
             for row in table.rows:
                 values = [cell.text.strip() for cell in row.cells if cell.text.strip()]
                 if values:
                     parts.append(" | ".join(values))
-        return "\n".join(parts)
+        omissions = [{
+            "kind": "docx_tables", "locator": f"tables {table_limit + 1}-{total_tables}",
+            "reason": "DOCX table extraction limit", "start_table": table_limit + 1,
+            "end_table": total_tables,
+        }] if total_tables > table_limit else []
+        return "\n".join(parts), omissions
     except Exception as exc:
         raise HTTPException(status_code=422, detail="Could not parse DOCX artifact") from exc
 
@@ -167,7 +209,9 @@ def _extract_json(content: bytes) -> str:
         parsed = json.loads(text)
     except json.JSONDecodeError:
         return text
-    return json.dumps(_redact_large_values(parsed), indent=2, ensure_ascii=False)
+    # Keep the full decoded document until the single, measured character cap
+    # below. Per-value/list clipping here would silently lose tail evidence.
+    return json.dumps(parsed, indent=2, ensure_ascii=False)
 
 
 def _decode_text(content: bytes) -> str:

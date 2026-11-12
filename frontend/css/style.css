@@ -19,8 +19,8 @@
 
   --text:         #1D3557;
   --text-2:       #284766;
-  --text-muted:   #457B9D;
-  --text-faint:   #7FA6B8;
+  --text-muted:   #386B86;
+  --text-faint:   #536B78;
 
   /* Brand navy from logo */
   --primary:      #1D3557;
@@ -30,11 +30,11 @@
   --accent-light: #FFF1F1;
   --accent-border:#F4B8BC;
 
-  --orange:       #B85C38;      /* High risk */
+  --orange:       #8C3A1F;      /* High risk */
   --orange-light: #FFF4EE;
   --orange-border:#EBC2B2;
 
-  --yellow:       #9A6A21;      /* Medium risk */
+  --yellow:       #6E4B13;      /* Medium risk */
   --yellow-light: #FFF9E9;
   --yellow-border:#EBD99C;
 
@@ -42,7 +42,7 @@
   --green-light:  #EDF8F3;
   --green-border: #B9DFD0;
 
-  --blue:         #457B9D;      /* Info / STRIDE */
+  --blue:         #2F6586;      /* Info / STRIDE */
   --blue-light:   #EDF7F8;
   --blue-border:  #A8DADC;
 
@@ -59,6 +59,15 @@
   /* Typography */
   --font:         'Space Grotesk', sans-serif;
   --font-mono:    'JetBrains Mono', 'Fira Code', monospace;
+  --font-size-body: 1rem;
+  --font-size-meta: .75rem;
+  --font-size-caption: .75rem;
+  --line-height-body: 1.5;
+  --line-height-tight: 1.25;
+  --content-measure: 70ch;
+  --control-min: 40px;
+  --control-touch: 44px;
+  --focus-ring: 0 0 0 3px rgba(47,101,134,.24);
 
   /* Spacing */
   --space-1: 4px;
@@ -90,16 +99,17 @@
 /* ── Reset ──────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-html { font-size: 15px; -webkit-text-size-adjust: 100%; }
+html { font-size: 16px; -webkit-text-size-adjust: 100%; }
 
 body {
   font-family: var(--font);
-  font-size: 0.933rem;
-  line-height: 1.6;
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
   min-height: 100vh;
+  overflow-x: clip;
 }
 
 /* ── App Shell ──────────────────────────────────────────────── */
@@ -129,6 +139,7 @@ body {
   padding: 22px 18px 20px;
   border-bottom: 1px solid var(--border);
 }
+.sidebar-logo > a { min-height: var(--control-min); }
 
 /* Logo image replaces icon+text */
 .sidebar-logo-img {
@@ -198,6 +209,7 @@ body {
   border-radius: 8px;
   transition: background var(--t-fast), color var(--t-fast);
   position: relative;
+  min-height: var(--control-min);
 }
 
 .sidebar-nav a:hover {
@@ -217,6 +229,8 @@ body {
 
 .sidebar-nav a svg { width: 16px; height: 16px; opacity: 0.7; flex-shrink: 0; }
 .sidebar-nav a.active svg, .sidebar-nav a:hover svg { opacity: 1; }
+
+#sidebar-toggle { min-width: var(--control-min); min-height: var(--control-min); }
 
 .sidebar-footer {
   margin-top: auto;
@@ -258,6 +272,51 @@ body {
   align-items: center;
   gap: var(--space-3);
 }
+.topbar-left > .btn { min-width: var(--control-min); }
+
+/* One project-stage navigator shared by all project workspaces. */
+.project-workflow-nav {
+  display: flex;
+  align-items: center;
+  min-height: 52px;
+  margin: 0 32px;
+  padding: 7px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-top: 0;
+  border-radius: 0 0 10px 10px;
+  box-shadow: 0 1px 2px rgba(29,53,87,.04);
+  position: relative;
+  z-index: 40;
+}
+.project-workflow-links { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); width: 100%; gap: 4px; }
+.project-workflow-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 6px 9px;
+  color: var(--text-muted);
+  border-radius: 7px;
+  text-decoration: none;
+  font-size: .75rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.project-workflow-link:hover { color: var(--text); background: var(--surface-2); }
+.project-workflow-link.active { color: var(--primary); background: var(--blue-light); box-shadow: inset 0 -2px 0 var(--blue); }
+.project-workflow-index { display: grid; place-items: center; width: 21px; height: 21px; flex: 0 0 21px; color: currentColor; border: 1px solid currentColor; border-radius: 50%; font: 650 .64rem/1 var(--font-mono); }
+.project-workflow-copy { display: grid; min-width: 0; gap: 1px; text-align: left; }
+.project-workflow-state { overflow: hidden; max-width: 14ch; color: var(--text-faint); font-size: .58rem; font-weight: 600; line-height: 1.1; text-overflow: ellipsis; white-space: nowrap; }
+.project-workflow-link[data-run-status="needs-review"] .project-workflow-state,
+.project-workflow-link[data-run-status="blocked"] .project-workflow-state,
+.project-workflow-link[data-run-status="fallback"] .project-workflow-state { color: var(--orange); }
+.project-workflow-link[data-run-status="completed"] .project-workflow-state,
+.project-workflow-link[data-run-status="ready"] .project-workflow-state { color: var(--green); }
+.project-workflow-link[data-run-status="running"] .project-workflow-state { color: var(--blue); }
+.project-workflow-mobile { display: none; width: 100%; align-items: center; gap: 10px; color: var(--text-muted); font-size: .72rem; font-weight: 650; }
+.project-workflow-mobile select { flex: 1; min-height: var(--control-min); }
 
 .sidebar-toggle {
   width: 38px;
@@ -344,7 +403,7 @@ h2 { font-size: 1.15rem; font-weight: 600; letter-spacing: -0.015em; color: var(
 h3 { font-size: 0.95rem; font-weight: 600; color: var(--text); }
 h4 { font-size: 0.875rem; font-weight: 600; color: var(--text-2); }
 
-p { color: var(--text-2); line-height: 1.65; }
+p { color: var(--text-2); line-height: var(--line-height-body); }
 
 .text-muted { color: var(--text-muted); }
 .text-faint { color: var(--text-faint); }
@@ -371,9 +430,33 @@ p { color: var(--text-2); line-height: 1.65; }
 
 /* ── Focus styles ────────────────────────────────────────────── */
 :focus-visible {
-  outline: 2px solid var(--blue);
-  outline-offset: 2px;
+  outline: 3px solid var(--blue);
+  outline-offset: 3px;
   border-radius: var(--r-sm);
+  box-shadow: var(--focus-ring);
+}
+
+/* UX-M3: every default control is large enough to use without precision tapping. */
+.btn { min-height: var(--control-min); }
+.btn-lg { min-height: var(--control-touch); }
+
+/* Keep live status legible without competing with the page goal. */
+[aria-live="polite"], [role="status"] { overflow-wrap: anywhere; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+  }
+}
+
+@media (forced-colors: active) {
+  *, *::before, *::after { forced-color-adjust: auto; }
+  .btn-primary, .btn-danger { border: 2px solid ButtonText; }
+  .ux-orientation-item.is-next, .alert, .analysis-overview-status { border: 2px solid ButtonText; }
+  :focus-visible { outline: 3px solid Highlight; box-shadow: none; }
 }
 
 /* Responsive shell: preserve the shadcn-style density on small screens. */
@@ -381,6 +464,7 @@ p { color: var(--text-2); line-height: 1.65; }
   :root { --sidebar-w: 208px; }
   .page-body { padding: var(--space-6); }
   .topbar { padding-inline: var(--space-6); }
+  .project-workflow-nav { margin-inline: var(--space-6); }
 }
 
 @media (max-width: 640px) {
@@ -395,7 +479,13 @@ p { color: var(--text-2); line-height: 1.65; }
   .sidebar-footer { display: none; }
   .main-content { margin-left: 64px; }
   .page-body { padding: 20px 16px; }
-  .topbar { padding: 12px 16px; }
-  .topbar-actions .btn { font-size: 0; width: 38px; padding: 10px; }
+  .topbar { align-items: flex-start; flex-wrap: wrap; padding: 12px 16px; }
+  .project-workflow-nav { min-height: 54px; margin-inline: 12px; padding: 7px 9px; }
+  .project-workflow-links { display: none; }
+  .project-workflow-mobile { display: flex; }
+  .topbar-left { min-width: 0; flex: 1 1 auto; }
+  .topbar-actions { width: 100%; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+  .topbar-actions > div { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+  .topbar-actions .btn { width: auto; min-width: 0; min-height: 40px; padding: 9px 10px; font-size: .76rem; white-space: normal; }
   .topbar-actions .btn svg { margin: 0; }
 }

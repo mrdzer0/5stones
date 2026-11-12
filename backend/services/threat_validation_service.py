@@ -13,8 +13,14 @@ class _ThreatEnvelope(BaseModel):
 
     threat_category: str
     threat_description: str
+    primary_interaction_ref: str | None = None
     affected_refs: list[str] = Field(default_factory=list)
+    dfd_context_refs: list[str] = Field(default_factory=list)
+    generation_scope_flow_refs: list[str] = Field(default_factory=list)
     evidence_refs: list[str] = Field(default_factory=list)
+    scenario_evidence_refs: list[str] = Field(default_factory=list)
+    context_evidence_refs: list[str] = Field(default_factory=list)
+    control_gap_evidence_refs: list[str] = Field(default_factory=list)
     preconditions: list[str] = Field(default_factory=list)
     validation_steps: list[str] = Field(default_factory=list)
     known_controls: list[str] = Field(default_factory=list)
@@ -52,6 +58,8 @@ VALID_ASSESSMENT_STATUSES = {
     "partial",
     "fallback",
     "invalid",
+    "timed_out",
+    "blocked",
 }
 
 
@@ -191,6 +199,16 @@ def _model_ids(dfd_model: dict | None, *, include_review_elements: bool = False)
     return ids
 
 
+def _flow_ids(dfd_model: dict | None) -> set[str]:
+    if not isinstance(dfd_model, dict):
+        return set()
+    return {
+        str(item.get("id"))
+        for item in (dfd_model.get("flows") or [])
+        if isinstance(item, dict) and item.get("id")
+    }
+
+
 def validate_generated_threats(
     threats: Iterable[dict],
     framework: str,
@@ -203,6 +221,8 @@ def validate_generated_threats(
     not silently accepted as a real DFD target.
     """
     valid_ids = _model_ids(dfd_model)
+    valid_flow_ids = _flow_ids(dfd_model)
+    enforce_primary_interaction = isinstance(dfd_model, dict)
     accepted = []
     warnings = []
     allowed_categories = STRIDE_CATEGORIES if framework == "STRIDE" else set(LINDDUN_CATEGORY_ALIASES)
@@ -233,7 +253,16 @@ def validate_generated_threats(
         )
         item["title"] = str(item.get("title") or description[:140]).strip()
         item["scenario"] = str(item.get("scenario") or item.get("abuse_case") or description).strip()
-        item["finding_status"] = str(item.get("finding_status") or "candidate")
+        # Provider output is always an unreviewed threat scenario. Grounding,
+        # risk applicability, and vulnerability verification are derived by
+        # trusted application code after evidence resolution.
+        item["finding_kind"] = "threat_scenario"
+        item["finding_status"] = "candidate"
+        item["finding_state"] = "hypothesis"
+        item["vulnerability_status"] = "not_verified"
+        item["risk_status"] = "scenario_only"
+        item["status"] = "Open"
+        item["needs_human_review"] = True
         item["known_controls"] = _unique(item.get("known_controls") or [])
         item["recommended_mitigations"] = _unique(
             item.get("recommended_mitigations")
@@ -247,11 +276,52 @@ def validate_generated_threats(
                     f"{framework} candidate {index} referenced unknown DFD IDs: {', '.join(invalid_refs)}"
                 )
                 item["affected_refs"] = [ref for ref in item["affected_refs"] if ref in valid_ids]
-            if not item["affected_refs"]:
+        requested_context_refs = _unique(item.get("dfd_context_refs") or [])
+        if valid_ids:
+            invalid_context_refs = [ref for ref in requested_context_refs if ref not in valid_ids]
+            if invalid_context_refs:
                 warnings.append(
-                    f"Dropped {framework} candidate {index}: no valid canonical DFD target remained"
+                    f"{framework} candidate {index} referenced unknown DFD context IDs: "
+                    f"{', '.join(invalid_context_refs)}"
+                )
+            requested_context_refs = [ref for ref in requested_context_refs if ref in valid_ids]
+
+        primary_ref = str(item.get("primary_interaction_ref") or "").strip()
+        affected_flow_refs = [ref for ref in item["affected_refs"] if ref in valid_flow_ids]
+        if enforce_primary_interaction:
+            if primary_ref and primary_ref not in valid_flow_ids:
+                warnings.append(
+                    f"Dropped {framework} candidate {index}: primary interaction {primary_ref} is not a canonical DFD flow"
                 )
                 continue
+            if not primary_ref and len(affected_flow_refs) == 1:
+                primary_ref = affected_flow_refs[0]
+            elif not primary_ref:
+                reason = "no canonical DFD flow was referenced" if not affected_flow_refs else "multiple DFD flows were referenced without one primary interaction"
+                warnings.append(f"Dropped {framework} candidate {index}: {reason}")
+                continue
+            scope_flow_refs = set(_unique(item.get("generation_scope_flow_refs") or []))
+            if scope_flow_refs and primary_ref not in scope_flow_refs:
+                warnings.append(
+                    f"Dropped {framework} candidate {index}: primary interaction {primary_ref} was outside its generation batch"
+                )
+                continue
+
+        if primary_ref:
+            item["primary_interaction_ref"] = primary_ref
+            item["interaction_mapping_status"] = "mapped"
+            item["interaction_mapping_reason"] = "Primary interaction resolved to a canonical DFD flow."
+            item["affected_refs"] = _unique([primary_ref, *item["affected_refs"]])
+            item["dfd_context_refs"] = _unique([
+                *requested_context_refs,
+                *(ref for ref in item["affected_refs"] if ref != primary_ref),
+            ])
+        else:
+            item["primary_interaction_ref"] = None
+            item["interaction_mapping_status"] = "missing"
+            item["interaction_mapping_reason"] = "No canonical DFD interaction was available for validation."
+            item["dfd_context_refs"] = requested_context_refs
+        item.pop("generation_scope_flow_refs", None)
         item["mapping_refs"] = _unique(item.get("mapping_refs") or item.get("interaction_refs") or [])
         if valid_ids and item["mapping_refs"]:
             invalid_mapping = [ref for ref in item["mapping_refs"] if ref not in valid_ids]
@@ -260,14 +330,55 @@ def validate_generated_threats(
                     f"{framework} candidate {index} referenced unknown mapping IDs: {', '.join(invalid_mapping)}"
                 )
                 item["mapping_refs"] = [ref for ref in item["mapping_refs"] if ref in valid_ids]
-        item["evidence_refs"] = _unique(item.get("evidence_refs") or [])
+        explicit_scenario_refs = isinstance(raw.get("scenario_evidence_refs"), list)
+        claimed_scenario_refs = raw.get("scenario_evidence_refs") if explicit_scenario_refs else item.get("evidence_refs")
+        generic_refs = _unique(item.get("evidence_refs") or [])
+        item["scenario_evidence_refs"] = _unique(claimed_scenario_refs or [])
+        # evidence_refs remains a compatibility alias for evidence explicitly
+        # claimed to support the scenario. Auto-retrieved context is stored in
+        # context_evidence_refs and must never be promoted into this list.
+        item["evidence_refs"] = list(item["scenario_evidence_refs"])
+        compatibility_context = [
+            ref for ref in generic_refs
+            if explicit_scenario_refs and ref not in item["scenario_evidence_refs"]
+        ]
+        if compatibility_context:
+            warnings.append(
+                f"{framework} candidate {index} supplied evidence_refs not claimed by scenario_evidence_refs; "
+                "they were retained as context only"
+            )
+        item["context_evidence_refs"] = _unique([
+            *(item.get("context_evidence_refs") or []), *compatibility_context,
+        ])
+        item["control_gap_evidence_refs"] = _unique(item.get("control_gap_evidence_refs") or [])
         if evidence_ids is not None:
-            invalid_evidence = [ref for ref in item["evidence_refs"] if ref not in evidence_ids]
+            invalid_evidence = [ref for ref in item["scenario_evidence_refs"] if ref not in evidence_ids]
             if invalid_evidence:
                 warnings.append(
                     f"{framework} candidate {index} referenced unknown evidence IDs: {', '.join(invalid_evidence)}"
                 )
-                item["evidence_refs"] = [ref for ref in item["evidence_refs"] if ref in evidence_ids]
+                item["scenario_evidence_refs"] = [ref for ref in item["scenario_evidence_refs"] if ref in evidence_ids]
+                item["evidence_refs"] = list(item["scenario_evidence_refs"])
+            invalid_context_evidence = [ref for ref in item["context_evidence_refs"] if ref not in evidence_ids]
+            if invalid_context_evidence:
+                warnings.append(
+                    f"{framework} candidate {index} referenced unknown context evidence IDs: "
+                    f"{', '.join(invalid_context_evidence)}"
+                )
+                item["context_evidence_refs"] = [
+                    ref for ref in item["context_evidence_refs"] if ref in evidence_ids
+                ]
+            invalid_gap_evidence = [
+                ref for ref in item["control_gap_evidence_refs"] if ref not in evidence_ids
+            ]
+            if invalid_gap_evidence:
+                warnings.append(
+                    f"{framework} candidate {index} referenced unknown control-gap evidence IDs: "
+                    f"{', '.join(invalid_gap_evidence)}"
+                )
+                item["control_gap_evidence_refs"] = [
+                    ref for ref in item["control_gap_evidence_refs"] if ref in evidence_ids
+                ]
         if framework == "LINDDUN" and item["threat_category"] == "Non-compliance":
             # Both an explicit obligation and relevant evidence are required
             # before a non-compliance claim can be treated as a finding.  If
@@ -304,7 +415,13 @@ def validate_coverage(
     valid_ids = _model_ids(dfd_model, include_review_elements=True)
     accepted = []
     warnings = []
-    statuses = {"reviewed_no_candidate", "candidate_identified", "insufficient_information"}
+    # The original provider contract used three statuses.  CR4 adds explicit
+    # terminal states so a missing row cannot be confused with a reviewed
+    # negative or silently disappear from the coverage manifest.
+    statuses = {
+        "reviewed_no_candidate", "candidate_identified", "insufficient_information",
+        "assessed", "not_applicable", "deferred", "failed", "unprocessed",
+    }
     allowed_categories = STRIDE_CATEGORIES if framework == "STRIDE" else set(LINDDUN_CATEGORY_ALIASES)
     for index, raw in enumerate(coverage or []):
         if not isinstance(raw, dict):
@@ -346,6 +463,8 @@ def validate_coverage(
             "applicability": applicability,
             "applicability_rationale": rationale,
             "mapping_refs": mapping_refs,
+            "model_revision": raw.get("model_revision") or raw.get("analysis_revision"),
+            "dfd_semantic_hash": raw.get("dfd_semantic_hash"),
         })
     return accepted, warnings
 

@@ -2,18 +2,27 @@
 from __future__ import annotations
 import os
 import uuid
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from backend.utils.storage import get_settings, save_settings
-from backend.utils.audit import log_event, get_recent_events
+from backend.utils.audit import AuditIntegrityError, log_event, get_recent_events
 from backend.services.provider_policy import normalize_max_tokens, validate_provider_url, ProviderPolicyError
 from cryptography.fernet import Fernet
 import base64
+from backend.utils.access_control import require_roles, workspace_access_dependency, workspace_id_for_request
 
-router = APIRouter(prefix="/api/settings", tags=["settings"])
+router = APIRouter(
+    prefix="/api/settings",
+    tags=["settings"],
+    dependencies=[workspace_access_dependency, require_roles("admin")],
+)
 
 # Derive a Fernet key from APP_SECRET_KEY env var
 def _get_fernet() -> Fernet:
-    secret = os.getenv("APP_SECRET_KEY", "threatmodelz-default-insecure-key-32c")
+    secret = os.getenv("APP_SECRET_KEY", "")
+    if os.getenv("APP_ENV", "").strip().casefold() == "enterprise" and len(secret) < 32:
+        raise RuntimeError("Enterprise mode requires a unique APP_SECRET_KEY of at least 32 characters")
+    if not secret:
+        secret = "threatmodelz-default-insecure-key-32c"
     key = base64.urlsafe_b64encode(secret[:32].encode().ljust(32, b'0'))
     return Fernet(key)
 
@@ -48,9 +57,13 @@ def _validate_provider_input(data: dict, current: dict | None = None) -> tuple[s
     return base_url, is_local, max_tokens
 
 
+def _workspace_id(request: Request) -> str | None:
+    return workspace_id_for_request(request)
+
+
 @router.get("")
-async def get_app_settings():
-    settings = get_settings()
+async def get_app_settings(request: Request):
+    settings = get_settings(_workspace_id(request))
     # Mask API keys before returning
     safe = dict(settings)
     safe["providers"] = []
@@ -73,9 +86,9 @@ async def get_app_settings():
     return safe
 
 
-@router.put("")
-async def update_app_settings(data: dict):
-    settings = get_settings()
+@router.put("", dependencies=[require_roles("admin")])
+async def update_app_settings(data: dict, request: Request):
+    settings = get_settings(_workspace_id(request))
     if "default_data_policy" in data and data["default_data_policy"] not in {"local_only", "byok_allowed", "cloud_allowed"}:
         raise HTTPException(status_code=422, detail="default_data_policy is invalid")
     if "local_llm_endpoint" in data and data.get("local_llm_endpoint"):
@@ -88,15 +101,15 @@ async def update_app_settings(data: dict):
     for key in allowed:
         if key in data:
             settings[key] = data[key]
-    save_settings(settings)
+    save_settings(settings, _workspace_id(request))
     return {"success": True}
 
 
-@router.put("/active-source")
-async def set_active_source(data: dict):
+@router.put("/active-source", dependencies=[require_roles("admin")])
+async def set_active_source(data: dict, request: Request):
     """Switch the active LLM source. source='byok' requires provider_id; source='local' clears active_provider_id."""
     source = data.get("source")
-    settings = get_settings()
+    settings = get_settings(_workspace_id(request))
 
     if source == "byok":
         provider_id = data.get("provider_id")
@@ -134,19 +147,19 @@ async def set_active_source(data: dict):
     else:
         raise HTTPException(status_code=400, detail="source must be 'byok' or 'local'")
 
-    save_settings(settings)
+    save_settings(settings, _workspace_id(request))
     return {"success": True, "active_source": source}
 
 
-@router.post("/providers")
-async def add_provider(data: dict):
+@router.post("/providers", dependencies=[require_roles("admin")])
+async def add_provider(data: dict, request: Request):
     """Add a new LLM provider (BYOK)."""
     api_key = data.get("api_key", "")
     if not api_key:
         raise HTTPException(status_code=400, detail="api_key is required")
 
     base_url, is_local, max_tokens = _validate_provider_input(data)
-    settings = get_settings()
+    settings = get_settings(_workspace_id(request))
     provider = {
         "provider_id": str(uuid.uuid4()),
         "name": data.get("name", "Custom Provider"),
@@ -160,7 +173,7 @@ async def add_provider(data: dict):
         "_api_key": _encrypt(api_key),  # stored encrypted
     }
     settings.setdefault("providers", []).append(provider)
-    save_settings(settings)
+    save_settings(settings, _workspace_id(request))
 
     log_event("settings.provider_added", details={
         "provider_id": provider["provider_id"],
@@ -172,9 +185,9 @@ async def add_provider(data: dict):
     return safe
 
 
-@router.put("/providers/{provider_id}/activate")
-async def activate_provider(provider_id: str):
-    settings = get_settings()
+@router.put("/providers/{provider_id}/activate", dependencies=[require_roles("admin")])
+async def activate_provider(provider_id: str, request: Request):
+    settings = get_settings(_workspace_id(request))
     found = False
     for p in settings.get("providers", []):
         p["is_active"] = (p["provider_id"] == provider_id)
@@ -183,15 +196,15 @@ async def activate_provider(provider_id: str):
     if not found:
         raise HTTPException(status_code=404, detail="Provider not found")
     settings["active_provider_id"] = provider_id
-    save_settings(settings)
+    save_settings(settings, _workspace_id(request))
     log_event("settings.provider_activated", details={"provider_id": provider_id})
     return {"success": True}
 
 
-@router.put("/providers/{provider_id}")
-async def update_provider(provider_id: str, data: dict):
+@router.put("/providers/{provider_id}", dependencies=[require_roles("admin")])
+async def update_provider(provider_id: str, data: dict, request: Request):
     """Update details of an existing BYOK provider."""
-    settings = get_settings()
+    settings = get_settings(_workspace_id(request))
     provider = None
     for p in settings.get("providers", []):
         if p["provider_id"] == provider_id:
@@ -217,7 +230,7 @@ async def update_provider(provider_id: str, data: dict):
         provider["api_key_masked"] = _mask(api_key)
         provider["_api_key"] = _encrypt(api_key)
 
-    save_settings(settings)
+    save_settings(settings, _workspace_id(request))
     log_event("settings.provider_updated", details={"provider_id": provider_id, "model": provider.get("model")})
 
     safe = dict(provider)
@@ -225,23 +238,26 @@ async def update_provider(provider_id: str, data: dict):
     return safe
 
 
-@router.delete("/providers/{provider_id}")
-async def delete_provider(provider_id: str):
-    settings = get_settings()
+@router.delete("/providers/{provider_id}", dependencies=[require_roles("admin")])
+async def delete_provider(provider_id: str, request: Request):
+    settings = get_settings(_workspace_id(request))
     settings["providers"] = [p for p in settings.get("providers", []) if p["provider_id"] != provider_id]
     if settings.get("active_provider_id") == provider_id:
         settings["active_provider_id"] = None
-    save_settings(settings)
+    save_settings(settings, _workspace_id(request))
     log_event("settings.provider_deleted", details={"provider_id": provider_id})
     return {"success": True}
 
 
-@router.get("/list-models")
-async def list_models(base_url: str, api_key: str = "ollama", provider_id: str | None = None):
+@router.post("/list-models", dependencies=[require_roles("admin")])
+async def list_models(data: dict, request: Request):
     """Fetch available models from a local or remote LLM endpoint. Supports stored provider key fallback."""
+    base_url = str(data.get("base_url") or "").strip()
+    api_key = str(data.get("api_key") or "ollama")
+    provider_id = data.get("provider_id")
     try:
         if provider_id and (not api_key or api_key == "ollama" or api_key.startswith("***") or api_key == ""):
-            settings = get_settings()
+            settings = get_settings(_workspace_id(request))
             for p in settings.get("providers", []):
                 if p.get("provider_id") == provider_id:
                     decrypted = _decrypt(p.get("_api_key", ""))
@@ -266,11 +282,12 @@ async def list_models(base_url: str, api_key: str = "ollama", provider_id: str |
             "models": [m.id for m in models.data],
         }
     except Exception as exc:
-        return {"ok": False, "models": [], "error": str(exc)}
+        log_event("settings.models_list_failed", details={"provider_id": provider_id, "error_type": type(exc).__name__})
+        return {"ok": False, "models": [], "error": "Could not fetch models; check the provider URL and credentials."}
 
 
-@router.post("/check-connection")
-async def check_connection(data: dict):
+@router.post("/check-connection", dependencies=[require_roles("admin")])
+async def check_connection(data: dict, request: Request):
     """Test LLM connectivity. First lists available models, then does a chat completion. Supports stored provider decryption."""
     import time
     from openai import AsyncOpenAI
@@ -282,7 +299,7 @@ async def check_connection(data: dict):
         model = data.get("model")
 
         if provider_id:
-            settings = get_settings()
+            settings = get_settings(_workspace_id(request))
             for p in settings.get("providers", []):
                 if p.get("provider_id") == provider_id:
                     if not api_key or api_key.strip() == "":
@@ -345,7 +362,7 @@ async def check_connection(data: dict):
             "available_models": available_models,
         }
     except Exception as exc:
-        error_msg = str(exc)
+        error_msg = "Provider connection failed; check the endpoint, model, and credentials."
         # Helpful hint when no model is loaded in LM Studio
         hint = None
         if "No models loaded" in error_msg:
@@ -359,6 +376,12 @@ async def check_connection(data: dict):
         }
 
 
-@router.get("/audit")
-async def get_audit_log(limit: int = 100):
-    return get_recent_events(limit)
+@router.get("/audit", dependencies=[require_roles("admin")])
+async def get_audit_log(limit: int = 100, request: Request = None):
+    try:
+        return get_recent_events(limit, workspace_id_for_request(request))
+    except AuditIntegrityError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Audit history integrity verification failed; access is blocked.",
+        ) from exc

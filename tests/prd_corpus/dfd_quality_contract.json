@@ -1,0 +1,38 @@
+{
+  "schema_version": "dfd-quality-contract-v1",
+  "contract_id": "prd-corpus-dfd-quality-v1",
+  "source_manifest": "manifest.json",
+  "required_entity_fields": ["must_detect_actors", "must_detect_components", "must_detect_external_systems"],
+  "required_data_field": "must_detect_data",
+  "forbidden_field": "must_not_invent",
+  "label_policy": {
+    "required": "A labelled actor, component, external system, or data object must be present or explicitly deferred.",
+    "optional": "Architecture candidates may be present only when source evidence or an explicit inference reason is retained.",
+    "inferred_allowed": "Inference is allowed for grouping/projection, never as direct evidence or a confirmed vulnerability.",
+    "forbidden": "A forbidden vendor, endpoint, store, or fact is a precision failure even when recall is complete."
+  },
+  "allowed_aliases": [
+    {"canonical": "API Gateway", "aliases": ["api gateway", "API gateway", "gateway"], "type": "process"},
+    {"canonical": "Database", "aliases": ["database", "db", "data store", "relational database"], "type": "data_store"},
+    {"canonical": "Customer", "aliases": ["customer", "shopper", "buyer", "user"], "type": "entity"},
+    {"canonical": "Identity Provider", "aliases": ["identity provider", "corporate identity provider", "idp"], "type": "entity"}
+  ],
+  "calibration_cases": [
+    {
+      "case_id": "alias-context-split",
+      "required_entities": [{"label": "Payments API", "type": "external_system"}],
+      "required_data": [{"label": "charge"}],
+      "optional_entities": [],
+      "inferred_allowed": [],
+      "forbidden_hallucinations": ["unknown payment vendor", "production endpoint"]
+    },
+    {
+      "case_id": "minimal-incomplete-wallet",
+      "required_entities": [{"label": "User", "type": "entity"}, {"label": "Wallet application", "type": "process"}],
+      "required_data": [{"label": "Wallet balance"}, {"label": "Transfer amount"}],
+      "optional_entities": [],
+      "inferred_allowed": ["candidate ingress"],
+      "forbidden_hallucinations": ["database", "payment provider", "completed transfer flow"]
+    }
+  ]
+}

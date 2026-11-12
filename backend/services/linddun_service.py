@@ -16,6 +16,9 @@ awareness, retention, and re-identification. A project can have privacy threats 
 its has_pii flag is false.
 Only cite evidence IDs provided in the evidence catalog. Never invent evidence, quotes,
 source names, or IDs. Leave evidence_refs empty when a finding is framework inference.
+Never infer that a privacy/security control is absent or ineffective merely because it is
+not mentioned. Use control_gap_evidence_refs only for an explicit source statement or
+runtime observation; document omission is insufficient evidence.
 Return one strict JSON object. Be specific and actionable."""
 
 LINDDUN_CATEGORIES = [
@@ -34,6 +37,7 @@ async def generate_linddun_threats(
     trust_boundaries: List[dict],
     force_fallback: bool = False,
     dfd_model: dict | None = None,
+    prior_generation_manifest: dict | None = None,
 ) -> List[dict]:
     """Generate LINDDUN privacy threats from project context."""
     if force_fallback:
@@ -44,7 +48,7 @@ async def generate_linddun_threats(
             response_shape="deterministic_fallback",
         )
 
-    cfg = get_active_provider_config(project.get("data_policy"))
+    cfg = get_active_provider_config(project.get("data_policy"), project.get("workspace_id"))
 
     context = _build_privacy_context(project)[:1800]
     evidence_context = build_evidence_context(project, limit=10)
@@ -95,7 +99,9 @@ risks such as excessive disclosure, linking, or unawareness.
     "source": "data origin",
     "destination": "data destination",
     "trust_boundary": "boundary crossed",
-    "affected_refs": ["valid DFD node/flow/boundary/data-object IDs only"],
+    "primary_interaction_ref": "exact ID of the single canonical DFD flow where this privacy scenario occurs; required",
+    "affected_refs": ["primary flow ID plus any valid related DFD IDs"],
+    "dfd_context_refs": ["related node/boundary/data-object IDs only; never use these as a substitute for primary_interaction_ref"],
     "analysis_revision": "current canonical DFD revision",
     "dfd_semantic_hash": "current canonical DFD semantic hash",
     "asset": "personal data at risk",
@@ -106,14 +112,17 @@ risks such as excessive disclosure, linking, or unawareness.
     "known_controls": ["controls explicitly evidenced by the project context"],
     "recommended_mitigations": ["actionable privacy mitigation steps"],
     "obligation": "documented obligation only when relevant; otherwise leave empty",
-    "evidence_refs": ["one or more exact EV-... IDs from the catalog, or an empty array"],
+    "scenario_evidence_refs": ["exact EV-... IDs explicitly supporting the scenario, or an empty array"],
+    "evidence_refs": ["compatibility copy of scenario_evidence_refs; never add merely relevant context"],
+    "context_evidence_refs": ["EV-... IDs useful only as review context; these do not ground the scenario"],
+    "control_gap_evidence_refs": ["EV-... IDs explicitly proving an asserted control gap; empty when the gap is only unknown"],
     "assumption": "assumption made",
     "missing_info": "clarification needed",
     "preconditions": ["conditions required for the scenario"],
     "impact": "impact on individuals or privacy expectations",
     "validation_steps": ["Developer/QA/Product validation step"],
     "confidence": "High|Medium|Low",
-    "risk_level": "Critical|High|Medium|Low",
+    "provider_risk_level": "Critical|High|Medium|Low (advisory estimate only; final risk is calculated deterministically)",
     "owner": "Backend|Product|Legal|DevOps"
     }}
   ]
@@ -121,8 +130,9 @@ risks such as excessive disclosure, linking, or unawareness.
 
     parsed = await run_threat_batches(
         framework="LINDDUN", batches=batches, deferred_refs=deferred_refs,
-        system_prompt=LINDDUN_SYSTEM_PROMPT, prompt_prefix=user_prompt, prompt_suffix="Return coverage and privacy candidates only for this batch. An omitted pair is insufficient information, never a reviewed negative.",
+        system_prompt=LINDDUN_SYSTEM_PROMPT, prompt_prefix=user_prompt, prompt_suffix="Return coverage and privacy candidates only for this batch. Every candidate must select exactly one listed flow as primary_interaction_ref; if the batch has no flow, return coverage only and no threat. Keep related DFD IDs in dfd_context_refs and merely relevant evidence in context_evidence_refs. An omitted pair is insufficient information, never a reviewed negative. Missing documentation is an evidence gap, never proof of a missing control, privacy violation, or vulnerability.",
         provider=cfg, chat_complete_json=chat_complete_json,
+        prior_manifest=prior_generation_manifest,
     )
     threats = list(parsed)
 
@@ -176,7 +186,9 @@ def _fallback_linddun(project: dict, dfd_model: dict | None = None) -> list:
         "source": actors[0] if actors else "User",
         "destination": component,
         "trust_boundary": "",
+        "primary_interaction_ref": flow.get("id"),
         "affected_refs": refs,
+        "dfd_context_refs": [value for value in refs if value != flow.get("id")],
         "asset": data[0] if data else "Personal data",
         "data_classification": "PII",
         "assumption": "AI provider unavailable; candidate is derived from the first canonical flow and requires privacy review.",
@@ -184,7 +196,7 @@ def _fallback_linddun(project: dict, dfd_model: dict | None = None) -> list:
         "preconditions": ["The flow carries personal or linkable data."],
         "impact": "Privacy impact is unknown until purpose, recipient, and data minimization are verified.",
         "validation_steps": ["Review data inventory, response schema, recipient agreement, and retention policy."],
-        "risk_level": "Medium",
+        "provider_risk_level": "Medium",
         "confidence": "Low",
         "owner": "Product",
         "status": "Needs Info",

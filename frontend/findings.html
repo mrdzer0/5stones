@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Findings — 5STONES</title>
+  <meta name="description" content="Unified STRIDE and LINDDUN finding triage grounded in canonical DFD interactions." />
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <link rel="stylesheet" href="/static/css/components.css" />
+  <link rel="stylesheet" href="/static/css/pages.css?v=20260922u3" />
+</head>
+<body data-page="findings">
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="sidebar-logo"><a href="/index.html" style="display:flex;align-items:center;gap:var(--space-3);text-decoration:none;width:100%;"><img src="/static/logo.png" alt="5STONES" class="sidebar-logo-img" /><span class="sidebar-logo-badge" style="margin-left:auto;">MVP</span></a></div>
+    <div class="sidebar-section"><div class="sidebar-section-label">Workspace</div><ul class="sidebar-nav">
+      <li><a href="/index.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>Dashboard</a></li>
+      <li><a href="/project-new.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>New project</a></li>
+    </ul></div>
+    <div class="sidebar-section"><div class="sidebar-section-label">Configuration</div><ul class="sidebar-nav">
+      <li><a href="/settings.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0-14.14"/></svg>Settings &amp; BYOK</a></li>
+    </ul></div>
+    <div class="sidebar-footer">5STONES v1.0 · Structured Threat Modeling</div>
+  </aside>
+
+  <main class="main-content findings-page-content">
+    <header class="topbar"><div class="topbar-left"><a href="/analysis.html" id="back-analysis" class="btn btn-ghost btn-sm" aria-label="Back to analysis">←</a><div><div class="page-title" id="page-project-name">Loading…</div><div class="page-subtitle">Unified threat and privacy findings</div></div></div><div class="topbar-actions"><a href="/model.html" id="btn-findings-model" class="btn btn-secondary btn-sm">Open DFD model</a></div></header>
+    <div class="page-body findings-page-body">
+      <section class="findings-heading"><div><span class="analysis-overview-kicker">Triage workspace</span><h1>Findings</h1><p>Review STRIDE and LINDDUN scenarios; final risk appears only when evidence is grounded.</p><button type="button" class="btn btn-primary btn-sm guided-review-start" id="start-findings-guided">Start guided finding review</button><span id="findings-guided-progress" class="guided-review-progress" aria-live="polite"></span></div><div class="findings-count" id="findings-count" aria-live="polite">Loading findings…</div></section>
+      <div class="ux-orientation-strip" aria-label="Findings workspace orientation">
+        <div class="ux-orientation-item"><span>Workspace</span><strong>Threat triage</strong></div>
+        <div class="ux-orientation-item"><span>Status</span><strong id="findings-orientation-status">Loading findings…</strong></div>
+        <div class="ux-orientation-item is-next"><span>Next action</span><strong id="findings-orientation-next">Start guided review or filter the queue</strong></div>
+      </div>
+      <section class="findings-toolbar progressive-toolbar" aria-label="Findings search and filters">
+        <label class="findings-search"><span class="sr-only">Search findings</span><input type="search" id="findings-search" placeholder="Search scenarios, assets, evidence…" autocomplete="off" /><kbd>/</kbd><button type="button" id="findings-clear-search" aria-label="Clear search" hidden>×</button></label>
+        <label class="quick-filter-label">Quick view<select id="findings-preset" class="form-select" aria-label="Findings quick view"><option value="">All items</option><option value="needs-review">Needs review</option><option value="deferred">Deferred / needs context</option><option value="custom">Custom filters</option></select></label>
+        <button type="button" class="btn btn-secondary btn-sm filter-disclosure-trigger" id="findings-filters-toggle" aria-expanded="false" aria-controls="findings-filter-dialog">Filters <span id="findings-filter-count" class="filter-count">0</span></button>
+        <button type="button" id="findings-reset" class="btn btn-ghost btn-sm">Reset</button>
+        <dialog id="findings-filter-dialog" class="workspace-filter-dialog" aria-labelledby="findings-filter-title" data-workspace-filter-dialog="findings" data-filter-trigger="findings-filters-toggle" data-filter-initial-focus="findings-filter-search">
+          <header class="workspace-filter-header"><div><span class="analysis-overview-kicker">Findings</span><h2 id="findings-filter-title">Filter findings</h2><p>Combine filters to narrow the queue. Changes apply together.</p></div><button type="button" class="btn btn-ghost btn-sm" data-filter-cancel aria-label="Close findings filters">×</button></header>
+          <label class="workspace-filter-search"><span class="sr-only">Search filter options</span><input id="findings-filter-search" data-filter-search class="form-input" type="search" placeholder="Search filter options…" /></label><div class="workspace-filter-bulk-actions"><button type="button" class="btn btn-ghost btn-sm" data-filter-select-all>Select all visible</button><button type="button" class="btn btn-ghost btn-sm" data-filter-clear-all>Clear all</button><span data-filter-selection-status role="status" aria-live="polite">0 selected</span></div>
+          <div class="workspace-filter-grid">
+            <fieldset id="findings-framework" data-filter-group><legend>Framework</legend><label data-filter-option><input type="checkbox" value="STRIDE" /> STRIDE</label><label data-filter-option><input type="checkbox" value="LINDDUN" /> LINDDUN</label></fieldset>
+            <fieldset id="findings-severity" data-filter-group><legend>Scenario severity</legend><label data-filter-option><input type="checkbox" value="Critical" /> Critical</label><label data-filter-option><input type="checkbox" value="High" /> High</label><label data-filter-option><input type="checkbox" value="Medium" /> Medium</label><label data-filter-option><input type="checkbox" value="Low" /> Low</label><label data-filter-option><input type="checkbox" value="Unknown" /> Unknown</label></fieldset>
+            <fieldset id="findings-status" data-filter-group><legend>Review status</legend><label data-filter-option><input type="checkbox" value="Open" /> Open</label><label data-filter-option><input type="checkbox" value="Needs Info" /> Needs Info</label><label data-filter-option><input type="checkbox" value="Reviewed" /> Reviewed</label><label data-filter-option><input type="checkbox" value="Accepted" /> Accepted</label><label data-filter-option><input type="checkbox" value="Mitigation Planned" /> Mitigation Planned</label><label data-filter-option><input type="checkbox" value="Mitigated" /> Mitigated</label><label data-filter-option><input type="checkbox" value="Verified" /> Verified</label></fieldset>
+            <fieldset id="findings-state" data-filter-group><legend>Finding state</legend><label data-filter-option><input type="checkbox" value="grounded" /> Grounded</label><label data-filter-option><input type="checkbox" value="hypothesis" /> Hypothesis</label><label data-filter-option><input type="checkbox" value="needs_context" /> Needs context</label><label data-filter-option><input type="checkbox" value="reviewed" /> Reviewed scenario</label><label data-filter-option><input type="checkbox" value="verified" /> Verified</label><label data-filter-option><input type="checkbox" value="candidate" /> Candidate</label></fieldset>
+            <label class="workspace-filter-field">DFD interaction<select id="findings-interaction" class="form-select" aria-label="Filter DFD interaction mapping"><option value="">All interactions</option><option value="mapped">Mapped</option><option value="deferred">Deferred</option></select></label>
+            <label class="workspace-filter-field">Sort<select id="findings-sort" class="form-select" aria-label="Sort findings"><option value="risk">Final risk</option><option value="severity">Scenario severity</option><option value="framework">Framework</option><option value="status">Review status</option><option value="asset">Asset</option><option value="scenario">Scenario</option></select></label>
+          </div>
+          <footer class="workspace-filter-footer"><button type="button" class="btn btn-ghost btn-sm" data-filter-cancel>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-filter-apply>Apply filters</button></footer>
+        </dialog>
+        <div id="findings-filter-chips" class="active-filter-chips" aria-live="polite"></div>
+      </section>
+      <div class="findings-workspace" id="findings-workspace">
+        <section class="findings-list-pane" aria-label="Finding list"><div class="findings-list-header"><span id="findings-result-summary">Loading…</span><span class="findings-key-hint"><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>Enter</kbd> inspect · <kbd>Esc</kbd> close</span></div><div id="findings-list" class="findings-list" role="listbox" aria-label="Threat and privacy findings" tabindex="0"></div></section>
+        <div class="findings-inspector" id="findings-inspector" aria-label="Finding details" aria-live="polite"><div class="findings-inspector-empty"><strong>Select a finding</strong><span>Its evidence, canonical DFD interaction, risk state, and triage controls will appear here.</span></div></div>
+      </div>
+    </div>
+  </main>
+</div>
+<script src="/static/js/sidebar.js"></script>
+<script src="/static/js/focus-manager.js?v=20260923u6"></script>
+<script src="/static/js/ux-telemetry.js?v=20260922u0"></script>
+<script src="/static/js/ui-state.js?v=20260922u3"></script>
+<script src="/static/js/workspace-filters.js?v=20260924u4"></script>
+<script src="/static/js/api.js?v=20261112-auth1"></script>
+<script src="/static/js/analysis.js?v=20260922u3"></script>
+<script src="/static/js/findings.js?v=20260922u3"></script>
+</body>
+</html>

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Action Plan — 5STONES</title>
+  <meta name="description" content="Review controls and executable security tests linked to findings and the canonical DFD." />
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <link rel="stylesheet" href="/static/css/components.css" />
+  <link rel="stylesheet" href="/static/css/pages.css?v=20260923u4" />
+</head>
+<body data-page="action-plan">
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="sidebar-logo"><a href="/index.html" style="display:flex;align-items:center;gap:var(--space-3);text-decoration:none;width:100%;"><img src="/static/logo.png" alt="5STONES" class="sidebar-logo-img" /><span class="sidebar-logo-badge" style="margin-left:auto;">MVP</span></a></div>
+    <div class="sidebar-section"><div class="sidebar-section-label">Workspace</div><ul class="sidebar-nav">
+      <li><a href="/index.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>Dashboard</a></li><li><a href="/project-new.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>New project</a></li>
+    </ul></div>
+    <div class="sidebar-section"><div class="sidebar-section-label">Configuration</div><ul class="sidebar-nav">
+      <li><a href="/settings.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0-14.14"/></svg>Settings &amp; BYOK</a></li>
+    </ul></div>
+    <div class="sidebar-footer">5STONES v1.0 · Structured Threat Modeling</div>
+  </aside>
+
+  <main class="main-content action-plan-page-content">
+    <header class="topbar"><div class="topbar-left"><a href="/analysis.html" id="back-analysis" class="btn btn-ghost btn-sm" aria-label="Back to analysis">←</a><div><div class="page-title" id="page-project-name">Loading…</div><div class="page-subtitle">Controls and verification tests</div></div></div><div class="topbar-actions"><a href="/findings.html" id="btn-action-findings" class="btn btn-secondary btn-sm">Open findings</a></div></header>
+    <div class="page-body action-plan-page-body">
+      <section class="action-plan-heading"><div><span class="analysis-overview-kicker">Remediation workspace</span><h1>Action plan</h1><p>Connect each control and test to its finding and DFD evidence, then assign the next owner.</p></div><div class="action-plan-count" id="action-plan-count" aria-live="polite">Loading actions…</div></section>
+      <div class="ux-orientation-strip" aria-label="Action plan workspace orientation">
+        <div class="ux-orientation-item"><span>Workspace</span><strong>Controls &amp; tests</strong></div>
+        <div class="ux-orientation-item"><span>Status</span><strong id="action-orientation-status">Loading actions…</strong></div>
+        <div class="ux-orientation-item is-next"><span>Next action</span><strong><button type="button" class="btn btn-primary btn-sm" id="action-primary-review">Review decisions</button></strong></div>
+      </div>
+      <section class="action-queue" id="action-queue" aria-label="Action queues"></section>
+      <section class="action-toolbar progressive-toolbar" aria-label="Action plan filters">
+        <label class="action-search"><span class="sr-only">Search controls and tests</span><input type="search" id="action-search" placeholder="Search controls, tests, owners, threats…" autocomplete="off" /><kbd>/</kbd><button type="button" id="action-clear-search" aria-label="Clear search" hidden>×</button></label>
+        <label class="quick-filter-label">Quick view<select id="action-preset" class="form-select" aria-label="Action quick view"><option value="">All items</option><option value="needs-decision">Needs decision</option><option value="controls">Controls only</option><option value="tests">Tests only</option><option value="custom">Custom filters</option></select></label>
+        <button type="button" class="btn btn-secondary btn-sm filter-disclosure-trigger" id="action-filters-toggle" aria-expanded="false" aria-controls="action-filter-dialog">Filters <span id="action-filter-count" class="filter-count">0</span></button>
+        <button type="button" id="action-reset" class="btn btn-ghost btn-sm">Reset</button>
+        <dialog id="action-filter-dialog" class="workspace-filter-dialog" aria-labelledby="action-filter-title" data-workspace-filter-dialog="action-plan" data-filter-trigger="action-filters-toggle" data-filter-initial-focus="action-filter-search">
+          <header class="workspace-filter-header"><div><span class="analysis-overview-kicker">Action plan</span><h2 id="action-filter-title">Filter controls and tests</h2><p>Combine filters to find the next executable action.</p></div><button type="button" class="btn btn-ghost btn-sm" data-filter-cancel aria-label="Close action filters">×</button></header>
+          <label class="workspace-filter-search"><span class="sr-only">Search filter options</span><input id="action-filter-search" data-filter-search class="form-input" type="search" placeholder="Search filter options…" /></label><div class="workspace-filter-bulk-actions"><button type="button" class="btn btn-ghost btn-sm" data-filter-select-all>Select all visible</button><button type="button" class="btn btn-ghost btn-sm" data-filter-clear-all>Clear all</button><span data-filter-selection-status role="status" aria-live="polite">0 selected</span></div>
+          <div class="workspace-filter-grid">
+            <fieldset id="action-type" data-filter-group><legend>Type</legend><label data-filter-option><input type="checkbox" value="control" /> Controls</label><label data-filter-option><input type="checkbox" value="test" /> Tests</label></fieldset>
+            <fieldset id="action-priority" data-filter-group><legend>Priority</legend><label data-filter-option><input type="checkbox" value="Critical" /> Critical</label><label data-filter-option><input type="checkbox" value="High" /> High</label><label data-filter-option><input type="checkbox" value="Medium" /> Medium</label><label data-filter-option><input type="checkbox" value="Low" /> Low</label><label data-filter-option><input type="checkbox" value="Unprioritized" /> Unprioritized</label></fieldset>
+            <fieldset id="action-status" data-filter-group><legend>Status</legend><label data-filter-option><input type="checkbox" value="Open" /> Open</label><label data-filter-option><input type="checkbox" value="In Progress" /> In Progress</label><label data-filter-option><input type="checkbox" value="Implemented" /> Implemented</label><label data-filter-option><input type="checkbox" value="Verified" /> Verified</label><label data-filter-option><input type="checkbox" value="Accepted Risk" /> Accepted Risk</label><label data-filter-option><input type="checkbox" value="Unknown" /> Unknown</label><label data-filter-option><input type="checkbox" value="Not Run" /> Not Run</label><label data-filter-option><input type="checkbox" value="Passed" /> Passed</label><label data-filter-option><input type="checkbox" value="Failed" /> Failed</label><label data-filter-option><input type="checkbox" value="Blocked" /> Blocked</label></fieldset>
+            <fieldset id="action-executable" data-filter-group><legend>Readiness</legend><label data-filter-option><input type="checkbox" value="executable" /> Executable</label><label data-filter-option><input type="checkbox" value="blocked" /> Blocked</label><label data-filter-option><input type="checkbox" value="unassigned" /> Unassigned</label><label data-filter-option><input type="checkbox" value="needs_review" /> Needs review</label></fieldset>
+            <label class="workspace-filter-field">Owner<input id="action-owner" class="form-input" type="search" placeholder="Any owner" aria-label="Filter by owner" /></label>
+            <label class="workspace-filter-field">Sort<select id="action-sort" class="form-select" aria-label="Sort actions"><option value="priority">Priority</option><option value="type">Type</option><option value="status">Status</option><option value="owner">Owner</option><option value="name">Name</option></select></label>
+          </div>
+          <footer class="workspace-filter-footer"><button type="button" class="btn btn-ghost btn-sm" data-filter-cancel>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-filter-apply>Apply filters</button></footer>
+        </dialog>
+        <div id="action-filter-chips" class="active-filter-chips" aria-live="polite"></div>
+      </section>
+      <div class="action-plan-workspace">
+        <section class="action-list-pane" aria-label="Controls and tests list"><div class="action-list-header"><span id="action-result-summary">Loading…</span><span class="action-key-hint"><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>Enter</kbd> inspect · <kbd>Esc</kbd> close</span></div><div id="action-list" class="action-list" role="listbox" aria-label="Controls and security tests" tabindex="0"></div></section>
+        <aside class="action-inspector" id="action-inspector" aria-label="Action detail" aria-live="polite"><div class="action-inspector-empty"><strong>Select a control or test</strong><span>Guidance, checklist, evidence, ownership, and links to the finding and DFD will appear here.</span></div></aside>
+      </div>
+    </div>
+  </main>
+</div>
+<script src="/static/js/sidebar.js"></script>
+<script src="/static/js/focus-manager.js?v=20260923u6"></script>
+<script src="/static/js/ux-telemetry.js?v=20260922u0"></script>
+<script src="/static/js/ui-state.js?v=20260923u4"></script>
+<script src="/static/js/workspace-filters.js?v=20260924u4"></script>
+<script src="/static/js/api.js?v=20261112-auth1"></script>
+<script src="/static/js/analysis.js?v=20260923u4"></script>
+<script src="/static/js/action-plan.js?v=20260923u4"></script>
+</body>
+</html>

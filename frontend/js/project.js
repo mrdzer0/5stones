@@ -4,6 +4,8 @@
 let currentStep = 1;
 const totalSteps = 4;
 let tagInputs = {};
+let onboardingMode = 'summary';
+const PROJECT_DRAFT_KEY = '5stones-project-draft-v1';
 const MAX_ARTIFACT_BYTES = 5 * 1024 * 1024;
 const ARTIFACT_ACCEPT = {
   prd: '.pdf,.docx,.md,.markdown,.txt',
@@ -36,9 +38,73 @@ document.addEventListener('DOMContentLoaded', () => {
   // Navigation
   document.getElementById('btn-next').addEventListener('click', handleNext);
   document.getElementById('btn-prev').addEventListener('click', handlePrev);
+  document.getElementById('onboarding-start-doc')?.addEventListener('click', () => setOnboardingMode('document'));
+  document.getElementById('onboarding-start-summary')?.addEventListener('click', () => setOnboardingMode('summary'));
+  bindProjectDraftPersistence();
+  restoreProjectDraft();
+  setOnboardingMode(onboardingMode, false);
 
   updateStepUI();
 });
+
+function setOnboardingMode(mode, focus = true) {
+  onboardingMode = mode === 'document' ? 'document' : 'summary';
+  const desc = document.getElementById('project-desc');
+  const actorsLabel = document.querySelector('label[for="actors-input"]');
+  const guidance = document.getElementById('onboarding-guidance');
+  const note = document.getElementById('onboarding-choice-note');
+  document.getElementById('onboarding-start-doc')?.classList.toggle('is-selected', onboardingMode === 'document');
+  document.getElementById('onboarding-start-summary')?.classList.toggle('is-selected', onboardingMode === 'summary');
+  if (onboardingMode === 'document') {
+    if (desc) { desc.required = false; desc.placeholder = 'Optional context; the selected document will be parsed and gaps will remain visible.'; }
+    if (guidance) guidance.textContent = 'Upload a PRD, API contract, or other source in the final step. The document is evidence, not an automatic confirmation; unresolved sections remain visible for review.';
+    if (note) note.textContent = 'Minimum to begin: a feature name and a source artifact. You can add actors and data later from Evidence.';
+  } else {
+    if (desc) { desc.required = true; desc.placeholder = 'Describe what this feature does and its security scope…'; }
+    if (guidance) guidance.textContent = 'Answer a few plain-language questions about the feature. Use “Belum tahu” later when a detail is not confirmed; uncertainty stays visible.';
+    if (note) note.textContent = 'Minimum to begin: a feature name and a short description. Add only what you know; details can be refined after analysis.';
+  }
+  if (actorsLabel) actorsLabel.querySelector('.required')?.classList.toggle('is-optional', onboardingMode === 'document');
+  if (focus) { document.getElementById('project-name')?.focus(); document.getElementById('onboarding-choice')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+  saveProjectDraft();
+}
+
+function bindProjectDraftPersistence() {
+  document.querySelectorAll('#project-form input, #project-form textarea, #project-form select').forEach(element => {
+    element.addEventListener('input', saveProjectDraft);
+    element.addEventListener('change', saveProjectDraft);
+  });
+}
+
+function projectDraftPayload() {
+  return { mode: onboardingMode, name: document.getElementById('project-name')?.value || '', description: document.getElementById('project-desc')?.value || '', environment: document.getElementById('project-env')?.value || '', policy: document.getElementById('project-policy')?.value || '', artifactType: document.getElementById('artifact-type')?.value || '' };
+}
+
+function saveProjectDraft() {
+  try { sessionStorage.setItem(PROJECT_DRAFT_KEY, JSON.stringify(projectDraftPayload())); } catch (error) { /* best effort */ }
+}
+
+function restoreProjectDraft() {
+  try {
+    const draft = JSON.parse(sessionStorage.getItem(PROJECT_DRAFT_KEY) || 'null');
+    if (!draft) return;
+    onboardingMode = draft.mode === 'document' ? 'document' : 'summary';
+    document.getElementById('project-name').value = draft.name || '';
+    document.getElementById('project-desc').value = draft.description || '';
+    document.getElementById('project-env').value = draft.environment || '';
+    document.getElementById('project-policy').value = draft.policy || 'byok_allowed';
+    document.getElementById('artifact-type').value = draft.artifactType || '';
+    updateArtifactInputs(draft.artifactType || '');
+  } catch (error) { /* stale or unavailable draft */ }
+}
+
+function showProjectValidationError(message, element) {
+  const summary = document.getElementById('project-form-errors');
+  if (summary) { summary.hidden = false; summary.textContent = message; }
+  if (element) { element.setAttribute('aria-invalid', 'true'); element.focus(); }
+  showToast(message, 'warn');
+  return false;
+}
 
 function updateStepUI() {
   for (let i = 1; i <= totalSteps; i++) {
@@ -60,6 +126,7 @@ function updateStepUI() {
   } else {
     nextBtn.innerHTML = `Next <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>`;
   }
+  saveProjectDraft();
 }
 
 function updateArtifactInputs(type) {
@@ -107,23 +174,22 @@ function setProjectArtifactResult(kind, html) {
 }
 
 function validateStep(step) {
+  document.getElementById('project-form-errors')?.setAttribute('hidden', '');
+  document.querySelectorAll('#project-form [aria-invalid="true"]').forEach(element => element.removeAttribute('aria-invalid'));
   if (step === 1) {
     const name = document.getElementById('project-name').value.trim();
     const desc = document.getElementById('project-desc').value.trim();
-    if (!name) { showToast('Project name is required', 'warn'); return false; }
-    if (!desc) { showToast('Description is required', 'warn'); return false; }
+    if (!name) return showProjectValidationError('Add a project or feature name to continue.', document.getElementById('project-name'));
+    if (!desc && onboardingMode !== 'document') return showProjectValidationError('Add a short description, or choose “Start from a document”.', document.getElementById('project-desc'));
   }
   if (step === 2) {
-    if (!tagInputs.actors?.getTags().length) {
-      showToast('Add at least one actor', 'warn'); return false;
-    }
+    if (onboardingMode !== 'document' && !tagInputs.actors?.getTags().length) return showProjectValidationError('Add at least one actor, or choose “Start from a document”.', document.getElementById('actors-input'));
   }
   if (step === 4) {
     const type = document.getElementById('artifact-type').value;
     const file = document.getElementById('artifact-file')?.files?.[0];
     if (type && !file) {
-      showToast('Choose an artifact file or select manual input only', 'warn');
-      return false;
+      return showProjectValidationError('Choose the artifact file, or select manual input only.', document.getElementById('artifact-file'));
     }
   }
   return true;
@@ -157,7 +223,7 @@ async function createProject() {
 
   const payload = {
     name: document.getElementById('project-name').value.trim(),
-    description: document.getElementById('project-desc').value.trim(),
+    description: document.getElementById('project-desc').value.trim() || 'Document-driven intake — context pending extraction.',
     environment: document.getElementById('project-env').value,
     data_policy: document.getElementById('project-policy').value,
     actors: tagInputs.actors?.getTags() || [],
@@ -203,7 +269,8 @@ async function createProject() {
         `);
         showToast('Project created; retry the artifact from the project page', 'warn');
         setTimeout(() => {
-          window.location.href = `/analysis.html?id=${project.project_id}&artifact_error=${encodeURIComponent(err.message)}`;
+          const target = window.UIState ? window.UIState.route('analysis', project.project_id) : `/analysis.html?id=${encodeURIComponent(project.project_id)}`;
+          window.location.href = `${target}&artifact_error=${encodeURIComponent(err.message)}`;
         }, 1400);
         return;
       }
@@ -212,11 +279,12 @@ async function createProject() {
     }
 
     setTimeout(() => {
-      window.location.href = `/analysis.html?id=${project.project_id}`;
+      window.location.href = window.UIState ? window.UIState.route('analysis', project.project_id) : `/analysis.html?id=${encodeURIComponent(project.project_id)}`;
     }, 900);
+    try { sessionStorage.removeItem(PROJECT_DRAFT_KEY); } catch (error) { /* best effort */ }
 
   } catch (err) {
-    showToast('Error: ' + err.message, 'error');
+    showProjectValidationError('Project could not be created: ' + err.message, btn);
     btn.disabled = false;
     btn.removeAttribute('aria-busy');
     updateStepUI();

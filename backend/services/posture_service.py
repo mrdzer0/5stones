@@ -3,12 +3,46 @@ from __future__ import annotations
 import hashlib
 import re
 import uuid
+from copy import deepcopy
 from datetime import datetime
 from typing import Iterable
 from backend.services.privacy_service import assess_privacy_metadata, annotate_privacy_threats
+from backend.services.risk_service import (
+    RISK_METHODOLOGY_VERSION,
+    align_test_risk_priorities,
+    assess_threat_risk,
+    highest_risk_level,
+    threat_priority_level,
+)
+from backend.services.completeness_service import (
+    REQUIRED_INFORMATION_DIMENSIONS,
+    assess_completeness,
+)
+from backend.services.finding_quality_service import finding_quality_fingerprint
+from backend.services.deferred_decision_service import normalize_decision_state, reconcile_deferred_decisions
 
 
 EVIDENCE_TYPES = {"direct", "context", "inference"}
+FINDING_STATES = {"grounded", "hypothesis", "needs_context", "reviewed", "verified"}
+_ASSESSED_RISK_LEVELS = {"Critical", "High", "Medium", "Low"}
+_NEGATIVE_CONTROL_CLAIM = re.compile(
+    r"\b(?:no|without|missing|absent|absence\s+of|lack(?:s|ing|ed)?|"
+    r"not\s+(?:implemented|configured|enabled|enforced|validated|verified|signed|encrypted|authenticated|authorized|constrained|documented|mentioned|specified|evidenced)|"
+    r"disabled|unencrypted|unsigned|plaintext|tidak\s+ada|tanpa|belum\s+(?:diterapkan|dikonfigurasi|divalidasi|diverifikasi|didokumentasikan)|tidak\s+(?:diterapkan|dikonfigurasi|divalidasi|diverifikasi|didokumentasikan))\b",
+    re.IGNORECASE,
+)
+_CONTROL_OR_GAP_TERM = re.compile(
+    r"\b(?:control|authentication|authorization|validation|verification|signature|integrity|encryption|tls|https|mfa|"
+    r"rate.?limit(?:ing|ed)?|lockout|audit|logging|monitoring|masking|minimi[sz]ation|consent|notice|retention|deletion|"
+    r"access|permission|rbac|waf|csrf|csp|pinning|allowlist|idempotenc|kontrol|autentikasi|otorisasi|validasi|"
+    r"enkripsi|pencatatan|persetujuan|retensi)\b",
+    re.IGNORECASE,
+)
+_DOCUMENT_OMISSION = re.compile(
+    r"\b(?:not|isn'?t|wasn'?t|tidak|belum)\s+(?:documented|mentioned|specified|described|evidenced|provided|"
+    r"didokumentasikan|disebutkan|dijelaskan)|\b(?:no|without|tanpa)\s+(?:documentation|evidence|mention|dokumen|bukti)\b",
+    re.IGNORECASE,
+)
 _MAPPING_STOPWORDS = {
     "the", "and", "for", "with", "may", "can", "from", "this", "that",
     "before", "after", "into", "when", "where", "user", "data", "system",
@@ -82,71 +116,263 @@ REQUIRED_CONTEXT = [
     },
 ]
 
+# Compatibility name retained for callers that imported the old contract. The
+# scoring path below uses the evidence-grounded completeness-v2 dimensions.
+REQUIRED_CONTEXT = list(REQUIRED_INFORMATION_DIMENSIONS)
+
 
 def compute_completeness(project: dict) -> dict:
-    """Score whether the project has enough context for a useful threat model."""
-    total = sum(item["weight"] for item in REQUIRED_CONTEXT)
-    earned = 0
-    areas = []
-    blockers = []
+    """Score required information only when a source or context signal exists."""
+    catalog = build_project_evidence_catalog(project if isinstance(project, dict) else {})
+    return assess_completeness(project, evidence_catalog=catalog)
 
-    for item in REQUIRED_CONTEXT:
-        if item["key"] == "artifact_sources":
-            artifact_score, artifact_details = _artifact_readiness_score(project, item["weight"])
-            present = artifact_score > 0
-            earned += artifact_score
-            if not present:
-                blockers.append({
-                    "area": item["label"],
-                    "question": item["question"],
-                    "priority": "High",
-                })
-            areas.append({
-                "area": item["label"],
-                "present": present,
-                "weight": item["weight"],
-                "earned": artifact_score,
-                "question": item["question"],
-                **artifact_details,
-            })
+
+def compute_signoff_readiness(report: dict) -> dict:
+    """Build one conservative, explainable gate for threat-model sign-off.
+
+    Context completeness is deliberately kept separate from sign-off.  A
+    well-populated PRD can make analysis useful, but it cannot override an
+    incomplete DFD, partial framework run, unresolved finding, missing
+    mitigation disposition, or unusable verification plan.
+    """
+    report = report if isinstance(report, dict) else {}
+
+    def unique(values: Iterable[str]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            text = str(value or "").strip()
+            if text and text not in seen:
+                seen.add(text)
+                result.append(text)
+        return result
+
+    def component(ready: bool, reasons: list[str], **details) -> dict:
+        cleaned = unique(reasons)
+        return {
+            "status": "ready" if ready else "not_ready",
+            "blocking": not ready,
+            "reasons": cleaned,
+            **details,
+        }
+
+    completeness = report.get("completeness") if isinstance(report.get("completeness"), dict) else {}
+    context_blockers = completeness.get("blockers") if isinstance(completeness.get("blockers"), list) else []
+    context_reasons = [
+        f"Input context is missing {item.get('area', 'a required area')}"
+        for item in context_blockers if isinstance(item, dict)
+    ]
+    context_score = int(completeness.get("score", 0) or 0)
+    if context_score < 40 and not context_reasons:
+        context_reasons.append("Input context is insufficient for a reviewable threat model")
+    input_context = component(
+        not context_reasons,
+        context_reasons,
+        score=context_score,
+        level=str(completeness.get("level") or "Not scored"),
+    )
+
+    validation = report.get("dfd_validation") if isinstance(report.get("dfd_validation"), dict) else {}
+    dfd_readiness = validation.get("readiness") or validation.get("analysis_readiness") or {}
+    dfd_reasons = list(dfd_readiness.get("blocking_reasons") or [])
+    model = report.get("dfd_model") if isinstance(report.get("dfd_model"), dict) else {}
+    open_questions = [
+        item for item in (model.get("questions") or [])
+        if isinstance(item, dict) and str(item.get("status") or "open").casefold() not in {"resolved", "accepted", "deferred"}
+    ]
+    if open_questions:
+        dfd_reasons.append(f"{len(open_questions)} DFD review question(s) remain open")
+    boundary_candidates = [
+        item for item in (report.get("trust_boundaries") or [])
+        if isinstance(item, dict) and str(item.get("status") or "Candidate").casefold() in {"candidate", "unresolved"}
+    ]
+    if boundary_candidates:
+        dfd_reasons.append(f"{len(boundary_candidates)} trust-boundary candidate(s) await reviewer decision")
+    dfd_ready = dfd_readiness.get("status") == "ready" and not dfd_reasons
+    dfd = component(
+        dfd_ready,
+        dfd_reasons or (["Canonical DFD readiness has not been evaluated"] if not dfd_ready else []),
+        readiness=str(dfd_readiness.get("status") or "not_evaluated"),
+    )
+
+    core_stages = ("stride", "linddun", "controls", "tests")
+    ai_status = report.get("ai_status") if isinstance(report.get("ai_status"), dict) else {}
+    analysis_reasons: list[str] = []
+    for stage in core_stages:
+        status = ai_status.get(stage) if isinstance(ai_status.get(stage), dict) else None
+        if not status:
+            analysis_reasons.append(f"{stage.upper()} has no validated current result")
             continue
+        assessment = str(status.get("assessment_status") or "complete").casefold()
+        if status.get("ok") is not True or assessment not in {"complete", "valid_empty"}:
+            analysis_reasons.append(f"{stage.upper()} result is {assessment or 'invalid'}")
+        if status.get("baseline_used") or status.get("previous_results_preserved"):
+            analysis_reasons.append(f"{stage.upper()} is using a baseline or preserved previous result")
+    stale = report.get("analysis_stale") if isinstance(report.get("analysis_stale"), dict) else {}
+    stale_core = sorted(set(stale.get("stages") or []).intersection(core_stages))
+    if stale_core:
+        analysis_reasons.append(f"Current DFD changes make these stages stale: {', '.join(stale_core)}")
+    recovery = report.get("analysis_recovery") if isinstance(report.get("analysis_recovery"), dict) else {}
+    if recovery.get("state"):
+        analysis_reasons.append("Analysis recovery state must be resolved before sign-off")
+    analysis = component(not analysis_reasons, analysis_reasons)
 
-        value = project.get(item["key"])
-        present = bool(value) if not isinstance(value, list) else len(value) > 0
-        if present:
-            earned += item["weight"]
-        else:
-            blockers.append({
-                "area": item["label"],
-                "question": item["question"],
-                "priority": "High" if item["weight"] >= 12 else "Medium",
-            })
-        areas.append({
-            "area": item["label"],
-            "present": present,
-            "weight": item["weight"],
-            "earned": item["weight"] if present else 0,
-            "question": item["question"],
-        })
+    coverage_summary = report.get("analysis_coverage_summary") if isinstance(report.get("analysis_coverage_summary"), dict) else {}
+    coverage_reasons: list[str] = []
+    coverage_details: dict[str, dict] = {}
+    for framework in ("STRIDE", "LINDDUN"):
+        summary = coverage_summary.get(framework) if isinstance(coverage_summary.get(framework), dict) else {}
+        coverage_details[framework] = {
+            "complete": bool(summary.get("complete")),
+            "insufficient_information": int(summary.get("insufficient_information", 0) or 0),
+            "unknown_applicability": int(summary.get("unknown_applicability", 0) or 0),
+        }
+        if not summary:
+            coverage_reasons.append(f"{framework} coverage summary is missing")
+        elif not summary.get("complete"):
+            unresolved = int(summary.get("insufficient_information", 0) or 0)
+            coverage_reasons.append(f"{framework} coverage is incomplete ({unresolved} insufficient-information checks)")
+    framework_coverage = component(not coverage_reasons, coverage_reasons, frameworks=coverage_details)
 
-    score = round((earned / total) * 100) if total else 0
-    if score >= 85:
-        level = "Ready"
-    elif score >= 65:
-        level = "Usable with gaps"
-    elif score >= 40:
-        level = "High assumption load"
-    else:
-        level = "Insufficient context"
+    # The gate must remain correct for legacy/partially persisted reports that
+    # have missing_info or assumptions but do not yet have the canonical CR5
+    # register.  Reconcile on a copy so readiness evaluation stays a pure
+    # projection and does not rewrite the caller's report.
+    decision_snapshot = deepcopy(report)
+    reconcile_deferred_decisions(decision_snapshot, decision_snapshot.get("project"))
+    decisions = [
+        item for item in (decision_snapshot.get("deferred_decisions") or [])
+        if isinstance(item, dict)
+    ]
+    unresolved_decisions = [
+        item for item in decisions
+        if normalize_decision_state(item.get("state") or item.get("status")) in {"open", "assigned", "deferred"}
+    ]
+    decision_reasons = [
+        f"{len(unresolved_decisions)} deferred decision(s) require an answer, owner, or explicit acceptance"
+    ] if unresolved_decisions else []
+    decision_workflow = component(
+        not decision_reasons,
+        decision_reasons,
+        total=len(decisions),
+        unresolved=len(unresolved_decisions),
+        accepted_assumptions=sum(
+            normalize_decision_state(item.get("state") or item.get("status")) == "accepted_assumption"
+            for item in decisions
+        ),
+    )
 
+    active_threats = [
+        item for item in (report.get("threats") or [])
+        if isinstance(item, dict) and item.get("analysis_state") != "historical"
+    ]
+    unresolved_statuses = {"open", "needs info", "needs review"}
+    unresolved_threats = [
+        item for item in active_threats
+        if str(item.get("status") or "Open").strip().casefold() in unresolved_statuses
+    ]
+    threat_reasons = []
+    if unresolved_threats:
+        threat_reasons.append(f"{len(unresolved_threats)} active threat(s) still require reviewer disposition")
+    threat_review = component(
+        not threat_reasons,
+        threat_reasons,
+        active=len(active_threats),
+        unresolved=len(unresolved_threats),
+    )
+
+    mapped_threat_ids: set[str] = set()
+    for control in report.get("controls") or []:
+        if not isinstance(control, dict) or control.get("mapping_status") != "mapped":
+            continue
+        mapped_threat_ids.update(str(value) for value in (control.get("threat_ids") or []) if value)
+    accepted_risk_statuses = {"accepted"}
+    mitigation_statuses = {"mitigation planned", "mitigated", "verified"}
+    undisposed_count = 0
+    unmapped_count = 0
+    for threat in active_threats:
+        threat_id = str(threat.get("threat_id") or "")
+        status = str(threat.get("status") or "Open").strip().casefold()
+        if status in accepted_risk_statuses:
+            continue
+        if status not in mitigation_statuses:
+            undisposed_count += 1
+        elif threat_id not in mapped_threat_ids:
+            unmapped_count += 1
+    disposition_reasons: list[str] = []
+    if undisposed_count:
+        disposition_reasons.append(f"{undisposed_count} active threat(s) have no accepted-risk or mitigation disposition")
+    if unmapped_count:
+        disposition_reasons.append(f"{unmapped_count} mitigated threat(s) have no mapped control")
+    control_disposition = component(
+        not disposition_reasons,
+        disposition_reasons,
+        mapped_threats=len(mapped_threat_ids.intersection({str(item.get('threat_id')) for item in active_threats})),
+        active_threats=len(active_threats),
+    )
+
+    scenarios_by_threat: dict[str, list[dict]] = {}
+    for scenario in report.get("test_scenarios") or []:
+        if isinstance(scenario, dict) and scenario.get("threat_id"):
+            scenarios_by_threat.setdefault(str(scenario["threat_id"]), []).append(scenario)
+    missing_scenario_count = 0
+    unusable_scenario_count = 0
+    for threat in active_threats:
+        threat_id = str(threat.get("threat_id") or "")
+        if str(threat.get("status") or "").strip().casefold() in accepted_risk_statuses:
+            continue
+        scenarios = scenarios_by_threat.get(threat_id, [])
+        if not scenarios:
+            missing_scenario_count += 1
+            continue
+        usable = False
+        for scenario in scenarios:
+            applicability = str(scenario.get("applicability_status") or "applicable").casefold()
+            if applicability == "not_applicable" and str(scenario.get("applicability_reason") or "").strip():
+                usable = True
+                break
+            if applicability == "applicable" and scenario.get("steps") and str(scenario.get("expected_result") or "").strip() and scenario.get("evidence_needed"):
+                usable = True
+                break
+        if not usable:
+            unusable_scenario_count += 1
+    verification_reasons: list[str] = []
+    if missing_scenario_count:
+        verification_reasons.append(f"{missing_scenario_count} active threat(s) have no verification scenario")
+    if unusable_scenario_count:
+        verification_reasons.append(f"{unusable_scenario_count} active threat(s) have no executable or justified verification scenario")
+    verification_plan = component(
+        not verification_reasons,
+        verification_reasons,
+        covered_threats=len(active_threats) - missing_scenario_count - unusable_scenario_count,
+        active_threats=len(active_threats),
+    )
+
+    components = {
+        "input_context": input_context,
+        "dfd": dfd,
+        "analysis": analysis,
+        "framework_coverage": framework_coverage,
+        "deferred_decisions": decision_workflow,
+        "threat_review": threat_review,
+        "control_disposition": control_disposition,
+        "verification_plan": verification_plan,
+    }
+    blocking_reasons = unique(
+        reason
+        for value in components.values()
+        if value.get("blocking")
+        for reason in value.get("reasons", [])
+    )
+    ready = not blocking_reasons
     return {
-        "score": score,
-        "level": level,
-        "areas": areas,
-        "artifact_count": _artifact_count(project),
-        "artifact_types": sorted(_artifact_types(project)),
-        "blockers": blockers[:6],
-        "updated_at": datetime.utcnow().isoformat(),
+        "schema_version": "signoff-gate-v1",
+        "status": "ready" if ready else "not_ready",
+        "signoff_ready": ready,
+        "review_required": not ready,
+        "summary": "Ready for sign-off" if ready else f"Sign-off blocked by {sum(value.get('blocking', False) for value in components.values())} quality gate(s)",
+        "blocking_reasons": blocking_reasons,
+        "components": components,
     }
 
 
@@ -195,19 +421,8 @@ def _artifact_types(project: dict) -> set[str]:
 
 
 def threat_fingerprint(threat: dict) -> str:
-    """Create a stable semantic key so reruns do not duplicate the same threat."""
-    parts = [
-        threat.get("framework", ""),
-        threat.get("threat_category", ""),
-        threat.get("component", ""),
-        threat.get("source", ""),
-        threat.get("destination", ""),
-        threat.get("asset", ""),
-        threat.get("trust_boundary", ""),
-        _normalize(threat.get("threat_description", ""))[:180],
-    ]
-    raw = "|".join(_normalize(p) for p in parts)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+    """Create the CR4 semantic identity used by reruns and deduplication."""
+    return finding_quality_fingerprint(threat)
 
 
 def build_project_evidence_catalog(project: dict) -> list[dict]:
@@ -351,6 +566,296 @@ def build_evidence_context(project: dict, limit: int = 28) -> str:
     )
 
 
+def _contains_negative_control_claim(threat: dict) -> bool:
+    text = " ".join(str(threat.get(field) or "") for field in (
+        "title", "threat_description", "scenario", "assumption",
+    ))
+    return bool(_NEGATIVE_CONTROL_CLAIM.search(text) and _CONTROL_OR_GAP_TERM.search(text))
+
+
+def _explicitly_proves_control_gap(evidence: dict) -> bool:
+    """Accept only an explicit direct statement/observation, never omission."""
+    if str(evidence.get("evidence_type") or "").casefold() != "direct":
+        return False
+    text = " ".join(str(evidence.get(field) or "") for field in ("snippet", "locator", "source"))
+    return bool(
+        _NEGATIVE_CONTROL_CLAIM.search(text)
+        and _CONTROL_OR_GAP_TERM.search(text)
+        and not _DOCUMENT_OMISSION.search(text)
+    )
+
+
+def _append_missing_info(current: object, message: str) -> str:
+    text = " ".join(str(current or "").split())
+    if message.casefold() in text.casefold():
+        return text
+    return f"{text} {message}".strip()
+
+
+def normalize_primary_interaction(threat: dict, dfd_model: dict | None) -> dict:
+    """Resolve exactly one canonical flow as a finding's primary interaction.
+
+    Legacy ``affected_refs`` and typed targets may be used only when they
+    identify one unambiguous canonical flow. Other graph references remain
+    context and cannot substitute for the interaction where the scenario
+    occurs.
+    """
+    item = dict(threat or {})
+    model = dfd_model if isinstance(dfd_model, dict) else {}
+    flow_ids = {
+        str(flow.get("id"))
+        for flow in (model.get("flows") or [])
+        if isinstance(flow, dict) and flow.get("id")
+    }
+    all_ids = {
+        str(record.get("id"))
+        for collection in ("nodes", "data_objects", "flows", "boundaries")
+        for record in (model.get(collection) or [])
+        if isinstance(record, dict) and record.get("id")
+    }
+    explicit = str(item.get("primary_interaction_ref") or "").strip()
+    affected = [str(ref) for ref in (item.get("affected_refs") or []) if str(ref) in all_ids]
+    typed_flows = [
+        str(ref.get("id"))
+        for ref in (item.get("target_refs") or [])
+        if isinstance(ref, dict) and ref.get("type") in {"data_flow", "flow"} and str(ref.get("id")) in flow_ids
+    ]
+    affected_flow_candidates = list(dict.fromkeys(ref for ref in affected if ref in flow_ids))
+    typed_flow_candidates = list(dict.fromkeys(typed_flows))
+    # Canonical affected_refs came from generation/revision validation and are
+    # stronger than broad target_refs added later by label heuristics.
+    candidates = affected_flow_candidates or typed_flow_candidates
+
+    primary = None
+    if explicit in flow_ids:
+        primary = explicit
+        reason = "The declared primary interaction resolves to a canonical DFD flow."
+    elif explicit:
+        reason = f"The declared primary interaction '{explicit}' is not present in the current canonical DFD revision."
+        item["interaction_mapping_status"] = "stale"
+    elif len(candidates) == 1:
+        primary = candidates[0]
+        reason = "A single legacy flow reference was migrated as the primary interaction."
+    elif len(candidates) > 1:
+        reason = "Multiple canonical flows are referenced; select exactly one primary interaction."
+        item["interaction_mapping_status"] = "ambiguous"
+    else:
+        reason = "No canonical DFD flow is identified as the primary interaction."
+        item["interaction_mapping_status"] = "missing"
+
+    context_refs = [
+        str(ref) for ref in (item.get("dfd_context_refs") or [])
+        if str(ref) in all_ids and str(ref) != primary
+    ]
+    context_refs.extend(ref for ref in affected if ref != primary)
+    item["primary_interaction_ref"] = primary
+    item["dfd_context_refs"] = list(dict.fromkeys(context_refs))
+    item["interaction_mapping_reason"] = reason
+    if primary:
+        item["interaction_mapping_status"] = "mapped"
+        item["affected_refs"] = list(dict.fromkeys([primary, *item["dfd_context_refs"]]))
+        normalized_targets = []
+        for raw_ref in item.get("target_refs") or []:
+            if not isinstance(raw_ref, dict):
+                continue
+            ref = dict(raw_ref)
+            is_primary = ref.get("type") in {"data_flow", "flow"} and str(ref.get("id")) == primary
+            ref["target_role"] = "primary_interaction" if is_primary else ref.get("target_role", "context")
+            ref["is_primary_interaction"] = is_primary
+            normalized_targets.append(ref)
+        item["target_refs"] = sorted(normalized_targets, key=lambda ref: 0 if ref.get("is_primary_interaction") else 1)
+    else:
+        item["affected_refs"] = list(dict.fromkeys(item["dfd_context_refs"]))
+        item["missing_info"] = _append_missing_info(
+            item.get("missing_info"),
+            "Select one canonical DFD flow as the primary interaction for this scenario.",
+        )
+    return item
+
+
+def normalize_finding_grounding(
+    threat: dict,
+    catalog: list[dict],
+    dfd_model: dict | None = None,
+) -> dict:
+    """Derive a safe finding state from traceability and evidence semantics.
+
+    A canonical DFD reference can ground a threat *scenario*. It cannot prove
+    that a control is absent or that an exploitable vulnerability exists.
+    Those stronger claims require explicit evidence of the control condition.
+    """
+    item = dict(threat or {})
+    by_id = {
+        str(record.get("evidence_id")): record
+        for record in catalog or []
+        if isinstance(record, dict) and record.get("evidence_id")
+    }
+    has_explicit_scenario_refs = isinstance(item.get("scenario_evidence_refs"), list)
+    scenario_refs = [
+        str(ref) for ref in (item.get("scenario_evidence_refs") or [])
+        if str(ref) in by_id
+    ]
+    # Generic refs on legacy records were often added by automatic retrieval.
+    # Preserve them as context, never as evidence claimed for the scenario.
+    legacy_context_refs = [] if has_explicit_scenario_refs else list(item.get("evidence_refs") or [])
+    context_refs = [
+        str(ref) for ref in [*(item.get("context_evidence_refs") or []), *legacy_context_refs]
+        if str(ref) in by_id and str(ref) not in scenario_refs
+    ]
+    requested_gap_refs = [
+        str(ref) for ref in (item.get("control_gap_evidence_refs") or [])
+        if str(ref) in by_id
+    ]
+    gap_refs = [ref for ref in requested_gap_refs if _explicitly_proves_control_gap(by_id[ref])]
+    verification_refs = [
+        str(ref) for ref in (item.get("verification_evidence_refs") or [])
+        if str(ref) in by_id
+    ]
+    item["scenario_evidence_refs"] = list(dict.fromkeys(scenario_refs))
+    item["evidence_refs"] = list(item["scenario_evidence_refs"])
+    item["context_evidence_refs"] = list(dict.fromkeys(context_refs))
+    item["control_gap_evidence_refs"] = list(dict.fromkeys(gap_refs))
+    item["verification_evidence_refs"] = list(dict.fromkeys(verification_refs))
+
+    negative_claim = _contains_negative_control_claim(item)
+    unsupported_negative = negative_claim and not gap_refs
+    existing_state = str(item.get("finding_state") or item.get("finding_status") or "").casefold()
+    status = str(item.get("status") or "Open")
+    reviewed = bool(item.get("reviewed_at") or item.get("review_notes")) and status in {
+        "Reviewed", "Accepted", "Mitigation Planned", "Mitigated", "Verified",
+    }
+    interaction_mapped = bool(
+        item.get("interaction_mapping_status") == "mapped"
+        and item.get("primary_interaction_ref")
+    )
+    verified = bool(
+        status == "Verified"
+        and interaction_mapped
+        and verification_refs
+        and item.get("verification_method") in {"runtime_test", "code_review", "configuration_review"}
+        and item.get("verification_result") == "confirmed"
+    )
+    context_required = bool(
+        unsupported_negative
+        or existing_state == "needs_context"
+        or item.get("non_compliance_assertion") == "unsubstantiated"
+        or status == "Needs Info"
+    )
+    interaction_context_required = not interaction_mapped
+
+    if verified:
+        state = "verified"
+        reason = "A reviewer marked the scenario verified and supplied valid verification evidence."
+    elif interaction_context_required:
+        state = "needs_context"
+        reason = item.get("interaction_mapping_reason") or "A primary canonical DFD interaction must be selected."
+    elif reviewed:
+        state = "reviewed"
+        reason = "A human review decision is recorded; this is still a threat scenario, not automatic vulnerability proof."
+    elif context_required:
+        state = "needs_context"
+        reason = (
+            "The scenario asserts a missing or ineffective control without explicit evidence of that control condition."
+            if unsupported_negative else
+            "Material context is unresolved, so applicability and likelihood remain unassessed."
+        )
+    elif interaction_mapped and (scenario_refs or gap_refs):
+        state = "grounded"
+        reason = "The threat scenario is traceable to canonical DFD targets and cited project evidence."
+    else:
+        state = "hypothesis"
+        reason = "The framework-derived scenario lacks sufficient cited evidence and requires validation."
+
+    if state == "needs_context":
+        if unsupported_negative:
+            original_claim = str(item.get("unverified_claim") or item.get("threat_description") or "").strip()
+            if original_claim:
+                item["unverified_claim"] = original_claim
+                if not original_claim.startswith("Hypothesis requiring evidence —"):
+                    item["threat_description"] = f"Hypothesis requiring evidence — {original_claim}"
+            item["absence_of_evidence_guarded"] = True
+            item["missing_info"] = _append_missing_info(
+                item.get("missing_info"),
+                "Provide explicit implementation or runtime evidence for the claimed control gap.",
+            )
+        if interaction_context_required:
+            item["primary_interaction_guarded"] = True
+            item["missing_info"] = _append_missing_info(
+                item.get("missing_info"),
+                "Select one canonical DFD flow as the primary interaction for this scenario.",
+            )
+        if status in {"", "Open", "Candidate"}:
+            item["status"] = "Needs Info"
+        item["confidence"] = "Low"
+    else:
+        if state == "hypothesis" and item.get("confidence") == "High":
+            item["confidence"] = "Medium"
+
+    if status == "Verified" and not verified:
+        item["reported_status"] = "Verified"
+        item["status"] = "Reviewed" if reviewed else "Needs Info"
+        item["verification_state"] = "insufficient_evidence"
+
+    item["finding_kind"] = "threat_scenario"
+    item["finding_state"] = state
+    item["finding_status"] = state
+    item["grounding_reason"] = reason
+    item["vulnerability_status"] = "verified" if verified else "not_verified"
+    item["needs_human_review"] = state not in {"reviewed", "verified"}
+    return assess_threat_risk(item, dfd_model)
+
+
+def ground_threat_findings(threats: Iterable[dict], project: dict, dfd_model: dict | None = None) -> list[dict]:
+    catalog = build_project_evidence_catalog(project)
+    return [
+        normalize_finding_grounding(normalize_primary_interaction(item, dfd_model), catalog, dfd_model)
+        for item in threats or []
+    ]
+
+
+def summarize_threat_findings(threats: Iterable[dict], previous: dict | None = None) -> dict:
+    """Summarize scenario states without scoring unresolved evidence gaps."""
+    items = [item for item in threats or [] if isinstance(item, dict)]
+    current = [item for item in items if item.get("analysis_state") != "historical"]
+    scoreable = [
+        item for item in current
+        if (
+            item.get("risk_status") == "assessed"
+            or (
+                not item.get("risk_methodology_version")
+                and item.get("finding_state") in {"grounded", "reviewed", "verified"}
+            )
+        )
+        and item.get("risk_level") in _ASSESSED_RISK_LEVELS
+    ]
+    summary = dict(previous or {})
+    summary.update({
+        "critical": sum(item.get("risk_level") == "Critical" for item in scoreable),
+        "high": sum(item.get("risk_level") == "High" for item in scoreable),
+        "medium": sum(item.get("risk_level") == "Medium" for item in scoreable),
+        "low": sum(item.get("risk_level") == "Low" for item in scoreable),
+        "total": len(items),
+        "current_total": len(current),
+        "historical_total": len(items) - len(current),
+        "scored_total": len(scoreable),
+        "risk_methodology_version": RISK_METHODOLOGY_VERSION,
+        "scenario_only_total": sum(item.get("risk_status") == "scenario_only" for item in current),
+        "risk_deferred_total": sum(item.get("risk_status") == "deferred" for item in current),
+        "risk_override_total": sum(item.get("risk_source") == "reviewer_override" for item in current),
+        "grounded_total": sum(item.get("finding_state") == "grounded" for item in current),
+        "hypothesis_total": sum(item.get("finding_state") == "hypothesis" for item in current),
+        "needs_context_total": sum(item.get("finding_state") == "needs_context" for item in current),
+        "reviewed_total": sum(item.get("finding_state") == "reviewed" for item in current),
+        "verified_total": sum(item.get("finding_state") == "verified" for item in current),
+        "verified_vulnerability_total": sum(item.get("vulnerability_status") == "verified" for item in current),
+        "stride_count": sum(item.get("framework") == "STRIDE" for item in current),
+        "linddun_count": sum(item.get("framework") == "LINDDUN" for item in current),
+        "needs_review": sum(bool(item.get("needs_human_review")) for item in current),
+        "needs_info": sum(item.get("status") == "Needs Info" for item in current),
+    })
+    return summary
+
+
 def enrich_threats(threats: Iterable[dict], project: dict, source: str) -> list:
     enriched = []
     catalog = build_project_evidence_catalog(project)
@@ -363,14 +868,142 @@ def enrich_threats(threats: Iterable[dict], project: dict, source: str) -> list:
         t["evidence_source"] = selected["source"]
         t["evidence_locator"] = selected["locator"]
         t["evidence_snippet"] = selected["snippet"]
-        t["evidence_refs"] = [item["evidence_id"] for item in supporting if item.get("evidence_id")]
+        provider_refs = [
+            str(ref) for ref in (t.get("scenario_evidence_refs") or [])
+        ] if isinstance(t.get("scenario_evidence_refs"), list) else []
+        t["scenario_evidence_refs"] = [ref for ref in provider_refs if any(item.get("evidence_id") == ref for item in catalog)]
+        t["evidence_refs"] = list(t["scenario_evidence_refs"])
+        selected_context_refs = [
+            item["evidence_id"] for item in supporting
+            if item.get("evidence_id") and item["evidence_id"] not in t["scenario_evidence_refs"]
+        ]
+        t["context_evidence_refs"] = list(dict.fromkeys([
+            *(t.get("context_evidence_refs") or []), *selected_context_refs,
+        ]))
+        t["evidence_role"] = (
+            "scenario" if selected.get("evidence_id") in t["scenario_evidence_refs"]
+            else "context" if selected.get("evidence_id") else "inference"
+        )
         t["evidence"] = [_format_evidence_signal(item) for item in supporting]
+        t["context_evidence"] = [
+            _format_evidence_signal(item) for item in supporting
+            if item.get("evidence_id") in t["context_evidence_refs"] or not item.get("evidence_id")
+        ]
         t["confidence_reason"] = _confidence_reason(t, selected)
         t["needs_human_review"] = t.get("needs_human_review", _needs_review(t))
         t["status"] = t.get("status") or ("Needs Info" if t["needs_human_review"] else "Open")
-        enriched.append(t)
+        enriched.append(normalize_finding_grounding(t, catalog))
 
     return enriched
+
+
+def normalize_deferred_interaction_manifests(report: dict) -> dict:
+    """Upgrade legacy generation manifests to flow-only retry semantics.
+
+    Earlier runs put every unvisited node/data/zone ID in ``deferred_refs``.
+    With a primary-flow threat contract, only an unprocessed or failed flow is
+    retryable. Other references do not require provider retries, but an
+    explicit incomplete interaction/category coverage manifest must still keep
+    STRIDE/LINDDUN partial until its gaps are reviewed.
+    """
+    model = report.get("dfd_model") if isinstance(report.get("dfd_model"), dict) else {}
+    flow_ids = {
+        str(item.get("id"))
+        for item in (model.get("flows") or [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    statuses = report.get("ai_status") if isinstance(report.get("ai_status"), dict) else {}
+    coverage_summaries = report.get("analysis_coverage_summary") if isinstance(report.get("analysis_coverage_summary"), dict) else {}
+    coverage_manifests = report.get("analysis_coverage_manifest") if isinstance(report.get("analysis_coverage_manifest"), dict) else {}
+    reclassified = []
+    for framework, stage_name in (("STRIDE", "stride"), ("LINDDUN", "linddun")):
+        stage = statuses.get(stage_name)
+        if not isinstance(stage, dict):
+            continue
+        metadata = stage.get("response_metadata") if isinstance(stage.get("response_metadata"), dict) else {}
+        manifest = metadata.get("generation_manifest") if isinstance(metadata.get("generation_manifest"), dict) else None
+        if manifest is None:
+            continue
+        original_deferred = {
+            str(ref) for ref in (manifest.get("deferred_refs") or []) if ref
+        }
+        retryable = {ref for ref in original_deferred if ref in flow_ids}
+        non_interaction = {
+            str(ref) for ref in (manifest.get("non_interaction_refs") or []) if ref
+        }
+        non_interaction.update(original_deferred - flow_ids)
+        failed_interaction = False
+        normalized_batches = []
+        for raw_batch in manifest.get("batches") or []:
+            if not isinstance(raw_batch, dict):
+                continue
+            batch = dict(raw_batch)
+            batch_flow_refs = [
+                str(ref) for ref in (
+                    batch.get("flow_refs")
+                    or [value for value in (batch.get("scope_refs") or []) if str(value) in flow_ids]
+                )
+                if str(ref) in flow_ids
+            ]
+            batch["flow_refs"] = list(dict.fromkeys(batch_flow_refs))
+            if batch.get("status") in {"invalid", "unavailable", "deferred"} and batch["flow_refs"]:
+                failed_interaction = True
+                retryable.update(batch["flow_refs"])
+            normalized_batches.append(batch)
+        manifest["batches"] = normalized_batches
+        manifest["deferred_refs"] = sorted(retryable)
+        manifest["non_interaction_refs"] = sorted(non_interaction)
+        coverage_summary = coverage_summaries.get(framework) if isinstance(coverage_summaries.get(framework), dict) else None
+        coverage_manifest = coverage_manifests.get(framework) if isinstance(coverage_manifests.get(framework), dict) else None
+        coverage_manifest_summary = coverage_manifest.get("summary") if coverage_manifest else None
+        has_coverage_evidence = coverage_summary is not None or coverage_manifest is not None
+        coverage_complete = not has_coverage_evidence or (
+            isinstance(coverage_summary, dict)
+            and coverage_summary.get("complete") is True
+            and isinstance(coverage_manifest_summary, dict)
+            and coverage_manifest_summary.get("complete") is True
+        )
+        if (
+            stage.get("assessment_status") == "partial"
+            and not retryable
+            and not failed_interaction
+            and not coverage_complete
+        ):
+            stage["ok"] = False
+            stage["coverage_partial"] = True
+            warning = "Framework applicability coverage is incomplete; resolve each primary interaction/category gap before treating this assessment as complete."
+            stage["validation_warnings"] = list(dict.fromkeys([*(stage.get("validation_warnings") or []), warning]))
+        elif stage.get("assessment_status") == "partial" and not retryable and not failed_interaction:
+            has_current = any(
+                item.get("framework") == framework and item.get("analysis_state") != "historical"
+                for item in (report.get("threats") or []) if isinstance(item, dict)
+            )
+            stage["assessment_status"] = "complete" if has_current else "valid_empty"
+            stage["ok"] = stage.get("engine") == "AI"
+            stage["legacy_deferred_reclassified"] = True
+            warnings = [
+                warning for warning in (stage.get("validation_warnings") or [])
+                if "deferred for retry" not in str(warning).casefold()
+                and "canonical references were deferred" not in str(warning).casefold()
+            ]
+            if non_interaction:
+                warnings.append(
+                    f"{len(non_interaction)} non-interaction DFD references remain graph completeness gaps; "
+                    "no provider retry is required"
+                )
+            stage["validation_warnings"] = warnings
+            reclassified.append(stage_name)
+    run = report.get("analysis_run") if isinstance(report.get("analysis_run"), dict) else None
+    if run is not None and reclassified:
+        run["warning_stages"] = [
+            stage for stage in (run.get("warning_stages") or []) if stage not in reclassified
+        ]
+        requested = run.get("requested_types") or []
+        run["retryable"] = any(
+            isinstance(statuses.get(stage), dict) and statuses[stage].get("ok") is False
+            for stage in requested
+        )
+    return report
 
 
 def normalize_report_evidence(report: dict, project: dict) -> dict:
@@ -394,6 +1027,12 @@ def normalize_report_evidence(report: dict, project: dict) -> dict:
                 if item.get("framework") == "LINDDUN" else item
                 for item in report["threats"]
             ]
+    report["threats"] = ground_threat_findings(
+        report.get("threats") or [], project, report.get("dfd_model")
+    )
+    report["risk_summary"] = summarize_threat_findings(
+        report.get("threats") or [], report.get("risk_summary")
+    )
     if report.get("controls"):
         evidence_ids = {
             str(item.get("evidence_id"))
@@ -407,7 +1046,12 @@ def normalize_report_evidence(report: dict, project: dict) -> dict:
             dfd_model=report.get("dfd_model"),
             evidence_ids=evidence_ids,
         )
-    return report
+    if report.get("test_scenarios"):
+        report["test_scenarios"] = align_test_risk_priorities(
+            report.get("test_scenarios") or [], report.get("threats") or []
+        )
+    reconcile_deferred_decisions(report, project)
+    return normalize_deferred_interaction_manifests(report)
 
 
 def merge_deduped_threats(existing: list, incoming: list) -> tuple[list, int]:
@@ -427,7 +1071,11 @@ def merge_deduped_threats(existing: list, incoming: list) -> tuple[list, int]:
         key = t.get("fingerprint") or threat_fingerprint(t)
         if key in by_key:
             existing_threat = by_key[key]
-            for field in ["status", "owner", "review_notes", "reviewed_at"]:
+            for field in [
+                "status", "owner", "review_notes", "reviewed_at",
+                "risk_override_level", "risk_override_reason", "risk_override_by",
+                "risk_override_at", "risk_override_history",
+            ]:
                 if existing_threat.get(field):
                     t[field] = existing_threat[field]
             t["threat_id"] = existing_threat.get("threat_id", t.get("threat_id"))
@@ -472,6 +1120,11 @@ def replace_framework_threats(
         "needs_human_review",
         "evidence",
         "evidence_refs",
+        "risk_override_level",
+        "risk_override_reason",
+        "risk_override_by",
+        "risk_override_at",
+        "risk_override_history",
     ]
     replaced = []
     matched_keys = set()
@@ -644,16 +1297,64 @@ def enrich_controls(
                         continue
                     seen_refs.add(key)
                     target_refs.append({"type": key[0], "id": key[1]})
+                primary_ref = str(threat.get("primary_interaction_ref") or "")
+                if primary_ref and (not valid_dfd_ids or primary_ref in valid_dfd_ids):
+                    key = ("data_flow", primary_ref)
+                    if key not in seen_refs:
+                        seen_refs.add(key)
+                        target_refs.append({"type": key[0], "id": key[1]})
+
+        target_ref_ids = {str(ref.get("id")) for ref in target_refs if isinstance(ref, dict) and ref.get("id")}
+        for threat in related:
+            primary_ref = str(threat.get("primary_interaction_ref") or "")
+            if primary_ref and primary_ref not in target_ref_ids and (not valid_dfd_ids or primary_ref in valid_dfd_ids):
+                target_refs.append({"type": "data_flow", "id": primary_ref})
+                target_ref_ids.add(primary_ref)
 
         components = _unique(t.get("component") or t.get("destination") or t.get("asset") for t in related)
-        priorities = [t.get("risk_level", "Medium") for t in related]
+        priorities = [threat_priority_level(t) for t in related]
         c["affected_components"] = c.get("affected_components") or components
         c["target_refs"] = target_refs
         location = c.get("location_ref") if isinstance(c.get("location_ref"), dict) else None
         if location and valid_dfd_ids and str(location.get("id")) not in valid_dfd_ids:
             location = None
         c["location_ref"] = location or (target_refs[0] if target_refs else None)
-        c["priority"] = c.get("priority") or _highest_priority(priorities)
+        c["linked_finding_ids"] = list(c["threat_ids"])
+        mechanisms = _unique(
+            t.get("mechanism") or t.get("attack_mechanism") or t.get("abuse_case")
+            or t.get("scenario") or t.get("threat_description")
+            for t in related
+        )
+        c["mitigated_mechanism"] = c.get("mitigated_mechanism") or "; ".join(mechanisms[:3]) or c.get("name") or "Threat-specific security mechanism"
+        c["applicability_rationale"] = c.get("applicability_rationale") or c.get("mapping_rationale") or (
+            "Mapped to the linked finding(s) and their canonical DFD interaction(s)."
+            if c["threat_ids"] else "No validated finding is linked; reviewer applicability decision is required."
+        )
+        raw_mappings = c.get("threat_mappings") if isinstance(c.get("threat_mappings"), list) else []
+        valid_threat_ids = set(c["threat_ids"])
+        mappings = [
+            dict(mapping) for mapping in raw_mappings
+            if isinstance(mapping, dict) and str(mapping.get("threat_id")) in valid_threat_ids
+        ]
+        mapped_ids = {str(mapping.get("threat_id")) for mapping in mappings}
+        for threat_id in c["threat_ids"]:
+            if threat_id not in mapped_ids:
+                mappings.append({
+                    "threat_id": threat_id,
+                    "match_type": c.get("mapping_basis") or "explicit_threat_ids",
+                    "score": None,
+                    "matched_signals": [],
+                    "rationale": c["applicability_rationale"],
+                })
+        c["threat_mappings"] = mappings
+        # Priority is inherited from the versioned deterministic threat-risk
+        # result. Provider-selected control priority is retained only as an
+        # advisory value for audit comparison.
+        c["provider_priority"] = c.get("provider_priority") or c.get("priority")
+        c["priority"] = highest_risk_level(priorities)
+        c["priority_source"] = "deterministic_threat_risk"
+        c["risk_methodology_version"] = RISK_METHODOLOGY_VERSION
+        c["priority_threat_ids"] = [str(t.get("threat_id")) for t in related if t.get("threat_id")]
         verification_refs = c.get("verification_evidence_refs") if isinstance(c.get("verification_evidence_refs"), list) else []
         c["verification_evidence_refs"] = [
             str(ref) for ref in verification_refs
@@ -709,9 +1410,25 @@ def enrich_controls(
         c["verification_status"] = "evidenced" if (c["verification_evidence_refs"] or c["runtime_verification_refs"]) else "unverified"
         c["evidence_collected_refs"] = list(dict.fromkeys(implementation_evidence + c["verification_evidence_refs"]))
         c["control_origin"] = c.get("control_origin") or "recommended"
-        c["recommendation_status"] = c.get("recommendation_status") or "recommended"
         c["mapping_status"] = "unassigned" if explicit_unassigned else ("mapped" if c["threat_ids"] else "unassigned")
         c["review_status"] = c.get("review_status") or "Open"
+        recommendation_status = str(c.get("recommendation_status") or "recommended").strip().casefold().replace(" ", "_")
+        recommendation_aliases = {
+            "recommended": "recommended", "recommendation": "recommended", "needs_review": "needs_review",
+            "unassigned": "unassigned", "planned": "planned", "implemented": "implemented",
+            "verified": "verified_effective", "verified_effective": "verified_effective",
+            "accepted": "accepted_risk", "accepted_risk": "accepted_risk", "not_applicable": "not_applicable",
+        }
+        recommendation_status = recommendation_aliases.get(recommendation_status, "recommended")
+        if explicit_unassigned or not c["threat_ids"]:
+            recommendation_status = "unassigned"
+        elif c.get("review_status") == "Accepted Risk":
+            recommendation_status = "accepted_risk"
+        elif c.get("review_status") == "Verified" and c.get("implementation_state") == "runtime_verified":
+            recommendation_status = "verified_effective"
+        elif c.get("review_status") == "Implemented" and c.get("implementation_state") in {"documented", "runtime_verified"}:
+            recommendation_status = "implemented"
+        c["recommendation_status"] = recommendation_status
         c["checklist_items"] = c.get("checklist_items") or _control_checklist(c, related, project)
         c["verification_method"] = c.get("verification_method") or _verification_method(c)
         c["control_id"] = c.get("control_id") or str(uuid.uuid4())
@@ -732,24 +1449,39 @@ def enrich_missing_info(items: Iterable[dict], project: dict) -> list:
         m["missing_id"] = m.get("missing_id") or str(uuid.uuid4())
         m["priority"] = m.get("priority") or _missing_priority(area)
         m["target_team"] = m.get("target_team") or _target_team(area)
+        m["owner"] = m.get("owner") or m["target_team"]
         m["status"] = m.get("status") or "Open"
         m["question_to_ask"] = m.get("question_to_ask") or _question_to_ask(m)
+        m["next_action"] = m.get("next_action") or m["question_to_ask"]
+        m["effect_on_analysis"] = m.get("effect_on_analysis") or m.get("why_it_matters") or "Threat quality depends on resolving this context gap."
+        m["linked_object"] = m.get("linked_object") or f"missing-info:{m['missing_id']}"
         enriched.append(m)
 
     completeness = compute_completeness(project)
     known_questions = {(_normalize(i.get("question", "")), i.get("area")) for i in enriched}
-    for blocker in completeness.get("blockers", []):
+    candidate_blockers = [
+        *list(completeness.get("candidate_deferred_topics") or []),
+        *list(completeness.get("blockers") or []),
+    ]
+    for blocker in candidate_blockers:
         key = (_normalize(blocker["question"]), blocker["area"])
         if key in known_questions:
             continue
         enriched.append({
             "missing_id": str(uuid.uuid4()),
             "area": blocker["area"],
+            "dimension": blocker.get("dimension"),
             "question": blocker["question"],
             "question_to_ask": blocker["question"],
-            "why_it_matters": "Threat quality and control recommendations depend on this context.",
+            "why_it_matters": blocker.get("effect_on_analysis") or "Threat quality and control recommendations depend on this context.",
             "priority": blocker["priority"],
-            "target_team": _target_team(blocker["area"].lower()),
+            "target_team": blocker.get("owner") or _target_team(blocker["area"].lower()),
+            "owner": blocker.get("owner") or blocker.get("target_team") or _target_team(blocker["area"].lower()),
+            "linked_object": blocker.get("linked_object") or f"completeness:{blocker.get('dimension') or blocker['area']}",
+            "next_action": blocker.get("next_action") or blocker["question"],
+            "effect_on_analysis": blocker.get("effect_on_analysis"),
+            "evidence_refs": list(blocker.get("evidence_refs") or []),
+            "state": blocker.get("state") or "open",
             "status": "Open",
         })
 
@@ -790,7 +1522,13 @@ def update_item_by_id(items: list, id_field: str, item_id: str, patch: dict) -> 
         "status", "implementation_status", "owner", "review_notes", "review_status",
         "evidence", "verification_evidence_refs", "implementation_evidence_refs",
         "runtime_verification_refs", "implementation_plan", "implementation_state",
-        "priority", "location_ref", "target_refs",
+        "priority", "location_ref", "target_refs", "verification_method",
+        "review_status", "recommendation_status", "mapping_status", "mapping_rationale",
+        "applicability_rationale", "mitigated_mechanism",
+        "verification_result", "verification_notes",
+        "primary_interaction_ref", "dfd_context_refs",
+        "risk_override_level", "risk_override_reason", "risk_override_by",
+        "risk_override_at", "risk_override_history",
     }
     for item in items:
         if item.get(id_field) == item_id:
@@ -814,6 +1552,18 @@ def validate_control_patch(
     for field in ("status", "implementation_status"):
         if field in normalized and normalized[field] not in allowed_statuses:
             raise ValueError(f"{field} is invalid")
+    if "review_status" in normalized and normalized["review_status"] not in {"Open", "In Progress", "Implemented", "Verified", "Accepted Risk"}:
+        raise ValueError("review_status is invalid")
+    if "mapping_status" in normalized and normalized["mapping_status"] not in {"mapped", "unassigned"}:
+        raise ValueError("mapping_status is invalid")
+    if "recommendation_status" in normalized:
+        normalized_recommendation = str(normalized["recommendation_status"]).strip().casefold().replace(" ", "_")
+        if normalized_recommendation not in {
+            "recommended", "needs_review", "unassigned", "planned", "implemented",
+            "verified", "verified_effective", "accepted", "accepted_risk", "not_applicable",
+        }:
+            raise ValueError("recommendation_status is invalid")
+        normalized["recommendation_status"] = normalized_recommendation
     allowed_states = {"unknown", "planned", "documented", "runtime_verified"}
     if "implementation_state" in normalized and normalized["implementation_state"] not in allowed_states:
         raise ValueError("implementation_state is invalid")
@@ -869,6 +1619,10 @@ def validate_control_patch(
 
     if "implementation_plan" in normalized and not isinstance(normalized["implementation_plan"], str):
         raise ValueError("implementation_plan must be a string")
+
+    future_mapping = normalized.get("mapping_status", (existing_control or {}).get("mapping_status"))
+    if future_mapping == "mapped" and not (existing_control or {}).get("threat_ids"):
+        raise ValueError("mapped control requires at least one linked threat_id; use unassigned until applicability is decided")
 
     implementation_refs = normalized.get(
         "implementation_evidence_refs",
@@ -1093,15 +1847,6 @@ def _related_threats_by_text(control: dict, threats: list) -> list:
         ranked.append((score, str(threat.get("threat_id")), threat))
 
     return [threat for _, _, threat in sorted(ranked, key=lambda item: (-item[0], item[1]))]
-
-
-def _highest_priority(levels: Iterable[str]) -> str:
-    order = ["Critical", "High", "Medium", "Low"]
-    found = set(levels)
-    for level in order:
-        if level in found:
-            return level
-    return "Medium"
 
 
 def _control_evidence_requests(control: dict) -> list[str]:

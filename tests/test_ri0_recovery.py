@@ -12,6 +12,22 @@ from backend.routers.analysis import (
 
 
 class Ri0RecoveryTests(unittest.TestCase):
+    def test_validated_result_with_warnings_does_not_restore_old_snapshot(self):
+        snapshot = {"snapshot_id": "old", "threats": [{"threat_id": "old", "framework": "STRIDE"}]}
+        report = {"threats": [{"threat_id": "new", "framework": "STRIDE"}],
+                  "ai_status": {"stride": {"ok": False, "engine": "AI", "assessment_status": "complete",
+                                           "validation_warnings": ["One dangling reference was removed"]}}}
+        recovery = _apply_recovery_snapshot(report, snapshot, ["stride"])
+        self.assertEqual(recovery, {})
+        self.assertEqual([item["threat_id"] for item in report["threats"]], ["new"])
+
+    def test_validated_partial_result_keeps_current_candidates(self):
+        snapshot = {"snapshot_id": "old", "threats": [{"threat_id": "old", "framework": "LINDDUN"}]}
+        report = {"threats": [{"threat_id": "new", "framework": "LINDDUN"}],
+                  "ai_status": {"linddun": {"ok": False, "engine": "AI", "assessment_status": "partial"}}}
+        self.assertEqual(_apply_recovery_snapshot(report, snapshot, ["linddun"]), {})
+        self.assertEqual([item["threat_id"] for item in report["threats"]], ["new"])
+
     def test_failed_frameworks_restore_only_the_prior_snapshot_as_historical(self):
         snapshot = {
             "snapshot_id": "recovery-fixture",

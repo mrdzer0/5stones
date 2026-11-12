@@ -556,12 +556,18 @@ class DfdThreatAlignmentTests(unittest.TestCase):
                 "threat_id": f"threat-{index}",
                 "framework": "STRIDE" if index % 2 else "LINDDUN",
                 "threat_category": "Tampering" if index % 2 else "Data Disclosure",
-                "threat_description": "A scenario requiring verification.",
+                "threat_description": ("A registration field may be changed before validation." if index % 2
+                                       else "Customer email may be disclosed beyond its intended recipient."),
                 "target_refs": [{"type": "data_flow", "id": flow_id}],
             }
             for index in range(16)
         ]
-        controls = [{"control_id": "control-1", "name": "PII Data Minimization and Masking"}]
+        controls = [
+            {"control_id": "control-1", "name": "PII Data Minimization and Masking",
+             "threat_ids": [item["threat_id"] for item in threats if item["framework"] == "LINDDUN"], "mapping_status": "mapped"},
+            {"control_id": "control-2", "name": "Input Validation and Sanitization",
+             "threat_ids": [item["threat_id"] for item in threats if item["framework"] == "STRIDE"], "mapping_status": "mapped"},
+        ]
         raw = _fallback_scenarios(threats, controls)
         raw.append({"scenario_name": "dangling", "threat_id": "missing", "preconditions": "x", "steps": ["x"], "expected_result": "x"})
         scenarios = normalize_test_scenarios(raw, threats, controls, self.dfd_model)
@@ -782,7 +788,8 @@ class DfdThreatAlignmentTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, "truncated_json")
         self.assertIn("truncated_json", raised.exception.response_metadata["retry_reasons"])
-        self.assertEqual(raised.exception.response_metadata["format_retry_count"], 1)
+        # With 3 attempts (range(3)), the final attempt index is 2.
+        self.assertEqual(raised.exception.response_metadata["format_retry_count"], 2)
 
 
 if __name__ == "__main__":

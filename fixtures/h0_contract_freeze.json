@@ -1,0 +1,143 @@
+{
+  "contract": "UX-M0",
+  "version": "h0-contract-freeze-v1",
+  "approved_on": "2026-09-24",
+  "owner": "Product + UX + FE lead",
+  "default_locale": "en-US",
+  "source_of_truth": "This fixture is the contract for H0-A02 through H0-A06. Implementation may lag, but a deviation must be recorded as a change request.",
+  "global_shell": {
+    "label": "Global navigation",
+    "items": [
+      {"key": "dashboard", "label": "Dashboard", "route": "/index.html", "icon": "dashboard", "scope": "global"},
+      {"key": "projects", "label": "Projects", "route": "/index.html?view=projects", "icon": "projects", "scope": "global", "implementation_note": "Target subview; current baseline exposes project list through Dashboard."},
+      {"key": "new-project", "label": "New project", "route": "/project-new.html", "icon": "add", "scope": "global"},
+      {"key": "settings", "label": "Settings", "route": "/settings.html", "icon": "settings", "scope": "global"}
+    ],
+    "rules": [
+      "The same four items and order appear on all project workspace routes.",
+      "Global navigation never contains a project-specific finding, model, control, test, evidence, or report link.",
+      "Current project identity is shown in the project header, not represented as a second global menu variant."
+    ]
+  },
+  "project_workflow": [
+    {"key": "overview", "label": "Overview", "route": "/analysis.html", "phase": "overview", "icon": "overview", "goal": "Understand run status and the next action."},
+    {"key": "model", "label": "DFD model", "route": "/model.html", "phase": "model", "icon": "diagram", "goal": "Review canonical nodes, flows, zones, boundaries, and evidence."},
+    {"key": "findings", "label": "Findings", "route": "/findings.html", "phase": "findings", "icon": "findings", "goal": "Triage STRIDE/LINDDUN scenarios grounded in DFD interactions."},
+    {"key": "action-plan", "label": "Action plan", "route": "/action-plan.html", "phase": "action-plan", "icon": "actions", "goal": "Decide control applicability and prepare verification tests."},
+    {"key": "evidence", "label": "Evidence", "route": "/evidence.html", "phase": "evidence", "icon": "evidence", "goal": "Resolve, assign, or defer evidence gaps and assumptions."},
+    {"key": "report", "label": "Report & sign-off", "route": "/report.html", "phase": "signoff", "icon": "report", "goal": "Review immutable provenance and sign-off readiness."}
+  ],
+  "navigation_rules": [
+    "The workflow appears in the same position and order on all six project routes.",
+    "Desktop uses an inline step navigation; mobile uses one current-stage picker/drawer.",
+    "Active stage has aria-current='step' or equivalent selected state; unavailable stages remain navigable but expose readiness/blocker state.",
+    "Page-local navigation such as Report section TOC is subordinate to the project workflow and never replaces it.",
+    "Contextual topbar actions are allowed only when they are not a duplicate of a visible workflow destination."
+  ],
+  "url_state": {
+    "required": [
+      {"key": "id", "type": "project-id", "scope": "project workspace", "invalid": "render recoverable missing-project state"}
+    ],
+    "optional": [
+      {"key": "run", "type": "run-id", "preserve": true},
+      {"key": "phase", "type": "enum", "values": ["overview", "model", "findings", "action-plan", "evidence", "signoff"], "preserve": true},
+      {"key": "view", "type": "enum", "values": ["diagram", "trust-boundaries", "stride", "linddun", "controls", "tests", "gaps"], "preserve": true},
+      {"key": "selected", "type": "canonical-selection", "pattern": "^(threat|boundary|zone|dfd-node|dfd-flow|control|test|gap|assumption):[A-Za-z0-9._:-]{1,128}$", "preserve": true},
+      {"key": "revision", "type": "report-revision-id", "scope": "signed/draft report reader", "preserve": true},
+      {"key": "q", "type": "search-query", "max_length": 160, "preserve": true},
+      {"key": "sort", "type": "route-sort", "preserve": true},
+      {"key": "filters", "type": "route-filter-set", "preserve": true}
+    ],
+    "legacy": [
+      {"input": "#analysis-diagram", "maps_to": {"phase": "model", "view": "diagram"}},
+      {"input": "#analysis-trust-boundaries", "maps_to": {"phase": "model", "view": "trust-boundaries"}},
+      {"input": "#analysis-stride", "maps_to": {"phase": "findings", "view": "stride"}},
+      {"input": "#analysis-linddun", "maps_to": {"phase": "findings", "view": "linddun"}},
+      {"input": "#analysis-controls", "maps_to": {"phase": "action-plan", "view": "controls"}},
+      {"input": "#analysis-tests", "maps_to": {"phase": "action-plan", "view": "tests"}},
+      {"input": "#analysis-gaps", "maps_to": {"phase": "evidence", "view": "gaps"}}
+    ],
+    "transition_rules": [
+      "Workspace links preserve id and run; a stage link changes phase and clears incompatible view/selection.",
+      "Finding/control/test/evidence deep links preserve exact selected canonical ID.",
+      "Invalid enum/filter values are ignored individually; valid state is not discarded.",
+      "Reload, Back, Forward, and direct deep link reproduce the same project/run/stage/selection state.",
+      "Report revision is read-only context and must never mutate the canonical current draft."
+    ]
+  },
+  "page_contracts": {
+    "analysis": {"route": "/analysis.html", "h1": "Project name", "goal": "Understand analysis lifecycle status and next action.", "primary_cta": "Run analysis / Retry affected phase", "status": "Run state + current phase + preserved-result/deferred state", "secondary": ["Open DFD model", "Open report"]},
+    "model": {"route": "/model.html", "h1": "DFD model", "goal": "Review the canonical DFD and boundary decisions.", "primary_cta": "Start guided boundary review", "status": "DFD revision + readiness", "secondary": ["Fit", "Open linked finding", "More"]},
+    "findings": {"route": "/findings.html", "h1": "Findings", "goal": "Triage grounded STRIDE/LINDDUN scenarios.", "primary_cta": "Start guided finding review", "status": "Scored/deferred count + filter result", "secondary": ["Search", "Filters", "Open DFD model"]},
+    "action-plan": {"route": "/action-plan.html", "h1": "Action plan", "goal": "Resolve control applicability and verification readiness.", "primary_cta": "Review applicability queue", "status": "Unassigned/blocked/executable count", "secondary": ["Search", "Filters", "Open finding"]},
+    "evidence": {"route": "/evidence.html", "h1": "Evidence", "goal": "Resolve or explicitly defer evidence gaps.", "primary_cta": "Resolve next evidence item", "status": "Unread/deferred/owner coverage", "secondary": ["Add evidence", "Update context", "Filters"]},
+    "report": {"route": "/report.html", "h1": "Report & sign-off", "goal": "Review an immutable, reproducible report revision.", "primary_cta": "Review sign-off readiness / Sign report", "status": "Draft/signed/superseded + scored/deferred summary", "secondary": ["Read revision", "Open DFD model", "Export"]}
+  },
+  "content_dictionary": {
+    "nouns": {
+      "overview": "Overview",
+      "model": "DFD model",
+      "finding": "Finding",
+      "control": "Control",
+      "verification_test": "Verification test",
+      "evidence_gap": "Evidence gap",
+      "report": "Report & sign-off",
+      "deferred": "Deferred"
+    },
+    "verbs": {
+      "open": "Open",
+      "review": "Review",
+      "resolve": "Resolve",
+      "assign": "Assign",
+      "verify": "Verify",
+      "defer": "Defer",
+      "continue": "Continue",
+      "save": "Save"
+    },
+    "state_copy": {
+      "insufficient_evidence": "Deferred — evidence incomplete",
+      "not_scored": "Not scored — context or evidence is missing",
+      "preserved_result": "Previous validated result preserved",
+      "manual_decision": "Needs manual applicability decision",
+      "signed_immutable": "Signed revision is immutable"
+    },
+    "rules": [
+      "Use English consistently for the default locale; do not mix Belum tahu with English UI labels.",
+      "Deferred, unknown, and not scored must never be presented as safe/no risk.",
+      "Use one verb for one action; do not alternate View/Open/Edit/Update when the consequence is the same.",
+      "Technical jargon gets a plain-language helper on first exposure and remains precise in inspector/export."
+    ]
+  },
+  "responsive_contract": {
+    "breakpoints": [
+      {"name": "compact", "max_width": 560, "test_widths": [320, 390], "rules": ["mobile drawer", "full-width filter sheet", "bottom-sheet inspector", "one current-stage picker"]},
+      {"name": "tablet", "min_width": 561, "max_width": 900, "test_widths": [768], "rules": ["drawer-capable shell", "no horizontal overflow", "single-column workspace when necessary"]},
+      {"name": "desktop", "min_width": 901, "test_widths": [1280, 1440], "rules": ["persistent sidebar", "inline workflow navigation", "desktop inspector region"]}
+    ],
+    "global": [
+      "No horizontal overflow at 320, 390, 768, 1280, or 1440 CSS px.",
+      "Overlay open/close owns Escape, focus return, scroll lock, and selected object preservation.",
+      "Sticky/fixed UI never covers a focused element or the primary task surface.",
+      "Page goal, status, and primary action remain discoverable in the first viewport."
+    ],
+    "model": [
+      "Canvas is first-class and occupies at least 55% of desktop viewport height.",
+      "Mobile boundary review defaults closed; the target sheet is opened by an explicit trigger.",
+      "Fit preserves selected element visibility and produces no node/label overlap that blocks interpretation."
+    ]
+  },
+  "success_criteria": {
+    "navigation_variants": {"baseline": "at least 3 shell variants across six routes", "target": "one shared signature"},
+    "workflow_visibility": {"baseline": "workflow rendered only on Analysis", "target": "six of six routes expose current stage"},
+    "primary_cta": {"baseline": "not frozen", "target": "exactly one primary CTA per route/state"},
+    "state_preservation": {"baseline": "partially implemented", "target": "id/run/phase/view/selection/filter preserved through direct link and Back/Forward"},
+    "readability": {"baseline": "essential text inventory not frozen", "target": "essential text at least 12px; body/task copy 14–16px"},
+    "expert_trace": {"baseline": "synthetic gate only", "target": "DFD → finding → control → test in 60 seconds"},
+    "novice_orientation": {"baseline": "not human-tested", "target": "status + next action understood in 10 seconds"}
+  },
+  "change_control": {
+    "required_fields": ["action_id", "decision", "affected_routes", "owner", "reason", "acceptance_impact", "rollback_plan", "reviewer", "date"],
+    "approval": "Product + UX + FE lead before markup/CSS contract changes; QA review before release-gate changes.",
+    "compatibility": "Canonical DFD/threat/control/test IDs and deferred semantics cannot be changed by a UI-only contract request."
+  }
+}
