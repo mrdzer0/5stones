@@ -58,7 +58,8 @@
 .btn-ghost:hover { background: var(--surface-2); color: var(--text); }
 
 .btn-sm { padding: 5px 10px; font-size: 0.78rem; }
-.btn-lg { padding: 10px 20px; font-size: 0.933rem; }
+.btn-sm { min-height: 40px; }
+.btn-lg { padding: 10px 20px; font-size: 0.933rem; min-height: 44px; }
 
 .btn:disabled {
   opacity: 0.45;
@@ -112,7 +113,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 0.7rem;
+  font-size: var(--font-size-meta);
   font-weight: 600;
   letter-spacing: 0.02em;
   padding: 2px 7px;

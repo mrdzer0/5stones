@@ -1,0 +1,1252 @@
+{
+  "model": {
+    "id": "dfd-model-u2-checkout",
+    "project_id": "fixture-u7-checkout",
+    "schema_version": "dfd-v2",
+    "revision": 1,
+    "layout_revision": 1,
+    "human_edit_revision": 0,
+    "source_semantic_hash": null,
+    "semantic_hash": "a855d889c0e2a864f3d4ddc8592704df29e9032a07e61d768875d7f5889036df",
+    "title": "Synthetic Checkout Review",
+    "scope_description": "Checkout processing system",
+    "source_refs": [
+      "source-checkout-prd#architecture"
+    ],
+    "evidence": [
+      {
+        "id": "source-checkout-prd#architecture",
+        "evidence_type": "architecture",
+        "source": "Synthetic checkout PRD",
+        "topics": [],
+        "document_id": null,
+        "document_revision": null,
+        "document_hash": null,
+        "locator": "architecture",
+        "excerpt_redacted": "Synthetic UI gate fixture evidence."
+      },
+      {
+        "id": "source-checkout-prd#flow",
+        "evidence_type": "data_flow",
+        "source": "Synthetic checkout PRD",
+        "topics": [],
+        "document_id": null,
+        "document_revision": null,
+        "document_hash": null,
+        "locator": "flow",
+        "excerpt_redacted": "Synthetic UI gate fixture flow evidence."
+      }
+    ],
+    "assertions": [],
+    "nodes": [
+      {
+        "id": "entity-customer",
+        "display_id": "N1",
+        "type": "entity",
+        "name": "Customer",
+        "identity_key": null,
+        "identity_aliases": [],
+        "environment": null,
+        "tenant_id": null,
+        "description": null,
+        "scope": "external_dependency",
+        "ownership": "customer",
+        "operator_control_party": null,
+        "grouping_status": "unknown",
+        "grouping_basis": null,
+        "exposure": "internet_facing",
+        "zone_ids": [
+          "zone-public"
+        ],
+        "parent_process_id": null,
+        "knowledge_status": "documented",
+        "implementation_status": "unknown",
+        "evidence_refs": [
+          "source-checkout-prd#architecture"
+        ],
+        "assertions": [],
+        "process_metadata": null
+      },
+      {
+        "id": "process-checkout",
+        "display_id": "N2",
+        "type": "process",
+        "name": "Checkout API",
+        "identity_key": null,
+        "identity_aliases": [],
+        "environment": null,
+        "tenant_id": null,
+        "description": null,
+        "scope": "in_scope",
+        "ownership": "organization",
+        "operator_control_party": null,
+        "grouping_status": "unknown",
+        "grouping_basis": null,
+        "exposure": "internet_facing",
+        "zone_ids": [
+          "zone-app"
+        ],
+        "parent_process_id": null,
+        "knowledge_status": "documented",
+        "implementation_status": "unknown",
+        "evidence_refs": [
+          "source-checkout-prd#architecture"
+        ],
+        "assertions": [],
+        "process_metadata": null
+      },
+      {
+        "id": "store-orders",
+        "display_id": "N3",
+        "type": "data_store",
+        "name": "Orders DB",
+        "identity_key": null,
+        "identity_aliases": [],
+        "environment": null,
+        "tenant_id": null,
+        "description": null,
+        "scope": "in_scope",
+        "ownership": "organization",
+        "operator_control_party": null,
+        "grouping_status": "unknown",
+        "grouping_basis": null,
+        "exposure": "private",
+        "zone_ids": [
+          "zone-restricted"
+        ],
+        "parent_process_id": null,
+        "knowledge_status": "documented",
+        "implementation_status": "unknown",
+        "evidence_refs": [
+          "source-checkout-prd#architecture"
+        ],
+        "assertions": [],
+        "process_metadata": null
+      },
+      {
+        "id": "entity-payment",
+        "display_id": "N4",
+        "type": "entity",
+        "name": "Payment Gateway",
+        "identity_key": null,
+        "identity_aliases": [],
+        "environment": null,
+        "tenant_id": null,
+        "description": null,
+        "scope": "external_dependency",
+        "ownership": "vendor",
+        "operator_control_party": null,
+        "grouping_status": "unknown",
+        "grouping_basis": null,
+        "exposure": "internet_facing",
+        "zone_ids": [
+          "zone-vendor"
+        ],
+        "parent_process_id": null,
+        "knowledge_status": "documented",
+        "implementation_status": "unknown",
+        "evidence_refs": [
+          "source-checkout-prd#architecture"
+        ],
+        "assertions": [],
+        "process_metadata": null
+      }
+    ],
+    "data_objects": [
+      {
+        "id": "data-order",
+        "display_id": "DO1",
+        "name": "Order and payment data",
+        "fields": [],
+        "classification": "confidential",
+        "data_subjects": [],
+        "identifiers": [],
+        "direct_identifiers": [],
+        "indirect_identifiers": [],
+        "sensitivity": "high",
+        "purpose": null,
+        "recipients": [],
+        "linkability": null,
+        "notice": null,
+        "individual_control": null,
+        "legal_basis": null,
+        "transformation_refs": [],
+        "lineage_refs": [],
+        "knowledge_status": "documented",
+        "evidence_refs": [
+          "source-checkout-prd#architecture"
+        ],
+        "assertions": []
+      }
+    ],
+    "flows": [
+      {
+        "id": "flow-checkout-request",
+        "display_id": "F1",
+        "source_id": "entity-customer",
+        "target_id": "process-checkout",
+        "name": "Checkout request",
+        "data_object_ids": [
+          "data-order"
+        ],
+        "protocol": "HTTPS",
+        "interaction_kind": "request",
+        "authn": null,
+        "authz": null,
+        "boundary_crossings": [
+          "boundary-public-app"
+        ],
+        "crossing_rationales": {
+          "boundary-public-app": "Derived from zone membership (source-to-target); entity-customer → process-checkout crosses Public to application."
+        },
+        "crossing_origins": {
+          "boundary-public-app": "derived"
+        },
+        "crossing_status": "resolved",
+        "grounding_status": "grounded",
+        "grounding_reason": null,
+        "endpoint_classification": {},
+        "evidence_refs": [
+          "source-checkout-prd#flow"
+        ],
+        "knowledge_status": "documented",
+        "implementation_status": "unknown"
+      },
+      {
+        "id": "flow-order-write",
+        "display_id": "F2",
+        "source_id": "process-checkout",
+        "target_id": "store-orders",
+        "name": "Persist order",
+        "data_object_ids": [
+          "data-order"
+        ],
+        "protocol": "SQL",
+        "interaction_kind": "write",
+        "authn": null,
+        "authz": null,
+        "boundary_crossings": [
+          "boundary-app-data"
+        ],
+        "crossing_rationales": {
+          "boundary-app-data": "Derived from zone membership (source-to-target); process-checkout → store-orders crosses Application to data."
+        },
+        "crossing_origins": {
+          "boundary-app-data": "derived"
+        },
+        "crossing_status": "resolved",
+        "grounding_status": "grounded",
+        "grounding_reason": null,
+        "endpoint_classification": {},
+        "evidence_refs": [
+          "source-checkout-prd#flow"
+        ],
+        "knowledge_status": "documented",
+        "implementation_status": "unknown"
+      },
+      {
+        "id": "flow-payment-request",
+        "display_id": "F3",
+        "source_id": "process-checkout",
+        "target_id": "entity-payment",
+        "name": "Authorize payment",
+        "data_object_ids": [
+          "data-order"
+        ],
+        "protocol": "HTTPS",
+        "interaction_kind": "request",
+        "authn": null,
+        "authz": null,
+        "boundary_crossings": [
+          "boundary-app-vendor"
+        ],
+        "crossing_rationales": {
+          "boundary-app-vendor": "Derived from zone membership (source-to-target); process-checkout → entity-payment crosses Application to vendor."
+        },
+        "crossing_origins": {
+          "boundary-app-vendor": "derived"
+        },
+        "crossing_status": "resolved",
+        "grounding_status": "grounded",
+        "grounding_reason": null,
+        "endpoint_classification": {},
+        "evidence_refs": [
+          "source-checkout-prd#flow"
+        ],
+        "knowledge_status": "documented",
+        "implementation_status": "unknown"
+      }
+    ],
+    "deferred_interactions": [],
+    "primary_interaction_ids": [],
+    "primary_interactions_by_feature": {},
+    "semantic_quality": null,
+    "stores": {},
+    "zones": [
+      {
+        "id": "zone-public",
+        "display_id": "Z1",
+        "name": "Public facing",
+        "description": null,
+        "parent_zone_id": null,
+        "ownership_group_id": null,
+        "trust_assumptions": [],
+        "knowledge_status": "unknown",
+        "evidence_refs": []
+      },
+      {
+        "id": "zone-app",
+        "display_id": "Z2",
+        "name": "Internal application",
+        "description": null,
+        "parent_zone_id": null,
+        "ownership_group_id": null,
+        "trust_assumptions": [],
+        "knowledge_status": "unknown",
+        "evidence_refs": []
+      },
+      {
+        "id": "zone-restricted",
+        "display_id": "Z3",
+        "name": "Restricted data",
+        "description": null,
+        "parent_zone_id": null,
+        "ownership_group_id": null,
+        "trust_assumptions": [],
+        "knowledge_status": "unknown",
+        "evidence_refs": []
+      },
+      {
+        "id": "zone-vendor",
+        "display_id": "Z4",
+        "name": "External provider",
+        "description": null,
+        "parent_zone_id": null,
+        "ownership_group_id": null,
+        "trust_assumptions": [],
+        "knowledge_status": "unknown",
+        "evidence_refs": []
+      }
+    ],
+    "boundaries": [
+      {
+        "id": "boundary-public-app",
+        "display_id": "TB-PA",
+        "name": "Public to application",
+        "types": [
+          "network"
+        ],
+        "rationale": null,
+        "source_zone_ids": [
+          "zone-public"
+        ],
+        "target_zone_ids": [
+          "zone-app"
+        ],
+        "crossing_flow_ids": [
+          "flow-checkout-request"
+        ],
+        "transition_scope": "unknown",
+        "controls": [],
+        "assertions": [],
+        "status": "confirmed",
+        "derived": true,
+        "evidence_refs": [
+          "source-checkout-prd#architecture"
+        ]
+      },
+      {
+        "id": "boundary-app-data",
+        "display_id": "TB-AD",
+        "name": "Application to data",
+        "types": [
+          "network"
+        ],
+        "rationale": null,
+        "source_zone_ids": [
+          "zone-app"
+        ],
+        "target_zone_ids": [
+          "zone-restricted"
+        ],
+        "crossing_flow_ids": [
+          "flow-order-write"
+        ],
+        "transition_scope": "unknown",
+        "controls": [],
+        "assertions": [],
+        "status": "candidate",
+        "derived": true,
+        "evidence_refs": [
+          "source-checkout-prd#architecture"
+        ]
+      },
+      {
+        "id": "boundary-app-vendor",
+        "display_id": "TB-AV",
+        "name": "Application to vendor",
+        "types": [
+          "network"
+        ],
+        "rationale": null,
+        "source_zone_ids": [
+          "zone-app"
+        ],
+        "target_zone_ids": [
+          "zone-vendor"
+        ],
+        "crossing_flow_ids": [
+          "flow-payment-request"
+        ],
+        "transition_scope": "unknown",
+        "controls": [],
+        "assertions": [],
+        "status": "confirmed",
+        "derived": true,
+        "evidence_refs": [
+          "source-checkout-prd#architecture"
+        ]
+      }
+    ],
+    "views": [
+      {
+        "id": "view-context",
+        "kind": "context",
+        "parent_process_id": null,
+        "element_refs": [
+          "boundary-app-vendor",
+          "boundary-public-app",
+          "data-order",
+          "entity-customer",
+          "entity-payment",
+          "flow-checkout-request",
+          "flow-payment-request",
+          "process-checkout",
+          "store-orders"
+        ],
+        "projection_mappings": {
+          "entity-customer": [
+            "entity-customer"
+          ],
+          "entity-payment": [
+            "entity-payment"
+          ],
+          "projection-system-e2ede9d712b5266a": [
+            "process-checkout",
+            "store-orders"
+          ],
+          "projection-flow-487cabc1cc2457dd": [
+            "flow-checkout-request"
+          ],
+          "projection-flow-2b9a962f92a45a87": [
+            "flow-payment-request"
+          ],
+          "boundary-public-app": [
+            "boundary-public-app"
+          ],
+          "boundary-app-vendor": [
+            "boundary-app-vendor"
+          ],
+          "data-order": [
+            "data-order"
+          ]
+        },
+        "input_flow_ids": [],
+        "output_flow_ids": [],
+        "port_mappings": {},
+        "projection_nodes": [
+          {
+            "id": "projection-system-e2ede9d712b5266a",
+            "display_id": "SYS1",
+            "type": "system",
+            "name": "Synthetic Checkout Review",
+            "canonical_node_ids": [
+              "process-checkout",
+              "store-orders"
+            ],
+            "scope": "in_scope",
+            "ownership": "organization",
+            "exposure": "unknown",
+            "zone_ids": [],
+            "knowledge_status": "documented",
+            "implementation_status": "unknown",
+            "evidence_refs": [
+              "source-checkout-prd#architecture"
+            ]
+          },
+          {
+            "id": "entity-customer",
+            "display_id": "N1",
+            "type": "entity",
+            "name": "Customer",
+            "canonical_node_ids": [
+              "entity-customer"
+            ],
+            "scope": "external_dependency",
+            "ownership": "customer",
+            "exposure": "internet_facing",
+            "zone_ids": [
+              "zone-public"
+            ],
+            "knowledge_status": "documented",
+            "implementation_status": "unknown",
+            "evidence_refs": [
+              "source-checkout-prd#architecture"
+            ]
+          },
+          {
+            "id": "entity-payment",
+            "display_id": "N4",
+            "type": "entity",
+            "name": "Payment Gateway",
+            "canonical_node_ids": [
+              "entity-payment"
+            ],
+            "scope": "external_dependency",
+            "ownership": "vendor",
+            "exposure": "internet_facing",
+            "zone_ids": [
+              "zone-vendor"
+            ],
+            "knowledge_status": "documented",
+            "implementation_status": "unknown",
+            "evidence_refs": [
+              "source-checkout-prd#architecture"
+            ]
+          }
+        ],
+        "projection_flows": [
+          {
+            "id": "projection-flow-487cabc1cc2457dd",
+            "display_id": "F1",
+            "source_id": "entity-customer",
+            "target_id": "projection-system-e2ede9d712b5266a",
+            "name": "Checkout request",
+            "canonical_flow_ids": [
+              "flow-checkout-request"
+            ],
+            "data_object_ids": [
+              "data-order"
+            ],
+            "protocol": "HTTPS",
+            "interaction_kind": "request",
+            "boundary_crossings": [
+              "boundary-public-app"
+            ],
+            "crossing_status": "resolved",
+            "grounding_status": "grounded",
+            "evidence_refs": [
+              "source-checkout-prd#flow"
+            ]
+          },
+          {
+            "id": "projection-flow-2b9a962f92a45a87",
+            "display_id": "F3",
+            "source_id": "projection-system-e2ede9d712b5266a",
+            "target_id": "entity-payment",
+            "name": "Authorize payment",
+            "canonical_flow_ids": [
+              "flow-payment-request"
+            ],
+            "data_object_ids": [
+              "data-order"
+            ],
+            "protocol": "HTTPS",
+            "interaction_kind": "request",
+            "boundary_crossings": [
+              "boundary-app-vendor"
+            ],
+            "crossing_status": "resolved",
+            "grounding_status": "grounded",
+            "evidence_refs": [
+              "source-checkout-prd#flow"
+            ]
+          }
+        ],
+        "decomposition_status": "not_applicable",
+        "projection_issues": [],
+        "positions": {},
+        "collapsed_groups": [],
+        "viewport": {}
+      },
+      {
+        "id": "view-system",
+        "kind": "system",
+        "parent_process_id": null,
+        "element_refs": [
+          "boundary-app-data",
+          "boundary-app-vendor",
+          "boundary-public-app",
+          "data-order",
+          "entity-customer",
+          "entity-payment",
+          "flow-checkout-request",
+          "flow-order-write",
+          "flow-payment-request",
+          "process-checkout",
+          "store-orders"
+        ],
+        "projection_mappings": {
+          "entity-customer": [
+            "entity-customer"
+          ],
+          "entity-payment": [
+            "entity-payment"
+          ],
+          "process-checkout": [
+            "process-checkout"
+          ],
+          "store-orders": [
+            "store-orders"
+          ],
+          "flow-checkout-request": [
+            "flow-checkout-request"
+          ],
+          "flow-order-write": [
+            "flow-order-write"
+          ],
+          "flow-payment-request": [
+            "flow-payment-request"
+          ],
+          "data-order": [
+            "data-order"
+          ],
+          "boundary-public-app": [
+            "boundary-public-app"
+          ],
+          "boundary-app-data": [
+            "boundary-app-data"
+          ],
+          "boundary-app-vendor": [
+            "boundary-app-vendor"
+          ]
+        },
+        "input_flow_ids": [],
+        "output_flow_ids": [],
+        "port_mappings": {},
+        "projection_nodes": [
+          {
+            "id": "entity-customer",
+            "display_id": "N1",
+            "type": "entity",
+            "name": "Customer",
+            "canonical_node_ids": [
+              "entity-customer"
+            ],
+            "scope": "external_dependency",
+            "ownership": "customer",
+            "exposure": "internet_facing",
+            "zone_ids": [
+              "zone-public"
+            ],
+            "knowledge_status": "documented",
+            "implementation_status": "unknown",
+            "evidence_refs": [
+              "source-checkout-prd#architecture"
+            ]
+          },
+          {
+            "id": "entity-payment",
+            "display_id": "N4",
+            "type": "entity",
+            "name": "Payment Gateway",
+            "canonical_node_ids": [
+              "entity-payment"
+            ],
+            "scope": "external_dependency",
+            "ownership": "vendor",
+            "exposure": "internet_facing",
+            "zone_ids": [
+              "zone-vendor"
+            ],
+            "knowledge_status": "documented",
+            "implementation_status": "unknown",
+            "evidence_refs": [
+              "source-checkout-prd#architecture"
+            ]
+          },
+          {
+            "id": "process-checkout",
+            "display_id": "N2",
+            "type": "process",
+            "name": "Checkout API",
+            "canonical_node_ids": [
+              "process-checkout"
+            ],
+            "scope": "in_scope",
+            "ownership": "organization",
+            "exposure": "internet_facing",
+            "zone_ids": [
+              "zone-app"
+            ],
+            "knowledge_status": "documented",
+            "implementation_status": "unknown",
+            "evidence_refs": [
+              "source-checkout-prd#architecture"
+            ]
+          },
+          {
+            "id": "store-orders",
+            "display_id": "N3",
+            "type": "data_store",
+            "name": "Orders DB",
+            "canonical_node_ids": [
+              "store-orders"
+            ],
+            "scope": "in_scope",
+            "ownership": "organization",
+            "exposure": "private",
+            "zone_ids": [
+              "zone-restricted"
+            ],
+            "knowledge_status": "documented",
+            "implementation_status": "unknown",
+            "evidence_refs": [
+              "source-checkout-prd#architecture"
+            ]
+          }
+        ],
+        "projection_flows": [
+          {
+            "id": "flow-checkout-request",
+            "display_id": "F1",
+            "source_id": "entity-customer",
+            "target_id": "process-checkout",
+            "name": "Checkout request",
+            "canonical_flow_ids": [
+              "flow-checkout-request"
+            ],
+            "data_object_ids": [
+              "data-order"
+            ],
+            "protocol": "HTTPS",
+            "interaction_kind": "request",
+            "boundary_crossings": [
+              "boundary-public-app"
+            ],
+            "crossing_status": "resolved",
+            "grounding_status": "grounded",
+            "evidence_refs": [
+              "source-checkout-prd#flow"
+            ]
+          },
+          {
+            "id": "flow-order-write",
+            "display_id": "F2",
+            "source_id": "process-checkout",
+            "target_id": "store-orders",
+            "name": "Persist order",
+            "canonical_flow_ids": [
+              "flow-order-write"
+            ],
+            "data_object_ids": [
+              "data-order"
+            ],
+            "protocol": "SQL",
+            "interaction_kind": "write",
+            "boundary_crossings": [
+              "boundary-app-data"
+            ],
+            "crossing_status": "resolved",
+            "grounding_status": "grounded",
+            "evidence_refs": [
+              "source-checkout-prd#flow"
+            ]
+          },
+          {
+            "id": "flow-payment-request",
+            "display_id": "F3",
+            "source_id": "process-checkout",
+            "target_id": "entity-payment",
+            "name": "Authorize payment",
+            "canonical_flow_ids": [
+              "flow-payment-request"
+            ],
+            "data_object_ids": [
+              "data-order"
+            ],
+            "protocol": "HTTPS",
+            "interaction_kind": "request",
+            "boundary_crossings": [
+              "boundary-app-vendor"
+            ],
+            "crossing_status": "resolved",
+            "grounding_status": "grounded",
+            "evidence_refs": [
+              "source-checkout-prd#flow"
+            ]
+          }
+        ],
+        "decomposition_status": "not_applicable",
+        "projection_issues": [],
+        "positions": {},
+        "collapsed_groups": [],
+        "viewport": {}
+      },
+      {
+        "id": "view-feature-process-checkout",
+        "kind": "feature",
+        "parent_process_id": "process-checkout",
+        "element_refs": [
+          "boundary-app-data",
+          "boundary-app-vendor",
+          "boundary-public-app",
+          "data-order",
+          "entity-customer",
+          "entity-payment",
+          "flow-checkout-request",
+          "flow-order-write",
+          "flow-payment-request",
+          "process-checkout",
+          "store-orders"
+        ],
+        "projection_mappings": {
+          "process-checkout": [
+            "process-checkout"
+          ],
+          "entity-customer": [
+            "entity-customer"
+          ],
+          "store-orders": [
+            "store-orders"
+          ],
+          "entity-payment": [
+            "entity-payment"
+          ],
+          "flow-checkout-request": [
+            "flow-checkout-request"
+          ],
+          "flow-order-write": [
+            "flow-order-write"
+          ],
+          "flow-payment-request": [
+            "flow-payment-request"
+          ],
+          "data-order": [
+            "data-order"
+          ],
+          "boundary-public-app": [
+            "boundary-public-app"
+          ],
+          "boundary-app-data": [
+            "boundary-app-data"
+          ],
+          "boundary-app-vendor": [
+            "boundary-app-vendor"
+          ]
+        },
+        "input_flow_ids": [
+          "flow-checkout-request"
+        ],
+        "output_flow_ids": [
+          "flow-order-write",
+          "flow-payment-request"
+        ],
+        "port_mappings": {
+          "input": [
+            "flow-checkout-request"
+          ],
+          "output": [
+            "flow-order-write",
+            "flow-payment-request"
+          ]
+        },
+        "projection_nodes": [
+          {
+            "id": "entity-customer",
+            "display_id": "N1",
+            "type": "entity",
+            "name": "Customer",
+            "canonical_node_ids": [
+              "entity-customer"
+            ],
+            "scope": "external_dependency",
+            "ownership": "customer",
+            "exposure": "internet_facing",
+            "zone_ids": [
+              "zone-public"
+            ],
+            "knowledge_status": "documented",
+            "implementation_status": "unknown",
+            "evidence_refs": [
+              "source-checkout-prd#architecture"
+            ]
+          },
+          {
+            "id": "process-checkout",
+            "display_id": "N2",
+            "type": "process",
+            "name": "Checkout API",
+            "canonical_node_ids": [
+              "process-checkout"
+            ],
+            "scope": "in_scope",
+            "ownership": "organization",
+            "exposure": "internet_facing",
+            "zone_ids": [
+              "zone-app"
+            ],
+            "knowledge_status": "documented",
+            "implementation_status": "unknown",
+            "evidence_refs": [
+              "source-checkout-prd#architecture"
+            ]
+          },
+          {
+            "id": "store-orders",
+            "display_id": "N3",
+            "type": "data_store",
+            "name": "Orders DB",
+            "canonical_node_ids": [
+              "store-orders"
+            ],
+            "scope": "in_scope",
+            "ownership": "organization",
+            "exposure": "private",
+            "zone_ids": [
+              "zone-restricted"
+            ],
+            "knowledge_status": "documented",
+            "implementation_status": "unknown",
+            "evidence_refs": [
+              "source-checkout-prd#architecture"
+            ]
+          },
+          {
+            "id": "entity-payment",
+            "display_id": "N4",
+            "type": "entity",
+            "name": "Payment Gateway",
+            "canonical_node_ids": [
+              "entity-payment"
+            ],
+            "scope": "external_dependency",
+            "ownership": "vendor",
+            "exposure": "internet_facing",
+            "zone_ids": [
+              "zone-vendor"
+            ],
+            "knowledge_status": "documented",
+            "implementation_status": "unknown",
+            "evidence_refs": [
+              "source-checkout-prd#architecture"
+            ]
+          }
+        ],
+        "projection_flows": [
+          {
+            "id": "flow-checkout-request",
+            "display_id": "F1",
+            "source_id": "entity-customer",
+            "target_id": "process-checkout",
+            "name": "Checkout request",
+            "canonical_flow_ids": [
+              "flow-checkout-request"
+            ],
+            "data_object_ids": [
+              "data-order"
+            ],
+            "protocol": "HTTPS",
+            "interaction_kind": "request",
+            "boundary_crossings": [
+              "boundary-public-app"
+            ],
+            "crossing_status": "resolved",
+            "grounding_status": "grounded",
+            "evidence_refs": [
+              "source-checkout-prd#flow"
+            ]
+          },
+          {
+            "id": "flow-order-write",
+            "display_id": "F2",
+            "source_id": "process-checkout",
+            "target_id": "store-orders",
+            "name": "Persist order",
+            "canonical_flow_ids": [
+              "flow-order-write"
+            ],
+            "data_object_ids": [
+              "data-order"
+            ],
+            "protocol": "SQL",
+            "interaction_kind": "write",
+            "boundary_crossings": [
+              "boundary-app-data"
+            ],
+            "crossing_status": "resolved",
+            "grounding_status": "grounded",
+            "evidence_refs": [
+              "source-checkout-prd#flow"
+            ]
+          },
+          {
+            "id": "flow-payment-request",
+            "display_id": "F3",
+            "source_id": "process-checkout",
+            "target_id": "entity-payment",
+            "name": "Authorize payment",
+            "canonical_flow_ids": [
+              "flow-payment-request"
+            ],
+            "data_object_ids": [
+              "data-order"
+            ],
+            "protocol": "HTTPS",
+            "interaction_kind": "request",
+            "boundary_crossings": [
+              "boundary-app-vendor"
+            ],
+            "crossing_status": "resolved",
+            "grounding_status": "grounded",
+            "evidence_refs": [
+              "source-checkout-prd#flow"
+            ]
+          }
+        ],
+        "decomposition_status": "detail_only",
+        "projection_issues": [
+          "unsupported_decomposition: process-checkout has connection detail but no evidenced child-process decomposition"
+        ],
+        "positions": {},
+        "collapsed_groups": [],
+        "viewport": {}
+      }
+    ],
+    "questions": []
+  },
+  "validation": {
+    "valid": true,
+    "semantic_ready": false,
+    "semantic_issues": [
+      "Boundary TB-AD (Application to data) is candidate and needs reviewer confirmation"
+    ],
+    "errors": [],
+    "warnings": [
+      "view-feature-process-checkout: unsupported_decomposition: process-checkout has connection detail but no evidenced child-process decomposition",
+      "Boundary TB-AD (Application to data) is candidate and needs reviewer confirmation"
+    ],
+    "readiness": {
+      "status": "not_ready",
+      "blocking": true,
+      "blocking_reasons": [
+        "Boundary TB-AD (Application to data) is candidate and needs reviewer confirmation"
+      ],
+      "structural_validity": {
+        "status": "valid",
+        "issues": []
+      },
+      "topology_coverage": {
+        "status": "complete",
+        "issues": [],
+        "connected_nodes": 4,
+        "total_nodes": 4,
+        "node_coverage": 1.0,
+        "active_zones": 4,
+        "connected_zones": 4
+      },
+      "knowledge_completeness": {
+        "status": "complete",
+        "issues": []
+      },
+      "reviewer_acceptance": {
+        "status": "blocked",
+        "issues": [
+          "Boundary TB-AD (Application to data) is candidate and needs reviewer confirmation"
+        ],
+        "blocking_issues": [
+          "Boundary TB-AD (Application to data) is candidate and needs reviewer confirmation"
+        ]
+      }
+    },
+    "analysis_readiness": {
+      "status": "not_ready",
+      "blocking": true,
+      "blocking_reasons": [
+        "Boundary TB-AD (Application to data) is candidate and needs reviewer confirmation"
+      ],
+      "structural_validity": {
+        "status": "valid",
+        "issues": []
+      },
+      "topology_coverage": {
+        "status": "complete",
+        "issues": [],
+        "connected_nodes": 4,
+        "total_nodes": 4,
+        "node_coverage": 1.0,
+        "active_zones": 4,
+        "connected_zones": 4
+      },
+      "knowledge_completeness": {
+        "status": "complete",
+        "issues": []
+      },
+      "reviewer_acceptance": {
+        "status": "blocked",
+        "issues": [
+          "Boundary TB-AD (Application to data) is candidate and needs reviewer confirmation"
+        ],
+        "blocking_issues": [
+          "Boundary TB-AD (Application to data) is candidate and needs reviewer confirmation"
+        ]
+      }
+    },
+    "counts": {
+      "nodes": 4,
+      "data_objects": 1,
+      "flows": 3,
+      "zones": 4,
+      "boundaries": 3,
+      "questions": 0
+    },
+    "hierarchy": {
+      "views": {
+        "context": {
+          "view_id": "view-context",
+          "status": "not_applicable",
+          "projected_nodes": 3,
+          "projected_flows": 2,
+          "mapped_canonical_nodes": 4,
+          "mapped_canonical_flows": 2,
+          "issues": []
+        },
+        "system": {
+          "view_id": "view-system",
+          "status": "not_applicable",
+          "projected_nodes": 4,
+          "projected_flows": 3,
+          "mapped_canonical_nodes": 4,
+          "mapped_canonical_flows": 3,
+          "issues": []
+        },
+        "feature:process-checkout": {
+          "view_id": "view-feature-process-checkout",
+          "status": "detail_only",
+          "projected_nodes": 4,
+          "projected_flows": 3,
+          "mapped_canonical_nodes": 4,
+          "mapped_canonical_flows": 3,
+          "issues": [
+            "unsupported_decomposition: process-checkout has connection detail but no evidenced child-process decomposition"
+          ]
+        }
+      },
+      "review_issues": [
+        "view-feature-process-checkout: unsupported_decomposition: process-checkout has connection detail but no evidenced child-process decomposition"
+      ]
+    },
+    "semantic_quality": {
+      "version": "dfd-quality-v2",
+      "status": "ready",
+      "metrics": {
+        "node_uniqueness_rate": 1.0,
+        "flow_uniqueness_rate": 1.0,
+        "duplicate_semantic_node_rate": 0.0,
+        "duplicate_semantic_flow_rate": 0.0,
+        "isolated_node_rate": 0.0,
+        "isolated_zone_rate": 0.0,
+        "unresolved_alias_rate": 1.0,
+        "valid_endpoint_rate": 1.0,
+        "direction_rate": 1.0,
+        "evidence_rate": 1.0,
+        "endpoint_classification_rate": 0.0,
+        "data_store_external_classification_rate": 0.0,
+        "boundary_crossing_accuracy": 1.0,
+        "primary_interaction_coverage": 1.0
+      },
+      "counts": {
+        "nodes": 4,
+        "flows": 3,
+        "zones": 4,
+        "boundaries": 3,
+        "duplicate_nodes": 0,
+        "duplicate_flows": 0,
+        "isolated_nodes": 0,
+        "isolated_zones": 0,
+        "valid_endpoints": 3,
+        "evidenced_flows": 3,
+        "cross_zone_flows": 3,
+        "valid_crossing_flows": 3,
+        "data_store_endpoints": 0,
+        "external_system_endpoints": 0,
+        "unknown_endpoint_classes": 0,
+        "primary_interactions": 3,
+        "deferred_interactions": 0,
+        "deferred_claims": 0
+      },
+      "primary_interaction_ids": [
+        "flow-checkout-request",
+        "flow-order-write",
+        "flow-payment-request"
+      ],
+      "primary_interactions_by_feature": {
+        "process-checkout": [
+          "flow-checkout-request",
+          "flow-order-write",
+          "flow-payment-request"
+        ]
+      },
+      "deferred_interaction_ids": [],
+      "alias_mappings": [
+        {
+          "canonical_id": "entity-customer",
+          "canonical_label": "Customer",
+          "alias": "Customer",
+          "entity_type": "entity",
+          "decision": "merged",
+          "reason": "Alias resolves to the same canonical type and identity context.",
+          "identity_context": {
+            "ownership": "customer"
+          },
+          "evidence_refs": [
+            "source-checkout-prd#architecture"
+          ]
+        },
+        {
+          "canonical_id": "process-checkout",
+          "canonical_label": "Checkout API",
+          "alias": "Checkout API",
+          "entity_type": "process",
+          "decision": "merged",
+          "reason": "Alias resolves to the same canonical type and identity context.",
+          "identity_context": {
+            "ownership": "organization"
+          },
+          "evidence_refs": [
+            "source-checkout-prd#architecture"
+          ]
+        },
+        {
+          "canonical_id": "store-orders",
+          "canonical_label": "Orders DB",
+          "alias": "Orders DB",
+          "entity_type": "data_store",
+          "decision": "merged",
+          "reason": "Alias resolves to the same canonical type and identity context.",
+          "identity_context": {
+            "ownership": "organization"
+          },
+          "evidence_refs": [
+            "source-checkout-prd#architecture"
+          ]
+        },
+        {
+          "canonical_id": "entity-payment",
+          "canonical_label": "Payment Gateway",
+          "alias": "Payment Gateway",
+          "entity_type": "entity",
+          "decision": "merged",
+          "reason": "Alias resolves to the same canonical type and identity context.",
+          "identity_context": {
+            "ownership": "vendor"
+          },
+          "evidence_refs": [
+            "source-checkout-prd#architecture"
+          ]
+        }
+      ],
+      "issues": []
+    }
+  }
+}

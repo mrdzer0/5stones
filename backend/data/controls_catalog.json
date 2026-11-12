@@ -6,7 +6,10 @@
     "implementation_guidance": "Add ownership check in every GET/PUT/DELETE endpoint using user_id from JWT claim. Return 403 if mismatch.",
     "mitigates": ["IDOR", "Information Disclosure", "Elevation of Privilege"],
     "owner": "Backend",
-    "tags": ["authorization", "idor", "access-control"]
+    "tags": ["authorization", "idor", "access-control"],
+    "applicability": ["resource authorization", "multi-user or multi-tenant data"],
+    "evidence_requirements": ["authorization policy or code reference", "cross-user negative test result"],
+    "verification_method": "Attempt same-resource access with an unauthorized user and verify 403/404 plus an audit event."
   },
   {
     "id": "ctrl-002",
@@ -15,7 +18,10 @@
     "implementation_guidance": "Compare X-Signature header (HMAC-SHA256 of raw body using shared secret) before processing webhook. Include nonce and timestamp to prevent replay.",
     "mitigates": ["Spoofing", "Tampering", "Replay Attack"],
     "owner": "Backend",
-    "tags": ["webhook", "signature", "integrity"]
+    "tags": ["webhook", "signature", "integrity"],
+    "applicability": ["webhook or signed callback endpoint"],
+    "evidence_requirements": ["signature verification code or configuration", "valid and invalid signature test results"],
+    "verification_method": "Send unsigned, invalidly signed, replayed, and valid callbacks and capture responses and state changes."
   },
   {
     "id": "ctrl-003",
@@ -24,7 +30,10 @@
     "implementation_guidance": "Retrieve price/amount from authoritative source (DB or pricing service) server-side. Ignore or validate client-submitted values.",
     "mitigates": ["Tampering", "Amount Manipulation"],
     "owner": "Backend",
-    "tags": ["business-logic", "validation", "tampering"]
+    "tags": ["business-logic", "validation", "tampering"],
+    "applicability": ["client-submitted financial or critical values"],
+    "evidence_requirements": ["server-side calculation code reference", "tampered-value test result"],
+    "verification_method": "Change client-submitted values and verify the server recalculates from an authoritative source."
   },
   {
     "id": "ctrl-004",
@@ -33,7 +42,10 @@
     "implementation_guidance": "Remove unnecessary PII from API responses. Mask phone numbers (e.g. +62812****1234). Filter PII from log output.",
     "mitigates": ["Disclosure of Information", "PII Leakage", "Non-compliance"],
     "owner": "Backend",
-    "tags": ["privacy", "pii", "masking", "linddun"]
+    "tags": ["privacy", "pii", "masking", "linddun"],
+    "applicability": ["PII or sensitive data in API responses, logs, or data stores"],
+    "evidence_requirements": ["data inventory and purpose mapping", "response/log sample showing minimization or masking"],
+    "verification_method": "Compare returned and logged fields with the documented purpose and confirm unnecessary sensitive fields are absent or masked."
   },
   {
     "id": "ctrl-005",
@@ -42,7 +54,10 @@
     "implementation_guidance": "Include timestamp in signed payload. Reject requests older than 5 minutes. Store and check nonce for uniqueness within time window.",
     "mitigates": ["Replay Attack", "Tampering"],
     "owner": "Backend",
-    "tags": ["replay", "integrity", "webhook"]
+    "tags": ["replay", "integrity", "webhook"],
+    "applicability": ["replayable requests, callbacks, or signed messages"],
+    "evidence_requirements": ["nonce/timestamp implementation reference", "stale and duplicate request test result"],
+    "verification_method": "Repeat a valid request and send stale timestamps; verify duplicate and expired messages are rejected."
   },
   {
     "id": "ctrl-006",
@@ -51,7 +66,10 @@
     "implementation_guidance": "Validate user roles/permissions from JWT or session on every request. Do not rely on client-side role checks.",
     "mitigates": ["Elevation of Privilege", "Unauthorized Access"],
     "owner": "Backend",
-    "tags": ["authorization", "rbac", "access-control"]
+    "tags": ["authorization", "rbac", "access-control"],
+    "applicability": ["role- or attribute-protected operations"],
+    "evidence_requirements": ["role/permission policy or enforcement code", "low-privilege negative test result"],
+    "verification_method": "Exercise protected operations with each relevant role and verify server-side authorization decisions."
   },
   {
     "id": "ctrl-007",
@@ -60,7 +78,10 @@
     "implementation_guidance": "Use append-only log storage. Log: user ID, action, resource ID, timestamp, IP. Do not allow log deletion via application API.",
     "mitigates": ["Repudiation", "Missing Audit Trail"],
     "owner": "Backend",
-    "tags": ["audit", "logging", "non-repudiation"]
+    "tags": ["audit", "logging", "non-repudiation"],
+    "applicability": ["critical actions or regulated changes"],
+    "evidence_requirements": ["audit event schema and storage configuration", "action-to-log correlation result"],
+    "verification_method": "Perform a critical action and verify an append-only event contains actor, action, target, and timestamp."
   },
   {
     "id": "ctrl-008",
@@ -69,7 +90,10 @@
     "implementation_guidance": "Use log middleware to mask known PII patterns (phone, email, card number). Avoid logging raw request bodies for authenticated endpoints.",
     "mitigates": ["Sensitive Log Exposure", "Non-compliance"],
     "owner": "Backend",
-    "tags": ["logging", "privacy", "masking"]
+    "tags": ["logging", "privacy", "masking"],
+    "applicability": ["PII or secrets reaching application logs"],
+    "evidence_requirements": ["logging configuration or middleware reference", "sanitized log sample"],
+    "verification_method": "Submit representative sensitive values and verify logs contain no raw PII or secrets."
   },
   {
     "id": "ctrl-009",
@@ -78,7 +102,10 @@
     "implementation_guidance": "Apply rate limiting at API gateway or application level. Use sliding window algorithm. Return 429 with Retry-After header.",
     "mitigates": ["Denial of Service", "Brute Force", "Abuse"],
     "owner": "DevOps",
-    "tags": ["rate-limit", "dos", "abuse-prevention"]
+    "tags": ["rate-limit", "dos", "abuse-prevention"],
+    "applicability": ["public, authentication, or resource-intensive endpoints"],
+    "evidence_requirements": ["rate-limit configuration", "load or burst test result"],
+    "verification_method": "Send requests above the configured threshold and verify 429 behavior, retry guidance, and service health."
   },
   {
     "id": "ctrl-010",
@@ -87,7 +114,10 @@
     "implementation_guidance": "Use allowlist validation on all input fields. Reject unexpected fields. Validate data types, length, and format.",
     "mitigates": ["Injection", "Tampering", "Spoofing"],
     "owner": "Backend",
-    "tags": ["input-validation", "injection"]
+    "tags": ["input-validation", "injection"],
+    "applicability": ["untrusted input or structured request fields"],
+    "evidence_requirements": ["validation schema or code reference", "negative payload test result"],
+    "verification_method": "Send invalid, unexpected, and injection-like values and verify safe rejection or encoding."
   },
   {
     "id": "ctrl-011",
@@ -96,16 +126,22 @@
     "implementation_guidance": "Verify JWT signature using asymmetric key. Check exp, iss, aud claims. Maintain token revocation list for sensitive sessions.",
     "mitigates": ["Spoofing", "Elevation of Privilege"],
     "owner": "Backend",
-    "tags": ["authentication", "jwt", "token"]
+    "tags": ["authentication", "jwt", "token"],
+    "applicability": ["token- or session-authenticated endpoints"],
+    "evidence_requirements": ["token validation configuration or code reference", "invalid/expired token test result"],
+    "verification_method": "Exercise missing, expired, altered, wrong-audience, and valid tokens and verify the expected decisions."
   },
   {
     "id": "ctrl-012",
     "name": "Encryption in Transit (TLS)",
     "description": "Enforce HTTPS/TLS for all data in transit.",
     "implementation_guidance": "Enforce HTTPS-only. Use TLS 1.2 minimum. Configure HSTS header. Reject HTTP connections.",
-    "mitigates": ["Information Disclosure", "Linkability"],
+    "mitigates": ["Information Disclosure"],
     "owner": "DevOps",
-    "tags": ["encryption", "tls", "transit"]
+    "tags": ["encryption", "tls", "transit"],
+    "applicability": ["data crossing a network or trust boundary"],
+    "evidence_requirements": ["TLS/transport configuration", "TLS scan or representative request evidence"],
+    "verification_method": "Inspect protocol and headers, then verify insecure transport is rejected and modern TLS is negotiated."
   },
   {
     "id": "ctrl-013",
@@ -114,7 +150,10 @@
     "implementation_guidance": "Implement data TTL for personal data. Provide user data deletion endpoint. Document retention periods per data type.",
     "mitigates": ["Non-compliance", "Unawareness"],
     "owner": "Backend",
-    "tags": ["privacy", "gdpr", "retention", "linddun"]
+    "tags": ["privacy", "gdpr", "retention", "linddun"],
+    "applicability": ["personal data with a retention or deletion obligation"],
+    "evidence_requirements": ["retention schedule and deletion policy", "deletion or TTL execution evidence"],
+    "verification_method": "Create representative data, allow the retention condition to apply, and verify deletion plus downstream propagation."
   },
   {
     "id": "ctrl-014",
@@ -123,15 +162,81 @@
     "implementation_guidance": "Return generic error messages to clients. Log detailed error server-side only. Never expose stack traces or SQL errors.",
     "mitigates": ["Information Disclosure"],
     "owner": "Backend",
-    "tags": ["error-handling", "information-disclosure"]
+    "tags": ["error-handling", "information-disclosure"],
+    "applicability": ["API or UI error responses with internal details"],
+    "evidence_requirements": ["error handling configuration or code reference", "negative response sample"],
+    "verification_method": "Trigger representative failures and verify clients receive safe errors while detailed diagnostics stay protected."
   },
   {
     "id": "ctrl-015",
-    "name": "Consent and Transparency Mechanism",
-    "description": "Obtain explicit user consent for data processing. Display clear privacy notice.",
-    "implementation_guidance": "Show data processing purpose before collection. Store consent records. Provide opt-out mechanism.",
+    "name": "Consent and Purpose Management",
+    "description": "Collect and enforce a documented lawful purpose and consent choice where consent is the selected basis.",
+    "implementation_guidance": "Record purpose, consent version, timestamp, and scope. Enforce withdrawal or opt-out downstream.",
     "mitigates": ["Unawareness", "Non-compliance"],
     "owner": "Product",
-    "tags": ["consent", "transparency", "privacy", "linddun"]
+    "tags": ["consent", "purpose", "privacy", "linddun"],
+    "applicability": ["processing that relies on consent or a documented purpose"],
+    "evidence_requirements": ["purpose/legal-basis record", "consent and withdrawal audit evidence"],
+    "verification_method": "Grant and withdraw consent, then verify collection and downstream processing follow the recorded choice."
+  },
+  {
+    "id": "ctrl-016",
+    "name": "Privacy Notice and Individual Control",
+    "description": "Provide understandable notice and usable access, correction, deletion, or opt-out controls.",
+    "implementation_guidance": "Present notice before or during collection and expose the applicable individual-control workflow.",
+    "mitigates": ["Unawareness", "Non-compliance"],
+    "owner": "Product",
+    "tags": ["notice", "transparency", "individual-control", "privacy", "linddun"],
+    "applicability": ["personal-data collection requiring notice or individual controls"],
+    "evidence_requirements": ["published notice and control UX/API reference", "access/deletion/opt-out execution evidence"],
+    "verification_method": "Review notice timing and exercise the applicable individual control; verify downstream state and audit evidence."
+  },
+  {
+    "id": "ctrl-017",
+    "name": "External AI Data Egress Minimization",
+    "description": "Limit personal or sensitive fields sent to an external AI provider to the documented purpose and prevent unintended retention or logging.",
+    "implementation_guidance": "Define an outbound field allowlist, redact unnecessary identifiers and precise location, and review provider retention and logging settings before sending requests.",
+    "mitigates": ["Information Disclosure", "Data Disclosure"],
+    "owner": "Backend",
+    "tags": ["external-ai", "provider", "egress", "redaction", "privacy"],
+    "applicability": ["personal or sensitive data sent to an external AI provider"],
+    "evidence_requirements": ["outbound field allowlist and purpose mapping", "redacted provider-bound payload sample", "provider retention/logging configuration"],
+    "verification_method": "Send tagged synthetic sensitive fields through the AI integration and verify unnecessary fields are absent from outbound payloads and protected logs."
+  },
+  {
+    "id": "ctrl-018",
+    "name": "Location Precision and Aggregation",
+    "description": "Reduce linkability from precise location data exposed through maps or shared data views.",
+    "implementation_guidance": "Apply purpose-based location rounding, aggregation, or fuzzing before disclosure; require appropriate authorization for higher precision.",
+    "mitigates": ["Linking", "Linkability", "Identifying"],
+    "owner": "Backend",
+    "tags": ["location", "map", "privacy", "fuzzing", "aggregation"],
+    "applicability": ["precise location displayed or exported to users or third parties"],
+    "evidence_requirements": ["location precision policy", "normal and restricted-view output samples"],
+    "verification_method": "Compare synthetic precise coordinates with public and authorized outputs; verify precision reduction and access decisions."
+  },
+  {
+    "id": "ctrl-019",
+    "name": "Identifier Separation and Unlinkability",
+    "description": "Prevent unnecessary joining of personal records across processing contexts.",
+    "implementation_guidance": "Separate direct identifiers from derived content, scope pseudonyms by purpose, and limit access to join keys and correlation metadata.",
+    "mitigates": ["Linking", "Linkability", "Identifying"],
+    "owner": "Backend",
+    "tags": ["identifier", "correlation", "pseudonymization", "privacy", "unlinkability"],
+    "applicability": ["records or identifiers that can be correlated across flows or stores"],
+    "evidence_requirements": ["identifier/data-flow inventory", "join-key access policy", "cross-context correlation test result"],
+    "verification_method": "Use two synthetic records in separate contexts and verify an unauthorized actor cannot join them through exposed identifiers or metadata."
+  },
+  {
+    "id": "ctrl-020",
+    "name": "Payment Provider Data Minimization and Scoped Tokens",
+    "description": "Limit payment-gateway fields and cross-merchant correlation to the documented payment purpose.",
+    "implementation_guidance": "Inventory fields sent to the payment provider; use provider-approved tokenization where available, avoid sending unrelated customer/order identifiers, and scope merchant-visible transaction identifiers by purpose. Confirm provider and merchant data-sharing settings before implementation.",
+    "mitigates": ["Linking", "Linkability", "Data Disclosure", "Information Disclosure"],
+    "owner": "Payments/Backend",
+    "tags": ["payment", "gateway", "merchant", "transaction", "tokenization", "privacy"],
+    "applicability": ["payment data transferred to a gateway or provider with possible cross-merchant linkage"],
+    "evidence_requirements": ["provider-bound field inventory", "payment purpose and recipient matrix", "merchant-scoped token configuration or provider contract"],
+    "verification_method": "Use synthetic transactions in two isolated merchant contexts; compare provider-bound identifiers and verify no unauthorized cross-merchant correlation is possible."
   }
 ]

@@ -1,0 +1,275 @@
+{
+  "schema_version": "threat-model-golden-v1",
+  "corpus_id": "5stones-core-threat-model",
+  "revision": 1,
+  "description": "Synthetic, non-production corpus covering supported findings, negative evidence, DFD mappings, control applicability, and executable security/privacy tests.",
+  "thresholds": {
+    "max_unsupported_finding_rate": 0.05,
+    "min_finding_precision": 0.95,
+    "min_finding_recall": 0.95,
+    "min_mapping_precision": 0.95,
+    "min_mapping_recall": 0.95,
+    "min_test_executability_rate": 0.9,
+    "min_blocked_test_accuracy": 1.0
+  },
+  "cases": [
+    {
+      "case_id": "registration-integrity",
+      "title": "Public registration request integrity",
+      "tags": ["STRIDE", "internet-facing", "tampering"],
+      "project": {"name": "Golden Registration", "environment": "test"},
+      "dfd_model": {
+        "revision": 1,
+        "semantic_hash": "golden-registration-v1",
+        "nodes": [
+          {"id": "actor-customer", "name": "Customer", "type": "entity", "exposure": "internet_facing"},
+          {"id": "process-registration", "name": "Registration API", "type": "process", "exposure": "private"}
+        ],
+        "data_objects": [{"id": "data-registration", "name": "Registration fields", "classification": "PII"}],
+        "flows": [{"id": "flow-register", "name": "Submit registration", "source_id": "actor-customer", "target_id": "process-registration", "data_object_ids": ["data-registration"], "boundary_crossings": ["boundary-public"]}],
+        "boundaries": [{"id": "boundary-public", "name": "Public application boundary"}]
+      },
+      "candidate_threats": [
+        {
+          "threat_id": "candidate-registration-tampering",
+          "framework": "STRIDE",
+          "threat_category": "Tampering",
+          "threat_description": "An attacker alters unexpected registration fields before the Registration API validates the request.",
+          "scenario": "A public caller changes registration input and attempts an unauthorized account state change.",
+          "source": "Customer",
+          "destination": "Registration API",
+          "asset": "Registration fields",
+          "primary_interaction_ref": "flow-register",
+          "interaction_mapping_status": "mapped",
+          "target_refs": [{"type": "data_flow", "id": "flow-register", "label": "Submit registration"}],
+          "finding_state": "grounded",
+          "risk_status": "assessed",
+          "risk_level": "High",
+          "recommended_control": "Validate registration fields server-side using an allowlist."
+        }
+      ],
+      "expected": {
+        "findings": [
+          {"golden_id": "G-REG-TAMPER", "framework": "STRIDE", "category": "Tampering", "match_terms": ["registration", "alter"], "primary_interaction_ref": "flow-register"}
+        ],
+        "control_mappings": [
+          {"control_key": "ctrl-010", "golden_finding_ids": ["G-REG-TAMPER"]}
+        ],
+        "tests": [
+          {"golden_finding_id": "G-REG-TAMPER", "applicability": "applicable", "min_steps": 4, "mechanism_terms_any": ["altered request", "unauthorized state", "reject"]}
+        ]
+      }
+    },
+    {
+      "case_id": "recipient-scope-disclosure",
+      "title": "PII response recipient scope",
+      "tags": ["LINDDUN", "privacy", "data-disclosure"],
+      "project": {"name": "Golden Recipient Scope", "environment": "test"},
+      "dfd_model": {
+        "revision": 1,
+        "semantic_hash": "golden-recipient-v1",
+        "nodes": [
+          {"id": "process-profile", "name": "Profile API", "type": "process", "exposure": "private"},
+          {"id": "actor-client", "name": "Client application", "type": "entity", "exposure": "internet_facing"}
+        ],
+        "data_objects": [{"id": "data-profile", "name": "Customer email", "classification": "PII"}],
+        "flows": [{"id": "flow-profile-response", "name": "Return customer profile", "source_id": "process-profile", "target_id": "actor-client", "data_object_ids": ["data-profile"], "boundary_crossings": ["boundary-public"]}],
+        "boundaries": [{"id": "boundary-public", "name": "Application to client"}]
+      },
+      "candidate_threats": [
+        {
+          "threat_id": "candidate-recipient-disclosure",
+          "framework": "LINDDUN",
+          "threat_category": "Data Disclosure",
+          "threat_description": "Customer email is exposed in a profile response to an unintended recipient outside the documented scope.",
+          "scenario": "A client with insufficient recipient scope receives another customer's email.",
+          "source": "Profile API",
+          "destination": "Client application",
+          "asset": "Customer email",
+          "primary_interaction_ref": "flow-profile-response",
+          "interaction_mapping_status": "mapped",
+          "target_refs": [{"type": "data_flow", "id": "flow-profile-response", "label": "Return customer profile"}],
+          "finding_state": "grounded",
+          "risk_status": "assessed",
+          "risk_level": "High",
+          "recommended_control": "Minimize response fields and enforce recipient scope."
+        }
+      ],
+      "expected": {
+        "findings": [
+          {"golden_id": "G-PII-RECIPIENT", "framework": "LINDDUN", "category": "Data Disclosure", "match_terms": ["customer email", "unintended recipient"], "primary_interaction_ref": "flow-profile-response"}
+        ],
+        "control_mappings": [
+          {"control_key": "ctrl-004", "golden_finding_ids": ["G-PII-RECIPIENT"]}
+        ],
+        "tests": [
+          {"golden_finding_id": "G-PII-RECIPIENT", "applicability": "applicable", "min_steps": 4, "mechanism_terms_any": ["recipient", "out-of-scope", "field-level"]}
+        ]
+      }
+    },
+    {
+      "case_id": "payment-linkability",
+      "title": "Payment provider cross-merchant linkability",
+      "tags": ["LINDDUN", "payment", "linking"],
+      "project": {"name": "Golden Payment", "environment": "test"},
+      "dfd_model": {
+        "revision": 1,
+        "semantic_hash": "golden-payment-v1",
+        "nodes": [
+          {"id": "process-checkout", "name": "Checkout Service", "type": "process", "exposure": "private"},
+          {"id": "external-gateway", "name": "Payment Gateway", "type": "entity", "exposure": "private", "scope": "external_dependency"}
+        ],
+        "data_objects": [{"id": "data-payment", "name": "Payment token and customer ID", "classification": "Financial"}],
+        "flows": [{"id": "flow-payment", "name": "Submit payment", "source_id": "process-checkout", "target_id": "external-gateway", "data_object_ids": ["data-payment"], "boundary_crossings": ["boundary-vendor"]}],
+        "boundaries": [{"id": "boundary-vendor", "name": "Organization to payment vendor"}]
+      },
+      "candidate_threats": [
+        {
+          "threat_id": "candidate-payment-linking",
+          "framework": "LINDDUN",
+          "threat_category": "Linking",
+          "threat_description": "The payment gateway can correlate customer transactions across separate merchant contexts using shared payment identifiers.",
+          "scenario": "A provider or merchant joins payment records across merchants beyond the payment purpose.",
+          "source": "Checkout Service",
+          "destination": "Payment Gateway",
+          "asset": "Payment token and customer ID",
+          "primary_interaction_ref": "flow-payment",
+          "interaction_mapping_status": "mapped",
+          "target_refs": [{"type": "data_flow", "id": "flow-payment", "label": "Submit payment"}],
+          "finding_state": "grounded",
+          "risk_status": "assessed",
+          "risk_level": "High",
+          "recommended_control": "Use merchant-scoped payment tokens and minimize provider-bound identifiers."
+        }
+      ],
+      "expected": {
+        "findings": [
+          {"golden_id": "G-PAY-LINK", "framework": "LINDDUN", "category": "Linking", "match_terms": ["payment gateway", "across", "merchant"], "primary_interaction_ref": "flow-payment"}
+        ],
+        "control_mappings": [
+          {"control_key": "ctrl-019", "golden_finding_ids": ["G-PAY-LINK"]},
+          {"control_key": "ctrl-020", "golden_finding_ids": ["G-PAY-LINK"]}
+        ],
+        "tests": [
+          {"golden_finding_id": "G-PAY-LINK", "applicability": "applicable", "min_steps": 5, "mechanism_terms_any": ["cross-merchant", "merchant isolation", "provider-bound"]}
+        ]
+      }
+    },
+    {
+      "case_id": "unknown-disclosure-mechanism",
+      "title": "Privacy scenario blocked until mechanism is known",
+      "tags": ["LINDDUN", "blocked-test", "insufficient-information"],
+      "project": {"name": "Golden Unknown Disclosure", "environment": "test"},
+      "dfd_model": {
+        "revision": 1,
+        "semantic_hash": "golden-unknown-disclosure-v1",
+        "nodes": [
+          {"id": "process-source", "name": "Application", "type": "process", "exposure": "private"},
+          {"id": "process-target", "name": "Downstream Service", "type": "process", "exposure": "private"}
+        ],
+        "data_objects": [],
+        "flows": [{"id": "flow-unknown-data", "name": "Unspecified data exchange", "source_id": "process-source", "target_id": "process-target", "data_object_ids": [], "boundary_crossings": []}],
+        "boundaries": []
+      },
+      "candidate_threats": [
+        {
+          "threat_id": "candidate-unknown-disclosure",
+          "framework": "LINDDUN",
+          "threat_category": "Data Disclosure",
+          "threat_description": "Personal data disclosure may occur on the downstream flow, but the disclosure mechanism and fields are unknown.",
+          "scenario": "A privacy reviewer must identify the actual disclosure channel before test design.",
+          "source": "Application",
+          "destination": "Downstream Service",
+          "primary_interaction_ref": "flow-unknown-data",
+          "interaction_mapping_status": "mapped",
+          "target_refs": [{"type": "data_flow", "id": "flow-unknown-data", "label": "Unspecified data exchange"}],
+          "finding_state": "hypothesis",
+          "risk_status": "scenario_only",
+          "risk_level": "Unknown",
+          "recommended_control": "Review the data fields and processing purpose before selecting a control."
+        }
+      ],
+      "expected": {
+        "findings": [
+          {"golden_id": "G-UNKNOWN-DISCLOSURE", "framework": "LINDDUN", "category": "Data Disclosure", "match_terms": ["disclosure", "mechanism", "unknown"], "primary_interaction_ref": "flow-unknown-data"}
+        ],
+        "control_mappings": [
+          {"control_key": "ctrl-004", "golden_finding_ids": ["G-UNKNOWN-DISCLOSURE"]}
+        ],
+        "tests": [
+          {"golden_finding_id": "G-UNKNOWN-DISCLOSURE", "applicability": "blocked", "min_steps": 3, "mechanism_terms_any": []}
+        ]
+      }
+    },
+    {
+      "case_id": "location-linkability",
+      "title": "Public precise-location linkability",
+      "tags": ["LINDDUN", "location", "linking"],
+      "project": {"name": "Golden Location", "environment": "test"},
+      "dfd_model": {
+        "revision": 1,
+        "semantic_hash": "golden-location-v1",
+        "nodes": [
+          {"id": "process-map", "name": "Public Map API", "type": "process", "exposure": "internet_facing"},
+          {"id": "actor-viewer", "name": "Public Viewer", "type": "entity", "exposure": "internet_facing"}
+        ],
+        "data_objects": [{"id": "data-location", "name": "Precise coordinates", "classification": "PII"}],
+        "flows": [{"id": "flow-map-view", "name": "Display map locations", "source_id": "process-map", "target_id": "actor-viewer", "data_object_ids": ["data-location"], "boundary_crossings": ["boundary-public"]}],
+        "boundaries": [{"id": "boundary-public", "name": "Public map boundary"}]
+      },
+      "candidate_threats": [
+        {
+          "threat_id": "candidate-location-linking",
+          "framework": "LINDDUN",
+          "threat_category": "Linking",
+          "threat_description": "Precise coordinates displayed on a public map allow viewers to correlate location records across visits.",
+          "scenario": "A viewer links public location records using unnecessary coordinate precision.",
+          "source": "Public Map API",
+          "destination": "Public Viewer",
+          "asset": "Precise coordinates",
+          "primary_interaction_ref": "flow-map-view",
+          "interaction_mapping_status": "mapped",
+          "target_refs": [{"type": "data_flow", "id": "flow-map-view", "label": "Display map locations"}],
+          "finding_state": "grounded",
+          "risk_status": "assessed",
+          "risk_level": "High",
+          "recommended_control": "Reduce public location precision using aggregation or fuzzing."
+        }
+      ],
+      "expected": {
+        "findings": [
+          {"golden_id": "G-LOC-LINK", "framework": "LINDDUN", "category": "Linking", "match_terms": ["precise coordinates", "public map", "correlate"], "primary_interaction_ref": "flow-map-view"}
+        ],
+        "control_mappings": [
+          {"control_key": "ctrl-018", "golden_finding_ids": ["G-LOC-LINK"]}
+        ],
+        "tests": [
+          {"golden_finding_id": "G-LOC-LINK", "applicability": "applicable", "min_steps": 4, "mechanism_terms_any": ["precision", "correlate", "authorized viewers"]}
+        ]
+      }
+    },
+    {
+      "case_id": "documentation-omission-negative",
+      "title": "Missing control documentation is not a finding",
+      "tags": ["negative", "absence-of-evidence", "minimal-information"],
+      "project": {"name": "Golden Evidence Gap", "environment": "test"},
+      "dfd_model": {
+        "revision": 1,
+        "semantic_hash": "golden-gap-v1",
+        "nodes": [
+          {"id": "actor-user", "name": "User", "type": "entity", "exposure": "internet_facing"},
+          {"id": "process-login", "name": "Login API", "type": "process", "exposure": "internet_facing"}
+        ],
+        "data_objects": [],
+        "flows": [{"id": "flow-login", "name": "Submit credentials", "source_id": "actor-user", "target_id": "process-login", "data_object_ids": [], "boundary_crossings": ["boundary-public"]}],
+        "boundaries": [{"id": "boundary-public", "name": "Public login boundary"}]
+      },
+      "candidate_threats": [],
+      "expected": {
+        "findings": [],
+        "control_mappings": [],
+        "tests": []
+      }
+    }
+  ]
+}

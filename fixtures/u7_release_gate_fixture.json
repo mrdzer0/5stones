@@ -1,0 +1,80 @@
+{
+  "fixture_version": "u7-release-gate-v1",
+  "fixture_id": "checkout-traceability-standard",
+  "description": "Synthetic, non-production fixture for accessibility, state, DFD traceability, and report baseline gates.",
+  "project": {
+    "project_id": "fixture-u7-checkout",
+    "name": "Synthetic Checkout Review",
+    "environment": "test",
+    "sensitive_content": false
+  },
+  "dfd": {
+    "revision": "dfd-u7-r3",
+    "nodes": [
+      {"id": "entity-customer", "type": "entity", "name": "Customer", "zone_id": "zone-public"},
+      {"id": "process-checkout", "type": "process", "name": "Checkout API", "zone_id": "zone-app"},
+      {"id": "store-orders", "type": "data_store", "name": "Orders DB", "zone_id": "zone-restricted"},
+      {"id": "entity-payment", "type": "external_system", "name": "Payment Gateway", "zone_id": "zone-vendor"}
+    ],
+    "flows": [
+      {"id": "flow-checkout-request", "source_id": "entity-customer", "target_id": "process-checkout", "name": "Checkout request", "zone_ids": ["zone-public", "zone-app"]},
+      {"id": "flow-order-write", "source_id": "process-checkout", "target_id": "store-orders", "name": "Persist order", "zone_ids": ["zone-app", "zone-restricted"]},
+      {"id": "flow-payment-request", "source_id": "process-checkout", "target_id": "entity-payment", "name": "Authorize payment", "zone_ids": ["zone-app", "zone-vendor"]}
+    ],
+    "boundaries": [
+      {"id": "boundary-public-app", "status": "confirmed", "zone_ids": ["zone-public", "zone-app"]},
+      {"id": "boundary-app-data", "status": "candidate", "zone_ids": ["zone-app", "zone-restricted"]},
+      {"id": "boundary-app-vendor", "status": "confirmed", "zone_ids": ["zone-app", "zone-vendor"]}
+    ]
+  },
+  "sources": [
+    {"id": "source-checkout-prd", "revision": "rev-2", "sections_total": 8, "sections_read": 6, "sections_deferred": ["retention", "provider-deletion"], "state": "partial"}
+  ],
+  "gaps": [
+    {"id": "gap-retention", "linked_object_id": "entity-payment", "state": "unresolved", "owner": null, "next_action": "Assign evidence owner"}
+  ],
+  "findings": [
+    {"id": "threat-stride-001", "framework": "STRIDE", "category": "Tampering", "state": "grounded", "final_risk": "High", "primary_interaction_ref": "flow-checkout-request"},
+    {"id": "threat-stride-002", "framework": "STRIDE", "category": "Spoofing", "state": "grounded", "final_risk": "Medium", "primary_interaction_ref": "flow-checkout-request"},
+    {"id": "threat-stride-003", "framework": "STRIDE", "category": "Repudiation", "state": "grounded", "final_risk": "Medium", "primary_interaction_ref": "flow-order-write"},
+    {"id": "threat-stride-004", "framework": "STRIDE", "category": "Information Disclosure", "state": "grounded", "final_risk": "High", "primary_interaction_ref": "flow-payment-request"},
+    {"id": "threat-stride-005", "framework": "STRIDE", "category": "Denial of Service", "state": "grounded", "final_risk": "Medium", "primary_interaction_ref": "flow-checkout-request"},
+    {"id": "threat-stride-006", "framework": "STRIDE", "category": "Elevation of Privilege", "state": "grounded", "final_risk": "High", "primary_interaction_ref": "flow-order-write"},
+    {"id": "threat-stride-007", "framework": "STRIDE", "category": "Tampering", "state": "deferred", "final_risk": null, "primary_interaction_ref": null, "deferred_reason": "No retention evidence"},
+    {"id": "threat-stride-008", "framework": "STRIDE", "category": "Spoofing", "state": "grounded", "final_risk": "Low", "primary_interaction_ref": "flow-payment-request"},
+    {"id": "threat-stride-009", "framework": "STRIDE", "category": "Repudiation", "state": "grounded", "final_risk": "Low", "primary_interaction_ref": "flow-checkout-request"},
+    {"id": "threat-stride-010", "framework": "STRIDE", "category": "Information Disclosure", "state": "grounded", "final_risk": "Medium", "primary_interaction_ref": "flow-order-write"},
+    {"id": "threat-stride-011", "framework": "STRIDE", "category": "Denial of Service", "state": "grounded", "final_risk": "Low", "primary_interaction_ref": "flow-checkout-request"},
+    {"id": "threat-stride-012", "framework": "STRIDE", "category": "Elevation of Privilege", "state": "grounded", "final_risk": "Medium", "primary_interaction_ref": "flow-order-write"},
+    {"id": "threat-linddun-001", "framework": "LINDDUN", "category": "Linking", "state": "grounded", "final_risk": "High", "primary_interaction_ref": "flow-payment-request"},
+    {"id": "threat-linddun-002", "framework": "LINDDUN", "category": "Identifying", "state": "grounded", "final_risk": "Medium", "primary_interaction_ref": "flow-checkout-request"},
+    {"id": "threat-linddun-003", "framework": "LINDDUN", "category": "Non-repudiation", "state": "grounded", "final_risk": "Low", "primary_interaction_ref": "flow-order-write"},
+    {"id": "threat-linddun-004", "framework": "LINDDUN", "category": "Detecting", "state": "grounded", "final_risk": "Medium", "primary_interaction_ref": "flow-payment-request"},
+    {"id": "threat-linddun-005", "framework": "LINDDUN", "category": "Data Disclosure", "state": "grounded", "final_risk": "High", "primary_interaction_ref": "flow-checkout-request"},
+    {"id": "threat-linddun-006", "framework": "LINDDUN", "category": "Unawareness", "state": "grounded", "final_risk": "Medium", "primary_interaction_ref": "flow-order-write"},
+    {"id": "threat-linddun-007", "framework": "LINDDUN", "category": "Non-compliance", "state": "deferred", "final_risk": null, "primary_interaction_ref": null, "deferred_reason": "Provider deletion policy is unread"},
+    {"id": "threat-linddun-008", "framework": "LINDDUN", "category": "Linking", "state": "grounded", "final_risk": "Low", "primary_interaction_ref": "flow-payment-request"},
+    {"id": "threat-linddun-009", "framework": "LINDDUN", "category": "Identifying", "state": "grounded", "final_risk": "Low", "primary_interaction_ref": "flow-checkout-request"},
+    {"id": "threat-linddun-010", "framework": "LINDDUN", "category": "Detecting", "state": "grounded", "final_risk": "Medium", "primary_interaction_ref": "flow-order-write"},
+    {"id": "threat-linddun-011", "framework": "LINDDUN", "category": "Data Disclosure", "state": "grounded", "final_risk": "Medium", "primary_interaction_ref": "flow-payment-request"},
+    {"id": "threat-linddun-012", "framework": "LINDDUN", "category": "Unawareness", "state": "grounded", "final_risk": "Low", "primary_interaction_ref": "flow-checkout-request"},
+    {"id": "threat-linddun-013", "framework": "LINDDUN", "category": "Non-compliance", "state": "grounded", "final_risk": "Medium", "primary_interaction_ref": "flow-order-write"}
+  ],
+  "controls": [
+    {"id": "control-input-integrity", "name": "Server-side input validation", "applicability": "assigned", "finding_ids": ["threat-stride-001"]},
+    {"id": "control-recipient-scope", "name": "Recipient and field minimization", "applicability": "assigned", "finding_ids": ["threat-linddun-005"]},
+    {"id": "control-provider-retention", "name": "Provider retention and deletion review", "applicability": "unassigned", "finding_ids": ["threat-linddun-007"]}
+  ],
+  "tests": [
+    {"id": "test-replay-checkout", "name": "Reject tampered checkout fields", "state": "executable", "control_id": "control-input-integrity", "finding_id": "threat-stride-001", "steps": ["Send a checkout request with an altered amount", "Observe server-side validation", "Verify the order is not created", "Record response and audit event"]},
+    {"id": "test-provider-deletion", "name": "Verify provider deletion contract", "state": "blocked", "control_id": "control-provider-retention", "finding_id": "threat-linddun-007", "steps": [], "blocked_reason": "Provider policy section is deferred"}
+  ],
+  "expected_trace": [
+    {"flow_id": "flow-checkout-request", "finding_id": "threat-stride-001", "control_id": "control-input-integrity", "test_id": "test-replay-checkout"},
+    {"flow_id": "flow-checkout-request", "finding_id": "threat-linddun-005", "control_id": "control-recipient-scope", "test_id": null},
+    {"flow_id": null, "finding_id": "threat-linddun-007", "control_id": "control-provider-retention", "test_id": "test-provider-deletion", "status": "deferred"}
+  ],
+  "state_variants": [
+    "no_project", "no_analysis", "loading", "running", "partial_preserved", "stale", "zero_matches", "zero_scored_deferred", "unassigned_control", "blocked_test", "draft", "signed", "superseded", "revision_conflict"
+  ]
+}

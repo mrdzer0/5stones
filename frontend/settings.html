@@ -217,6 +217,21 @@
           </section>
 
           <!-- Audit Log -->
+          <section class="settings-section" id="privacy-telemetry">
+            <div class="settings-section-title">Privacy &amp; anonymous usage</div>
+            <div class="card">
+              <div class="card-body" style="display:flex;align-items:flex-start;gap:var(--space-3);">
+                <input type="checkbox" id="ux-telemetry-enabled" style="margin-top:4px;width:18px;height:18px;" />
+                <div>
+                  <label for="ux-telemetry-enabled" class="form-label" style="font-weight:600;">Share anonymous task-completion events</label>
+                  <p class="text-sm text-muted" style="margin:0;">Only coarse events such as an analysis completing, its outcome, and a duration range are stored locally for up to 30 days. Telemetry event records contain no project/run IDs, document content, searches, selections, account identifiers, IP address, or user-agent. You can opt out here; Do Not Track disables it by default.</p>
+                  <div id="ux-telemetry-status" class="text-sm text-muted" aria-live="polite" style="margin-top:var(--space-2);"></div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Audit Log -->
           <section class="settings-section" id="audit-log">
             <div class="settings-section-title">Audit Log</div>
 
@@ -242,7 +257,8 @@
 </div>
 
 <script src="/static/js/sidebar.js"></script>
-<script src="/static/js/api.js"></script>
+<script src="/static/js/ux-telemetry.js?v=20260922u0"></script>
+<script src="/static/js/api.js?v=20261112-auth1"></script>
 <script src="/static/js/settings.js"></script>
 </body>
 </html>

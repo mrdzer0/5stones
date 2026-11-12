@@ -1,0 +1,168 @@
+{
+  "contract": "H0-A01",
+  "updated": "2026-09-24",
+  "routes": {
+    "analysis": {
+      "file": "frontend/analysis.html",
+      "sidebarSections": ["Workspace", "Current Project", "Configuration"],
+      "sidebar": [
+        {"key": "dashboard", "label": "Dashboard", "section": "Workspace", "classification": "shared-global"},
+        {"key": "new-project", "label": "New Project", "section": "Workspace", "classification": "shared-global"},
+        {"key": "analysis", "label": "Analysis", "section": "Current Project", "classification": "shared-workflow-current"},
+        {"key": "model", "label": "DFD Model", "section": "Current Project", "classification": "shared-workflow"},
+        {"key": "findings", "label": "Findings", "section": "Current Project", "classification": "shared-workflow"},
+        {"key": "action-plan", "label": "Action plan", "section": "Current Project", "classification": "shared-workflow"},
+        {"key": "evidence", "label": "Evidence", "section": "Current Project", "classification": "shared-workflow"},
+        {"key": "report", "label": "Report", "section": "Current Project", "classification": "shared-workflow-label-variant"},
+        {"key": "settings", "label": "Settings & BYOK", "section": "Configuration", "classification": "shared-global-variant"}
+      ],
+      "workflow": [
+        {"key": "context", "label": "Context", "classification": "route-only-workflow"},
+        {"key": "model", "label": "Model", "classification": "duplicate-of-sidebar-model"},
+        {"key": "findings", "label": "Findings", "classification": "duplicate-of-sidebar-findings"},
+        {"key": "action-plan", "label": "Action plan", "classification": "duplicate-of-sidebar-action-plan"},
+        {"key": "evidence", "label": "Evidence", "classification": "duplicate-of-sidebar-evidence"},
+        {"key": "signoff", "label": "Sign-off", "classification": "duplicate-of-sidebar-report-label-variant"}
+      ],
+      "breadcrumb": {"present": false, "replacement": "Topbar back link to Dashboard"},
+      "back": {"label": "Back to dashboard", "classification": "topbar-route-only"},
+      "pageTitle": {"topbar": "Project name", "h1": "Project name", "classification": "dynamic-project-title"},
+      "topbarActions": [
+        {"id": "btn-view-report", "label": "View Report", "classification": "duplicate-of-sidebar-report-conditional"},
+        {"id": "btn-run-analysis", "label": "Run analysis", "classification": "route-action"}
+      ],
+      "footerNavigation": [],
+      "footerBranding": "5STONES v1.0 · Structured Threat Modeling"
+    },
+    "model": {
+      "file": "frontend/model.html",
+      "sidebarSections": ["Workspace", "Current Project"],
+      "sidebar": [
+        {"key": "dashboard", "label": "Dashboard", "section": "Workspace", "classification": "shared-global"},
+        {"key": "analysis", "label": "Analysis", "section": "Workspace", "classification": "shared-workflow-section-variant"},
+        {"key": "model", "label": "DFD Model", "section": "Current Project", "classification": "shared-workflow-current"},
+        {"key": "findings", "label": "Findings", "section": "Current Project", "classification": "shared-workflow"},
+        {"key": "action-plan", "label": "Action plan", "section": "Current Project", "classification": "shared-workflow"},
+        {"key": "evidence", "label": "Evidence", "section": "Current Project", "classification": "shared-workflow"},
+        {"key": "report", "label": "Report & sign-off", "section": "Current Project", "classification": "shared-workflow-label-canonical"}
+      ],
+      "workflow": [],
+      "breadcrumb": {"present": false, "replacement": "Topbar back link to Analysis"},
+      "back": {"label": "Back to analysis", "classification": "topbar-route-only"},
+      "pageTitle": {"topbar": "Project name", "h1": "Data flow diagram", "classification": "project-context-plus-workspace-title"},
+      "topbarActions": [
+        {"id": "btn-model-report", "label": "Open report", "classification": "duplicate-of-sidebar-report"}
+      ],
+      "footerNavigation": [],
+      "footerBranding": "5STONES v1.0 · Structured Threat Modeling"
+    },
+    "findings": {
+      "file": "frontend/findings.html",
+      "sidebarSections": ["Workspace", "Current Project"],
+      "sidebar": [
+        {"key": "dashboard", "label": "Dashboard", "section": "Workspace", "classification": "shared-global"},
+        {"key": "new-project", "label": "New Project", "section": "Workspace", "classification": "shared-global"},
+        {"key": "analysis", "label": "Analysis", "section": "Current Project", "classification": "shared-workflow"},
+        {"key": "model", "label": "DFD Model", "section": "Current Project", "classification": "shared-workflow"},
+        {"key": "findings", "label": "Findings", "section": "Current Project", "classification": "shared-workflow-current"},
+        {"key": "action-plan", "label": "Action plan", "section": "Current Project", "classification": "shared-workflow"},
+        {"key": "evidence", "label": "Evidence", "section": "Current Project", "classification": "shared-workflow"},
+        {"key": "report", "label": "Report & sign-off", "section": "Current Project", "classification": "shared-workflow-label-canonical"}
+      ],
+      "workflow": [],
+      "breadcrumb": {"present": false, "replacement": "Topbar back link to Analysis"},
+      "back": {"label": "Back to analysis", "classification": "topbar-route-only"},
+      "pageTitle": {"topbar": "Project name", "h1": "Findings", "classification": "project-context-plus-workspace-title"},
+      "topbarActions": [
+        {"id": "btn-findings-model", "label": "Open DFD model", "classification": "duplicate-of-sidebar-model"}
+      ],
+      "footerNavigation": [],
+      "footerBranding": "5STONES v1.0 · Structured Threat Modeling"
+    },
+    "action-plan": {
+      "file": "frontend/action-plan.html",
+      "sidebarSections": ["Workspace", "Current Project"],
+      "sidebar": [
+        {"key": "dashboard", "label": "Dashboard", "section": "Workspace", "classification": "shared-global"},
+        {"key": "new-project", "label": "New Project", "section": "Workspace", "classification": "shared-global"},
+        {"key": "analysis", "label": "Analysis", "section": "Current Project", "classification": "shared-workflow"},
+        {"key": "model", "label": "DFD Model", "section": "Current Project", "classification": "shared-workflow"},
+        {"key": "findings", "label": "Findings", "section": "Current Project", "classification": "shared-workflow"},
+        {"key": "action-plan", "label": "Action plan", "section": "Current Project", "classification": "shared-workflow-current"},
+        {"key": "evidence", "label": "Evidence", "section": "Current Project", "classification": "shared-workflow"},
+        {"key": "report", "label": "Report & sign-off", "section": "Current Project", "classification": "shared-workflow-label-canonical"}
+      ],
+      "workflow": [],
+      "breadcrumb": {"present": false, "replacement": "Topbar back link to Analysis"},
+      "back": {"label": "Back to analysis", "classification": "topbar-route-only"},
+      "pageTitle": {"topbar": "Project name", "h1": "Action plan", "classification": "project-context-plus-workspace-title"},
+      "topbarActions": [
+        {"id": "btn-action-findings", "label": "Open findings", "classification": "duplicate-of-sidebar-findings"}
+      ],
+      "footerNavigation": [],
+      "footerBranding": "5STONES v1.0 · Structured Threat Modeling"
+    },
+    "evidence": {
+      "file": "frontend/evidence.html",
+      "sidebarSections": ["Workspace", "Current Project"],
+      "sidebar": [
+        {"key": "dashboard", "label": "Dashboard", "section": "Workspace", "classification": "shared-global"},
+        {"key": "new-project", "label": "New Project", "section": "Workspace", "classification": "shared-global"},
+        {"key": "analysis", "label": "Analysis", "section": "Current Project", "classification": "shared-workflow"},
+        {"key": "model", "label": "DFD Model", "section": "Current Project", "classification": "shared-workflow"},
+        {"key": "findings", "label": "Findings", "section": "Current Project", "classification": "shared-workflow"},
+        {"key": "action-plan", "label": "Action plan", "section": "Current Project", "classification": "shared-workflow"},
+        {"key": "evidence", "label": "Evidence", "section": "Current Project", "classification": "shared-workflow-current"},
+        {"key": "report", "label": "Report & sign-off", "section": "Current Project", "classification": "shared-workflow-label-canonical"}
+      ],
+      "workflow": [],
+      "breadcrumb": {"present": false, "replacement": "Topbar back link to Analysis"},
+      "back": {"label": "Back to analysis", "classification": "topbar-route-only"},
+      "pageTitle": {"topbar": "Project name", "h1": "Evidence", "classification": "project-context-plus-workspace-title"},
+      "topbarActions": [
+        {"id": "open-context-editor", "label": "Update context", "classification": "route-action-duplicated-inline"}
+      ],
+      "footerNavigation": [],
+      "footerBranding": "5STONES v1.0 · Structured Threat Modeling"
+    },
+    "report": {
+      "file": "frontend/report.html",
+      "sidebarSections": ["Workspace", "Current Project", "Configuration"],
+      "sidebar": [
+        {"key": "dashboard", "label": "Dashboard", "section": "Workspace", "classification": "shared-global"},
+        {"key": "new-project", "label": "New Project", "section": "Workspace", "classification": "shared-global"},
+        {"key": "analysis", "label": "Analysis", "section": "Current Project", "classification": "shared-workflow-section-variant"},
+        {"key": "model", "label": "DFD Model", "section": "Current Project", "classification": "shared-workflow-section-variant"},
+        {"key": "findings", "label": "Findings", "section": "Current Project", "classification": "shared-workflow"},
+        {"key": "action-plan", "label": "Action plan", "section": "Current Project", "classification": "shared-workflow"},
+        {"key": "evidence", "label": "Evidence", "section": "Current Project", "classification": "shared-workflow"},
+        {"key": "report", "label": "Report", "section": "Current Project", "classification": "shared-workflow-label-variant-current"},
+        {"key": "settings", "label": "Settings & BYOK", "section": "Configuration", "classification": "shared-global-variant"}
+      ],
+      "workflow": [],
+      "breadcrumb": {"present": false, "replacement": "Topbar back link to Analysis"},
+      "back": {"label": "Back to analysis", "classification": "topbar-route-only"},
+      "pageTitle": {"topbar": "Threat Model Report", "h1": "Threat Model Report", "classification": "report-title-plus-project-context"},
+      "topbarActions": [
+        {"id": "save-draft-report", "label": "Save draft", "classification": "route-action"},
+        {"id": "sign-report", "label": "Sign report", "classification": "route-action"},
+        {"id": "export-md", "label": "MD", "classification": "route-action"},
+        {"id": "export-csv", "label": "CSV", "classification": "route-action"},
+        {"id": "export-json", "label": "JSON", "classification": "route-action"}
+      ],
+      "pageLocalNavigation": [
+        "Overview", "Trust boundaries", "Threat scenarios", "Controls", "Tests", "Evidence gaps", "Assumptions"
+      ],
+      "footerNavigation": [],
+      "footerBranding": "5STONES v1.0 · Structured Threat Modeling"
+    }
+  },
+  "findings": [
+    {"id": "NAV-C01", "priority": "P0", "finding": "Sidebar shell varies by route", "evidence": "Model lacks New Project and Settings; Findings/Action/Evidence lack Settings; Analysis/Report use different section/label variants.", "target": "One shared shell signature across six routes"},
+    {"id": "NAV-C02", "priority": "P0", "finding": "Lifecycle workflow exists only on Analysis", "evidence": "Five routes have no Context → Model → Findings → Action plan → Evidence → Sign-off navigation.", "target": "Shared project workflow navigation on all six routes"},
+    {"id": "NAV-C03", "priority": "P1", "finding": "Report label is inconsistent", "evidence": "Analysis/Report use Report; Model/Findings/Action/Evidence use Report & sign-off; workflow uses Sign-off.", "target": "Canonical label Report & sign-off"},
+    {"id": "NAV-C04", "priority": "P1", "finding": "Topbar duplicates workflow links", "evidence": "View Report/Open report/Open DFD model/Open findings duplicate sidebar targets.", "target": "One canonical navigation location; contextual actions only when they add task context"},
+    {"id": "NAV-C05", "priority": "P1", "finding": "No semantic breadcrumb", "evidence": "No breadcrumb component/landmark in six route files; back links are route-specific topbar controls.", "target": "Shared breadcrumb/context contract or explicit shared back pattern"},
+    {"id": "NAV-C06", "priority": "P2", "finding": "No footer navigation", "evidence": "Only branding footer exists; Evidence modal footer contains form actions, not route navigation.", "target": "Keep footer non-navigational unless product explicitly requires secondary navigation"}
+  ]
+}

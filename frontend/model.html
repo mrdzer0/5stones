@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DFD Model — 5STONES</title>
+  <meta name="description" content="Review and edit the canonical data flow diagram, trust boundaries, evidence, and linked findings." />
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <link rel="stylesheet" href="/static/css/components.css" />
+  <link rel="stylesheet" href="/static/css/pages.css?v=20260922u2" />
+  <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+</head>
+<body data-page="model">
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="sidebar-logo"><a href="/index.html" style="display:flex;align-items:center;gap:var(--space-3);text-decoration:none;width:100%;"><img src="/static/logo.png" alt="5STONES" class="sidebar-logo-img" /><span class="sidebar-logo-badge" style="margin-left:auto;">MVP</span></a></div>
+    <div class="sidebar-section"><div class="sidebar-section-label">Workspace</div><ul class="sidebar-nav">
+      <li><a href="/index.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>Dashboard</a></li>
+      <li><a href="/project-new.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>New project</a></li>
+    </ul></div>
+    <div class="sidebar-section"><div class="sidebar-section-label">Configuration</div><ul class="sidebar-nav">
+      <li><a href="/settings.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0-14.14"/></svg>Settings &amp; BYOK</a></li>
+    </ul></div>
+    <div class="sidebar-footer">5STONES v1.0 · Structured Threat Modeling</div>
+  </aside>
+
+  <main class="main-content model-page-content">
+    <header class="topbar">
+      <div class="topbar-left"><a href="/analysis.html" id="back-analysis" class="btn btn-ghost btn-sm" aria-label="Back to analysis">←</a><div><div class="page-title" id="page-project-name">Loading…</div><div class="page-subtitle">DFD model workspace</div></div></div>
+      <div class="topbar-actions"><span class="model-revision" id="model-revision-status">Loading model…</span></div>
+    </header>
+
+    <div class="page-body model-page-body">
+      <section class="model-workspace-header" aria-labelledby="model-workspace-title">
+        <div class="model-heading-copy"><span class="analysis-overview-kicker">Model workspace</span><h1 id="model-workspace-title">DFD model</h1><p class="model-heading-description">Review the canonical DFD, trust boundaries, and traceable evidence.</p><p id="model-readiness-summary" aria-live="polite">Loading model status…</p></div>
+        <div class="model-level-switch" role="group" aria-label="DFD detail level">
+          <span class="model-level-label">View</span><button type="button" data-diagram-level="context" aria-pressed="true" title="L0 context view">Overview · L0</button><button type="button" data-diagram-level="services" aria-pressed="false" title="L1 system view">Services · L1</button><button type="button" data-diagram-level="scenarios" aria-pressed="false" title="L2 feature view">Feature flow · L2</button>
+          <select id="canonical-feature-select" class="form-select" aria-label="Feature view" style="display:none;"></select>
+        </div>
+      </section>
+
+      <div class="model-workspace-grid" id="model-canvas-workspace">
+        <section class="model-canvas-column" aria-label="Interactive data flow diagram">
+          <div class="model-canvas-toolbar">
+            <div class="model-canvas-title"><strong class="diagram-toolbar-title">Overview · L0</strong><span class="diagram-toolbar-sub">Select an element for details.</span></div>
+            <div class="model-canvas-actions">
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-diagram-reflow" title="Reflow the DFD layout while preserving the current selection">Reflow layout</button>
+              <button type="button" class="btn btn-primary btn-sm model-review-trigger" id="model-review-trigger" aria-controls="model-inspector-rail" aria-expanded="false" title="Open boundary review"><span>Review</span><span class="model-trigger-count" id="model-review-trigger-count">0</span></button>
+              <details class="model-more-menu"><summary class="btn btn-secondary btn-sm">More</summary><div class="model-more-popover" aria-label="Advanced diagram commands">
+                <div class="model-more-group"><span class="model-more-label">View</span><button type="button" class="btn btn-secondary btn-sm" id="btn-diagram-fullscreen" aria-label="Open diagram fullscreen"><span id="diagram-fullscreen-label">Fullscreen</span></button><button type="button" class="btn btn-secondary btn-sm" id="btn-diagram-unconnected" hidden>Show unconnected</button><div class="diagram-mode-switch" role="group" aria-label="Diagram visual mode"><button type="button" class="diagram-mode-btn" data-diagram-mode="improved" aria-pressed="true">Zones</button><button type="button" class="diagram-mode-btn" data-diagram-mode="classic" aria-pressed="false">Classic</button></div></div>
+                <div class="model-more-group"><span class="model-more-label">History</span><button type="button" class="btn btn-secondary btn-sm" id="btn-dfd-undo" disabled>Undo</button><button type="button" class="btn btn-secondary btn-sm" id="btn-dfd-redo" disabled>Redo</button></div>
+                <div class="model-more-group"><span class="model-more-label">Import / export</span><button type="button" class="btn btn-secondary btn-sm" id="btn-diagram-import-json">Import JSON</button><button type="button" class="btn btn-secondary btn-sm" id="btn-diagram-export">Export PNG</button><button type="button" class="btn btn-secondary btn-sm" id="btn-diagram-export-svg">Export SVG</button><button type="button" class="btn btn-secondary btn-sm" id="btn-diagram-export-json">Export JSON</button></div>
+                <input type="file" id="dfd-json-import" accept="application/json,.json" hidden />
+              </div></details>
+            </div>
+          </div>
+          <div class="diagram-mapping-summary" id="diagram-mapping-summary" role="status" aria-live="polite" aria-label="Finding coverage"></div>
+          <div class="diagram-mapping-summary" id="analysis-coverage-summary" aria-live="polite" hidden></div>
+          <div class="diagram-mobile-map" id="diagram-mobile-map" aria-label="Diagram trust zone navigator"><span>Jump to zone</span><div><button type="button" data-diagram-zone-index="0">Untrusted</button><button type="button" data-diagram-zone-index="1">External</button><button type="button" data-diagram-zone-index="2">Internal</button><button type="button" data-diagram-zone-index="3">Privileged</button></div></div>
+          <div class="diagram-canvas-shell model-diagram-shell" id="diagram-canvas-shell"><div class="diagram-zone-layer" id="diagram-zone-layer" aria-hidden="true"></div><div id="threat-diagram-canvas" role="img" tabindex="0" aria-label="Interactive canonical data flow diagram"></div></div>
+          <div class="diagram-explainer"><span><i class="flow-sample flow-solid"></i>Within zone</span><span><i class="flow-sample flow-dashed"></i>Boundary crossing</span><span><strong>Click</strong> node or flow for evidence and findings</span></div>
+          <div id="dfd-topology-status" class="dfd-topology-status" role="status" hidden></div>
+          <details class="model-support-panel dfd-inventory" id="dfd-inventory-panel"><summary><span><strong>Model inventory</strong><small>Canonical nodes, flows, zones, and boundaries</small></span><span class="model-support-state">Review elements</span></summary><div id="dfd-inventory" role="region" aria-label="Canonical DFD inventory"></div></details>
+          <details class="model-support-panel diagram-text-alternative" id="diagram-text-alternative"><summary><span><strong>Accessible model outline</strong><small>Keyboard-friendly text view of the current DFD projection</small></span><span class="model-support-state">Text alternative</span></summary><div id="diagram-text-content"></div></details>
+        </section>
+
+          <button type="button" class="model-sheet-backdrop" id="model-sheet-backdrop" aria-label="Close boundary review" hidden></button>
+        <div class="model-inspector-rail" id="model-inspector-rail" aria-label="Boundary review and selection details" data-mobile-state="closed" data-ux-open="false">
+          <section class="model-rail-section model-boundary-queue" id="boundary-review-panel" aria-labelledby="model-boundary-title"><div class="model-rail-heading"><div><h2 id="model-boundary-title">Boundary review</h2><p id="model-boundary-summary">Review candidate trust transitions.</p></div><span id="model-boundary-count" class="model-count-pill">0</span><button type="button" id="model-boundary-close" class="btn btn-ghost btn-sm model-boundary-close" aria-label="Hide boundary review">×</button></div><div class="model-boundary-panel-body"><div class="model-boundary-cta"><button type="button" class="btn btn-primary btn-sm guided-review-start" id="start-boundary-guided">Start guided boundary review</button></div><div id="model-boundary-queue" class="model-boundary-list"></div></div></section>
+          <section id="node-inspector" class="node-inspector model-selection-inspector" style="display:none;" aria-label="DFD selection details" aria-live="polite"><div class="node-inspector-header"><h2 id="inspector-title" class="node-inspector-title">Selection</h2><button type="button" id="model-inspector-close" class="btn btn-ghost btn-sm" aria-label="Close selection details">×</button></div><div id="inspector-body" class="node-inspector-body"></div></section>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="/static/js/sidebar.js"></script>
+<script src="/static/js/focus-manager.js?v=20260923u6"></script>
+<script src="/static/js/ui-state.js?v=20260922u0"></script>
+<script src="/static/js/api.js?v=20261112-auth1"></script>
+<script src="/static/js/analysis.js?v=20260922u2"></script>
+</body>
+</html>

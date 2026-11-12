@@ -1,0 +1,48 @@
+{
+  "contract": "H0-A07",
+  "run_id": "h0-a07-20260924-custom-baseline-01",
+  "captured_at": "2026-09-24",
+  "project_id": "9b3aeb5d-1e7b-4f62-809c-0f74b33a1510",
+  "fixture": "fixtures/u7_release_gate_fixture.json",
+  "browser": "Playwright Chromium",
+  "viewports": [
+    {"name": "mobile", "width": 390, "height": 844},
+    {"name": "tablet", "width": 768, "height": 900},
+    {"name": "desktop", "width": 1280, "height": 900},
+    {"name": "wide", "width": 1440, "height": 900}
+  ],
+  "route_matrix": ["analysis", "model", "findings", "action-plan", "evidence", "report"],
+  "state_matrix": [
+    "initial",
+    "sidebar-open",
+    "filters-open",
+    "inspector-open",
+    "analysis-warning",
+    "model-boundary-rail-current",
+    "evidence-context-editor-open"
+  ],
+  "result": {
+    "initial_route_viewport_captures": 24,
+    "interactive_state_captures": 15,
+    "screenshots": 39,
+    "horizontal_overflow_failures": 0,
+    "blank_action_failures": 0,
+    "page_errors": 0,
+    "failed_api_requests": 0
+  },
+  "initial_document_height_px": {
+    "analysis": {"390": 1793, "768": 1391, "1280": 1004, "1440": 965},
+    "model": {"390": 2067, "768": 1697, "1280": 1440, "1440": 1384},
+    "findings": {"390": 953, "768": 997, "1280": 1095, "1440": 1095},
+    "action-plan": {"390": 956, "768": 1035, "1280": 1072, "1440": 1072},
+    "evidence": {"390": 1149, "768": 1488, "1280": 1277, "1440": 1277},
+    "report": {"390": 2531, "768": 1987, "1280": 1902, "1440": 1873}
+  },
+  "artifact_location": "/tmp/5stones-h0-a07-custom.mUeNoo/h0-a07.json and /tmp/5stones-h0-a07-custom.mUeNoo/screens",
+  "reproduction": "node tools/h0_a07_baseline.js --output <tmp>/h0-a07.json --screenshot-dir <tmp>/screens",
+  "limitations": [
+    "The current Model mobile boundary rail is captured as-is; the target closed bottom-sheet state belongs to H2-A01.",
+    "The warning capture uses the runtime warning state when available; any missing warning content is synthetic visual-state scaffolding and is marked in the raw artifact.",
+    "Screenshots remain in /tmp because they contain project UI content; only redacted metrics and the manifest are kept in the repository."
+  ]
+}

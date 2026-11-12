@@ -7,9 +7,9 @@
   <meta name="description" content="Full threat model report with export options." />
   <link rel="stylesheet" href="/static/css/style.css" />
   <link rel="stylesheet" href="/static/css/components.css" />
-  <link rel="stylesheet" href="/static/css/pages.css?v=20260806a" />
+  <link rel="stylesheet" href="/static/css/pages.css?v=20261005-report5" />
 </head>
-<body>
+<body data-page="report">
 <div class="app-shell">
 
   <aside class="sidebar">
@@ -28,20 +28,7 @@
         </a></li>
         <li><a href="/project-new.html">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
-          New Project
-        </a></li>
-      </ul>
-    </div>
-    <div class="sidebar-section">
-      <div class="sidebar-section-label">Current Project</div>
-      <ul class="sidebar-nav">
-        <li><a href="#" id="nav-analysis">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
-          Analysis
-        </a></li>
-        <li><a href="/report.html" class="active" id="nav-report">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-          Report
+          New project
         </a></li>
       </ul>
     </div>
@@ -60,7 +47,7 @@
   <main class="main-content">
     <div class="topbar">
       <div class="topbar-left">
-        <a href="#" id="btn-back-to-analysis" class="btn btn-ghost btn-sm" style="padding:4px 8px;">
+        <a href="#" id="btn-back-to-analysis" class="btn btn-ghost btn-sm" style="padding:4px 8px;" aria-label="Back to analysis" title="Back to analysis">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><polyline points="15 18 9 12 15 6"/></svg>
         </a>
         <div>
@@ -70,6 +57,9 @@
       </div>
       <div class="topbar-actions">
         <div style="display:flex;gap:var(--space-2);">
+          <button class="btn btn-secondary btn-sm" id="save-draft-report" title="Materialize a read-only draft snapshot">Save draft</button>
+          <button class="btn btn-primary btn-sm" id="sign-report" title="Sign only when the readiness gate is ready">Sign report</button>
+          <details class="report-export-menu"><summary class="btn btn-secondary btn-sm">Export</summary><div class="report-export-popover" role="group" aria-label="Export report formats">
           <button class="btn btn-secondary btn-sm" id="export-md">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
             MD
@@ -81,7 +71,7 @@
           <button class="btn btn-secondary btn-sm" id="export-json">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
             JSON
-          </button>
+          </button></div></details>
         </div>
       </div>
     </div>
@@ -102,7 +92,7 @@
           <div class="report-toc-title">Contents</div>
           <a href="#report-overview" class="active" data-report-section="report-overview"><span>Overview</span></a>
           <a href="#report-boundaries" data-report-section="report-boundaries"><span>Trust boundaries</span><strong id="toc-count-boundaries">0</strong></a>
-          <a href="#report-threats" data-report-section="report-threats"><span>Threats</span><strong id="toc-count-threats">0</strong></a>
+          <a href="#report-threats" data-report-section="report-threats"><span>Threat scenarios</span><strong id="toc-count-threats">0</strong></a>
           <a href="#report-controls" data-report-section="report-controls"><span>Controls</span><strong id="toc-count-controls">0</strong></a>
           <a href="#report-tests" data-report-section="report-tests"><span>Test backlog</span><strong id="toc-count-tests">0</strong></a>
           <a href="#report-gaps" data-report-section="report-gaps"><span>Information gaps</span><strong id="toc-count-gaps">0</strong></a>
@@ -112,7 +102,7 @@
         <div class="report-sections">
           <section class="report-section" id="report-overview" aria-labelledby="report-title">
             <div class="report-header" id="report-header">
-              <div class="report-header-title" id="report-title">Loading report…</div>
+              <h1 class="report-header-title" id="report-title">Loading report…</h1>
               <div class="report-header-meta">
                 <span id="report-generated">Generated: —</span>
                 <span>•</span>
@@ -125,16 +115,46 @@
                 <div class="report-risk-pill low"><div class="rp-num" id="rp-low">—</div><div class="rp-label">Low</div></div>
               </div>
             </div>
-            <div class="alert alert-warning">
+            <div class="report-formal-meta" id="report-formal-meta" role="group" aria-label="Formal report provenance">
+              <div class="report-formal-status"><span>Status</span><strong id="report-formal-status">Draft</strong></div>
+              <div><span>Report revision</span><strong id="report-revision">—</strong></div>
+              <div><span>DFD revision</span><strong id="report-dfd-revision">—</strong></div>
+              <div><span>Analysis run</span><strong id="report-run-provenance">—</strong></div>
+              <div><span>Methodology</span><strong id="report-methodology">—</strong></div>
+              <div><span>Sources</span><strong id="report-source-manifest">—</strong></div>
+            </div>
+            <div class="report-review-summary" aria-label="Risk and release summary">
+              <div class="report-disposition" id="report-risk-disposition" role="status" aria-live="polite"></div>
+              <section class="report-release-panel" id="report-release-decision" data-status="not_ready" aria-labelledby="report-release-title" role="status" aria-live="polite">
+                <div class="report-release-heading"><strong id="report-release-title">Enterprise release decision</strong><span id="report-release-status" class="badge badge-medium">NOT_READY</span></div>
+                <p id="report-release-summary">Loading the current project release decision…</p>
+                <ul id="report-release-blockers"></ul>
+              </section>
+              <div class="report-blocker-panel" id="report-blockers"></div>
+            </div>
+            <details class="report-source-details"><summary>Source manifest</summary><div id="report-source-manifest-list" tabindex="0">No source manifest recorded.</div></details>
+            <details class="report-revision-history"><summary>Revision and approval history</summary><div id="report-revision-history" tabindex="0">Loading revision history…</div></details>
+            <div class="report-revision-controls" id="report-revision-controls" role="group" aria-label="Report revision reader">
+              <label for="report-revision-select">Read revision</label>
+              <select id="report-revision-select" class="form-select"><option value="">Current draft projection</option></select>
+              <button type="button" id="report-revision-current" class="btn btn-ghost btn-sm" hidden>Return to current</button>
+              <span id="report-revision-reader-status" class="report-reader-status" role="status" aria-live="polite">Current report is read-only.</span>
+            </div>
+            <figure class="report-dfd-snapshot" id="report-dfd-snapshot" aria-labelledby="report-dfd-snapshot-title">
+              <div class="report-dfd-snapshot-head"><div><span class="report-section-kicker">Model provenance</span><h2 id="report-dfd-snapshot-title">Canonical DFD snapshot</h2><p id="report-dfd-snapshot-caption">Loading DFD revision…</p></div><a id="report-dfd-open" class="report-review-link" href="#">Open model ↗</a></div>
+              <div id="report-dfd-snapshot-visual" class="report-dfd-snapshot-visual"></div>
+            </figure>
+            <div class="alert alert-warning ux-blocker-banner">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-              <div>This report combines automated analysis, framework-based evaluation, and available project evidence. Human review is required; confidence labels show where findings need further validation.</div>
+              <div><strong>Human review is required before sign-off.</strong><span class="ux-blocker-summary">Automated analysis and available evidence are shown with confidence and disposition.</span><details><summary>Why this matters</summary><span>Review deferred scenarios, DFD provenance, controls, and verification evidence before treating a result as final.</span></details></div>
             </div>
           </section>
 
           <section class="report-section" id="report-boundaries">
             <div class="card">
-              <div class="card-header"><div><div class="card-title">Trust-boundary decisions</div><div class="card-subtitle">Grounded relationships, their evidence basis, and the current human-review decision.</div></div></div>
+              <div class="card-header"><div><h2 class="card-title">Trust-boundary decisions</h2><div class="card-subtitle">Grounded relationships, their evidence basis, and the current human-review decision.</div></div></div>
               <div id="report-boundaries-list" class="report-list"></div>
+              <div id="report-pagination-boundaries" class="report-pagination" role="navigation" aria-label="Trust boundary pages"></div>
             </div>
           </section>
 
@@ -142,57 +162,60 @@
             <div class="card report-threat-card">
               <div class="card-header">
                 <div>
-                  <div class="card-title">Threat findings</div>
-                  <div class="card-subtitle">Review each scenario, its affected context, evidence basis, risk, and decision status.</div>
+                  <h2 class="card-title">Threat scenarios</h2>
+                  <div class="card-subtitle">Scan the scenario and risk. Open a row for context and evidence; verify findings before treating them as vulnerabilities.</div>
                 </div>
                 <div class="report-filters">
                   <select class="form-select" id="threat-filter-framework" aria-label="Filter threats by framework">
                     <option value="">All frameworks</option><option value="STRIDE">STRIDE</option><option value="LINDDUN">LINDDUN</option>
                   </select>
                   <select class="form-select" id="threat-filter-risk" aria-label="Filter threats by risk">
-                    <option value="">All risk levels</option><option value="Critical">Critical</option><option value="High">High</option><option value="Medium">Medium</option><option value="Low">Low</option>
+                    <option value="">All risk states</option><option value="Critical">Critical</option><option value="High">High</option><option value="Medium">Medium</option><option value="Low">Low</option><option value="Unknown">Deferred / unknown</option>
                   </select>
                 </div>
               </div>
-              <div class="table-wrap report-table-wrap">
+              <div class="table-wrap report-table-wrap" role="region" tabindex="0" aria-label="Threat scenario table">
                 <table id="threats-table" class="report-table report-threat-table">
-                  <thead><tr><th>Finding</th><th>Context</th><th>Evidence</th><th>Risk</th><th>Review</th></tr></thead>
+                  <thead><tr><th>Scenario</th><th>Assessment</th><th>Review</th></tr></thead>
                   <tbody id="threats-tbody"></tbody>
                 </table>
               </div>
+              <div id="report-pagination-threats" class="report-pagination" role="navigation" aria-label="Threat scenario pages"></div>
             </div>
           </section>
 
           <section class="report-section" id="report-controls">
             <div class="card">
-              <div class="card-header"><div><div class="card-title">Control checklist</div><div class="card-subtitle">Implementation guidance and verification evidence mapped to the current findings.</div></div></div>
-              <div class="table-wrap report-table-wrap">
+              <div class="card-header"><div><h2 class="card-title">Control checklist</h2><div class="card-subtitle">Check status and owner. Open a row for the full checklist and evidence.</div></div></div>
+              <div class="table-wrap report-table-wrap" role="region" tabindex="0" aria-label="Control checklist table">
                 <table id="controls-table" class="report-table report-controls-table">
-                  <thead><tr><th>Control</th><th>Implementation</th><th>Verification</th><th>Owner</th></tr></thead>
+                  <thead><tr><th>Control</th><th>Implementation</th><th>Owner</th></tr></thead>
                   <tbody id="controls-tbody"></tbody>
                 </table>
               </div>
+              <div id="report-pagination-controls" class="report-pagination" role="navigation" aria-label="Control pages"></div>
             </div>
           </section>
 
           <section class="report-section" id="report-tests">
             <div class="card">
-              <div class="card-header"><div><div class="card-title">Security test backlog</div><div class="card-subtitle">Executable scenarios for QA, engineering, and security validation.</div></div></div>
-              <div class="table-wrap report-table-wrap">
+              <div class="card-header"><div><h2 class="card-title">Security test backlog</h2><div class="card-subtitle">Review the expected result and priority. Open a row for test steps and applicability.</div></div></div>
+              <div class="table-wrap report-table-wrap" role="region" tabindex="0" aria-label="Security test backlog table">
                 <table id="tests-table" class="report-table report-tests-table">
-                  <thead><tr><th>Test case</th><th>Steps</th><th>Expected result</th><th>Priority &amp; owner</th></tr></thead>
+                  <thead><tr><th>Test case</th><th>Expected result</th><th>Execution</th></tr></thead>
                   <tbody id="tests-tbody"></tbody>
                 </table>
               </div>
+              <div id="report-pagination-tests" class="report-pagination" role="navigation" aria-label="Test scenario pages"></div>
             </div>
           </section>
 
           <section class="report-section" id="report-gaps">
-            <div class="card"><div class="card-header"><div><div class="card-title">Missing information</div><div class="card-subtitle">Questions that should be resolved before accepting the model.</div></div></div><div id="missing-info-list" class="report-list"></div></div>
+            <div class="card"><div class="card-header"><div><h2 class="card-title">Missing information</h2><div class="card-subtitle">Questions that should be resolved before accepting the model.</div></div></div><div id="missing-info-list" class="report-list"></div><div id="report-pagination-gaps" class="report-pagination" role="navigation" aria-label="Information gap pages"></div></div>
           </section>
 
           <section class="report-section" id="report-assumptions">
-            <div class="card"><div class="card-header"><div><div class="card-title">Assumption register</div><div class="card-subtitle">Unverified statements, their impact, owner, and validation path.</div></div></div><div id="assumptions-list" class="report-list"></div></div>
+            <div class="card"><div class="card-header"><div><h2 class="card-title">Assumption register</h2><div class="card-subtitle">Unverified statements, their impact, owner, and validation path.</div></div></div><div id="assumptions-list" class="report-list"></div><div id="report-pagination-assumptions" class="report-pagination" role="navigation" aria-label="Assumption pages"></div></div>
           </section>
         </div>
       </div>
@@ -201,7 +224,9 @@
 </div>
 
 <script src="/static/js/sidebar.js"></script>
-<script src="/static/js/api.js"></script>
-<script src="/static/js/report.js?v=20260806a"></script>
+<script src="/static/js/ui-state.js?v=20260922u0"></script>
+<script src="/static/js/ux-telemetry.js?v=20260922u0"></script>
+<script src="/static/js/api.js?v=20261112-auth1"></script>
+<script src="/static/js/report.js?v=20261005-report5"></script>
 </body>
 </html>

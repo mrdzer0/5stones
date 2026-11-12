@@ -1,9 +1,13 @@
 """LINDDUN privacy threat generation service."""
 from __future__ import annotations
+import json
 import uuid
 from typing import List
 from backend.services.ai_service import chat_complete_json, get_active_provider_config
 from backend.services.posture_service import build_evidence_context
+from backend.services.privacy_service import assess_privacy_metadata
+from backend.services.threat_validation_service import ThreatGenerationResult
+from backend.services.threat_batch_service import build_threat_batches, run_threat_batches
 
 LINDDUN_SYSTEM_PROMPT = """You are a privacy engineer performing LINDDUN privacy threat modeling.
 Evaluate direct PII and indirect privacy signals such as identifiers, geolocation, images,
@@ -12,32 +16,48 @@ awareness, retention, and re-identification. A project can have privacy threats 
 its has_pii flag is false.
 Only cite evidence IDs provided in the evidence catalog. Never invent evidence, quotes,
 source names, or IDs. Leave evidence_refs empty when a finding is framework inference.
+Never infer that a privacy/security control is absent or ineffective merely because it is
+not mentioned. Use control_gap_evidence_refs only for an explicit source statement or
+runtime observation; document omission is insufficient evidence.
 Return one strict JSON object. Be specific and actionable."""
 
 LINDDUN_CATEGORIES = [
-    "Linkability",
-    "Identifiability",
+    "Linking",
+    "Identifying",
     "Non-repudiation",
-    "Detectability",
-    "Disclosure of Information",
-    "Unawareness",
+    "Detecting",
+    "Data Disclosure",
+    "Unawareness & Unintervenability",
     "Non-compliance"
 ]
 
 
-async def generate_linddun_threats(project: dict, trust_boundaries: List[dict], force_fallback: bool = False) -> List[dict]:
+async def generate_linddun_threats(
+    project: dict,
+    trust_boundaries: List[dict],
+    force_fallback: bool = False,
+    dfd_model: dict | None = None,
+    prior_generation_manifest: dict | None = None,
+) -> List[dict]:
     """Generate LINDDUN privacy threats from project context."""
     if force_fallback:
-        return _fallback_linddun(project)
+        return ThreatGenerationResult(
+            _fallback_linddun(project, dfd_model),
+            [],
+            assessment_status="fallback",
+            response_shape="deterministic_fallback",
+        )
 
-    cfg = get_active_provider_config()
+    cfg = get_active_provider_config(project.get("data_policy"), project.get("workspace_id"))
 
-    context = _build_privacy_context(project)
-    evidence_context = build_evidence_context(project)
+    context = _build_privacy_context(project)[:1800]
+    evidence_context = build_evidence_context(project, limit=10)
     boundaries_text = "\n".join([
         f"- {b.get('source')} → {b.get('destination')}: {b.get('boundary_label')}"
         for b in trust_boundaries[:8]
     ])
+    batches, deferred_refs = build_threat_batches(dfd_model)
+    privacy_assessment = assess_privacy_metadata(dfd_model)
 
     user_prompt = f"""Perform LINDDUN privacy threat analysis for this system.
 
@@ -47,57 +67,90 @@ PROJECT CONTEXT:
 TRUST BOUNDARIES:
 {boundaries_text}
 
+CANONICAL DFD MODEL:
+The current interaction batch is provided after the response contract. Analyze only its listed canonical references.
+
+PRIVACY METADATA READINESS:
+{json.dumps({key: privacy_assessment.get(key) for key in ('status', 'unresolved_count', 'missing_fields')}, ensure_ascii=False)[:1200]}
+
 EVIDENCE CATALOG:
 {evidence_context}
 
-Generate 5-8 specific LINDDUN privacy threats. Do not treat has_pii=false as proof that no
+    Generate only specific candidate privacy threats grounded in sender, flow, receiver, and
+    data lifecycle. Do not create a finding for every category. Do not treat has_pii=false as proof that no
 privacy risk exists. Evaluate location and image metadata, linkability across records,
 third-party model processing, inferred content, public API aggregation, retention, user
-awareness, and compliance where relevant.
-Return one JSON object with a "threats" array:
+awareness, and compliance where relevant. Missing purpose, recipient, lifecycle, notice,
+individual-control, linkability, or legal-basis metadata must be reported as insufficient
+information or a candidate requiring review; it is not proof of safety and is not by itself
+evidence of legal non-compliance. A documented lawful basis does not remove other privacy
+risks such as excessive disclosure, linking, or unawareness.
+    Return one JSON object with a "threats" array and a separate "coverage" array:
 {{
+  "coverage": [{{"element_ref": "valid DFD id", "category": "LINDDUN category", "status": "reviewed_no_candidate|candidate_identified|insufficient_information", "reason": "...", "applicability": "applicable|not_applicable|unknown", "applicability_rationale": "...", "mapping_refs": ["related DFD/data lifecycle IDs"]}}],
   "threats": [
     {{
     "framework": "LINDDUN",
-    "threat_category": "Linkability|Identifiability|Non-repudiation|Detectability|Disclosure of Information|Unawareness|Non-compliance",
+    "taxonomy_version": "linddun-v1",
+    "title": "short privacy threat title",
+    "scenario": "specific sender-flow-receiver privacy scenario",
+    "threat_category": "Linking|Identifying|Non-repudiation|Detecting|Data Disclosure|Unawareness & Unintervenability|Non-compliance",
     "component": "affected component",
     "source": "data origin",
     "destination": "data destination",
     "trust_boundary": "boundary crossed",
+    "primary_interaction_ref": "exact ID of the single canonical DFD flow where this privacy scenario occurs; required",
+    "affected_refs": ["primary flow ID plus any valid related DFD IDs"],
+    "dfd_context_refs": ["related node/boundary/data-object IDs only; never use these as a substitute for primary_interaction_ref"],
+    "analysis_revision": "current canonical DFD revision",
+    "dfd_semantic_hash": "current canonical DFD semantic hash",
     "asset": "personal data at risk",
-    "data_classification": "PII",
+    "data_classification": "PII|Public|Internal|Financial|Secret|Unknown",
     "threat_description": "specific privacy threat description",
     "abuse_case": "how this privacy risk materializes",
     "recommended_control": "privacy control recommendation",
-    "evidence_refs": ["one or more exact EV-... IDs from the catalog, or an empty array"],
+    "known_controls": ["controls explicitly evidenced by the project context"],
+    "recommended_mitigations": ["actionable privacy mitigation steps"],
+    "obligation": "documented obligation only when relevant; otherwise leave empty",
+    "scenario_evidence_refs": ["exact EV-... IDs explicitly supporting the scenario, or an empty array"],
+    "evidence_refs": ["compatibility copy of scenario_evidence_refs; never add merely relevant context"],
+    "context_evidence_refs": ["EV-... IDs useful only as review context; these do not ground the scenario"],
+    "control_gap_evidence_refs": ["EV-... IDs explicitly proving an asserted control gap; empty when the gap is only unknown"],
     "assumption": "assumption made",
     "missing_info": "clarification needed",
+    "preconditions": ["conditions required for the scenario"],
+    "impact": "impact on individuals or privacy expectations",
+    "validation_steps": ["Developer/QA/Product validation step"],
     "confidence": "High|Medium|Low",
-    "risk_level": "Critical|High|Medium|Low",
+    "provider_risk_level": "Critical|High|Medium|Low (advisory estimate only; final risk is calculated deterministically)",
     "owner": "Backend|Product|Legal|DevOps"
     }}
   ]
 }}"""
 
-    result = await chat_complete_json(
-        system_prompt=LINDDUN_SYSTEM_PROMPT,
-        user_prompt=user_prompt,
-        base_url=cfg.get("base_url"),
-        api_key=cfg.get("api_key"),
-        model=cfg.get("model"),
-        max_tokens=3000,
+    parsed = await run_threat_batches(
+        framework="LINDDUN", batches=batches, deferred_refs=deferred_refs,
+        system_prompt=LINDDUN_SYSTEM_PROMPT, prompt_prefix=user_prompt, prompt_suffix="Return coverage and privacy candidates only for this batch. Every candidate must select exactly one listed flow as primary_interaction_ref; if the batch has no flow, return coverage only and no threat. Keep related DFD IDs in dfd_context_refs and merely relevant evidence in context_evidence_refs. An omitted pair is insufficient information, never a reviewed negative. Missing documentation is an evidence gap, never proof of a missing control, privacy violation, or vulnerability.",
+        provider=cfg, chat_complete_json=chat_complete_json,
+        prior_manifest=prior_generation_manifest,
     )
-    threats = result if isinstance(result, list) else result.get("threats", [])
-    if not threats:
-        raise ValueError("Analysis engine returned an empty or invalid LINDDUN threat list")
+    threats = list(parsed)
 
     for t in threats:
         t["threat_id"] = t.get("threat_id") or str(uuid.uuid4())
         t["framework"] = "LINDDUN"
         t.setdefault("status", "Open")
-        t.setdefault("data_classification", "PII")
+        # Do not turn an omitted privacy classification into a PII assertion.
+        t.setdefault("data_classification", "Unknown")
 
-    return threats
+    return ThreatGenerationResult(
+        threats,
+        parsed.coverage,
+        assessment_status=parsed.assessment_status,
+        response_shape=parsed.response_shape,
+        warnings=parsed.generation_warnings,
+        response_metadata=parsed.response_metadata,
+    )
 
 
 def _build_privacy_context(project: dict) -> str:
@@ -114,68 +167,39 @@ Artifact Summary: {project.get('artifact_summary', 'N/A')}
 Has PII: {project.get('has_pii', True)}"""
 
 
-def _fallback_linddun(project: dict) -> list:
+def _fallback_linddun(project: dict, dfd_model: dict | None = None) -> list:
     data = project.get("data_involved", ["user data"])
-    external = project.get("external_systems", ["third-party service"])
     actors = project.get("actors", ["User"])
-
-    templates = [
-        {
-            "threat_category": "Disclosure of Information",
-            "threat_description": f"Personal data ({data[0] if data else 'PII'}) exposed to unauthorized party through API response",
-            "abuse_case": "API response includes sensitive fields not needed by the caller",
-            "recommended_control": "Data minimization — remove unnecessary PII from API responses",
-            "risk_level": "High", "confidence": "High",
-            "asset": data[0] if data else "PII",
-        },
-        {
-            "threat_category": "Linkability",
-            "threat_description": f"User activity across multiple sessions can be linked using persistent identifiers",
-            "abuse_case": "Track user behavior across sessions using device ID, transaction IDs, or cookies",
-            "recommended_control": "Use ephemeral identifiers, implement identifier rotation",
-            "risk_level": "Medium", "confidence": "Medium",
-            "asset": "User identifiers",
-        },
-        {
-            "threat_category": "Identifiability",
-            "threat_description": f"Combination of data fields uniquely identifies individuals even without direct PII",
-            "abuse_case": f"Combine {data[0] if data else 'user data'} with behavioral data to re-identify users",
-            "recommended_control": "Evaluate data combinations for re-identification risk, apply aggregation",
-            "risk_level": "Medium", "confidence": "Medium",
-            "asset": "User profile data",
-        },
-        {
-            "threat_category": "Unawareness",
-            "threat_description": f"Users are not informed that their data is shared with {external[0] if external else 'third parties'}",
-            "abuse_case": "Data sharing happens without user consent or transparent disclosure",
-            "recommended_control": "Add clear privacy notice, obtain explicit consent for data sharing",
-            "risk_level": "High", "confidence": "Medium",
-            "asset": "Personal data shared externally",
-        },
-        {
-            "threat_category": "Non-compliance",
-            "threat_description": "Personal data retention period not defined or enforced — potential UU PDP/GDPR violation",
-            "abuse_case": "Personal data retained indefinitely without legal basis or user consent",
-            "recommended_control": "Define retention policy, implement automated data deletion, document legal basis",
-            "risk_level": "High", "confidence": "Low",
-            "asset": "All personal data",
-        },
-    ]
-
-    threats = []
-    for t in templates:
-        t["threat_id"] = str(uuid.uuid4())
-        t["framework"] = "LINDDUN"
-        t["is_fallback"] = True
-        t.setdefault("component", "API / Data Store")
-        t.setdefault("source", actors[0] if actors else "User")
-        t.setdefault("destination", "Data Store")
-        t.setdefault("trust_boundary", "Internal Service → Sensitive Data Store")
-        t.setdefault("data_classification", "PII")
-        t.setdefault("assumption", "Based on common privacy pattern")
-        t.setdefault("missing_info", "Need data flow diagram and privacy policy to confirm")
-        t.setdefault("owner", "Backend")
-        t.setdefault("status", "Open")
-        threats.append(t)
-
-    return threats
+    flow = (dfd_model or {}).get("flows", [])[:1]
+    flow = flow[0] if flow else {}
+    refs = [value for value in [flow.get("id"), flow.get("source_id"), flow.get("target_id")] if value]
+    refs.extend(flow.get("data_object_ids") or [])
+    component = flow.get("target_id") or "Data Store"
+    return [{
+        "threat_id": str(uuid.uuid4()),
+        "framework": "LINDDUN",
+        "threat_category": "Data Disclosure",
+        "threat_description": f"Candidate: {data[0] if data else 'personal data'} may be disclosed beyond the intended recipient.",
+        "abuse_case": "A response or downstream data sharing includes more personal data than the purpose requires.",
+        "recommended_control": "Confirm purpose limitation, recipient scope, minimization, and response field filtering.",
+        "component": component,
+        "source": actors[0] if actors else "User",
+        "destination": component,
+        "trust_boundary": "",
+        "primary_interaction_ref": flow.get("id"),
+        "affected_refs": refs,
+        "dfd_context_refs": [value for value in refs if value != flow.get("id")],
+        "asset": data[0] if data else "Personal data",
+        "data_classification": "PII",
+        "assumption": "AI provider unavailable; candidate is derived from the first canonical flow and requires privacy review.",
+        "missing_info": "Confirm purpose, recipient, retention, notice, and individual control for this flow.",
+        "preconditions": ["The flow carries personal or linkable data."],
+        "impact": "Privacy impact is unknown until purpose, recipient, and data minimization are verified.",
+        "validation_steps": ["Review data inventory, response schema, recipient agreement, and retention policy."],
+        "provider_risk_level": "Medium",
+        "confidence": "Low",
+        "owner": "Product",
+        "status": "Needs Info",
+        "is_fallback": True,
+        "candidate_only": True,
+    }]

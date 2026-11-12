@@ -1,0 +1,132 @@
+{
+  "id": "dfd-customer-registration",
+  "project_id": "fixture-customer-registration",
+  "schema_version": "dfd-v1",
+  "revision": 1,
+  "layout_revision": 1,
+  "title": "Synthetic Customer Registration",
+  "scope_description": "Customer registration and activation notification",
+  "source_refs": ["fixture:customer_registration_source.md"],
+  "evidence": [
+    {
+      "id": "EV-REG-001",
+      "document_id": "customer-registration-fixture",
+      "document_revision": 1,
+      "document_hash": "synthetic-customer-registration-v1",
+      "locator": "Synthetic Customer Registration",
+      "excerpt_redacted": "Vendor retention and deletion behavior are intentionally unknown."
+    }
+  ],
+  "nodes": [
+    {
+      "id": "E1",
+      "display_id": "E1",
+      "type": "entity",
+      "name": "Customer",
+      "scope": "external_dependency",
+      "ownership": "customer",
+      "exposure": "internet_facing",
+      "zone_ids": ["zone-customer"],
+      "knowledge_status": "documented",
+      "implementation_status": "unknown"
+    },
+    {
+      "id": "P1",
+      "display_id": "P1",
+      "type": "process",
+      "name": "Memproses registrasi",
+      "scope": "in_scope",
+      "ownership": "organization",
+      "exposure": "internet_facing",
+      "zone_ids": ["zone-application"],
+      "knowledge_status": "documented",
+      "implementation_status": "unknown",
+      "process_metadata": {
+        "purpose": "Validate registration and persist customer record",
+        "input_flow_ids": ["F1"],
+        "output_flow_ids": ["F2", "F3", "F4"]
+      }
+    },
+    {
+      "id": "P2",
+      "display_id": "P2",
+      "type": "process",
+      "name": "Menyiapkan notifikasi",
+      "scope": "in_scope",
+      "ownership": "organization",
+      "exposure": "private",
+      "zone_ids": ["zone-application"],
+      "knowledge_status": "documented",
+      "implementation_status": "unknown",
+      "process_metadata": {
+        "purpose": "Prepare activation notification",
+        "input_flow_ids": ["F4", "F6"],
+        "output_flow_ids": ["F5"]
+      }
+    },
+    {
+      "id": "D1",
+      "display_id": "D1",
+      "type": "data_store",
+      "name": "Data customer",
+      "scope": "in_scope",
+      "ownership": "organization",
+      "exposure": "private",
+      "zone_ids": ["zone-restricted-data"],
+      "knowledge_status": "documented",
+      "implementation_status": "unknown"
+    },
+    {
+      "id": "E2",
+      "display_id": "E2",
+      "type": "entity",
+      "name": "Layanan email",
+      "scope": "external_dependency",
+      "ownership": "vendor",
+      "exposure": "private",
+      "zone_ids": ["zone-vendor"],
+      "knowledge_status": "documented",
+      "implementation_status": "unknown"
+    }
+  ],
+  "data_objects": [
+    {"id": "DO1", "display_id": "DO1", "name": "Data registrasi", "fields": ["email", "name"], "classification": "PII", "data_subjects": ["Customer"], "identifiers": ["email"], "sensitivity": "sensitive", "purpose": "registration", "knowledge_status": "documented"},
+    {"id": "DO2", "display_id": "DO2", "name": "Status registrasi", "classification": "Internal", "purpose": "registration response", "knowledge_status": "documented"},
+    {"id": "DO3", "display_id": "DO3", "name": "Record customer", "fields": ["email", "name", "activation_token"], "classification": "PII", "data_subjects": ["Customer"], "identifiers": ["email"], "sensitivity": "sensitive", "purpose": "customer account", "knowledge_status": "documented"},
+    {"id": "DO4", "display_id": "DO4", "name": "Email dan referensi aktivasi", "fields": ["recipient", "activation_token"], "classification": "PII", "data_subjects": ["Customer"], "identifiers": ["email"], "sensitivity": "sensitive", "purpose": "activation notification", "knowledge_status": "documented"},
+    {"id": "DO5", "display_id": "DO5", "name": "Penerima dan pesan aktivasi", "classification": "PII", "data_subjects": ["Customer"], "purpose": "vendor delivery", "knowledge_status": "documented"},
+    {"id": "DO6", "display_id": "DO6", "name": "Status penerimaan pesan", "classification": "Internal", "purpose": "delivery tracking", "knowledge_status": "documented"}
+  ],
+  "flows": [
+    {"id": "F1", "display_id": "F1", "source_id": "E1", "target_id": "P1", "name": "Data registrasi", "data_object_ids": ["DO1"], "protocol": "HTTPS", "interaction_kind": "request", "boundary_crossings": ["TB1"], "crossing_rationales": {"TB1": "Customer to application organizational/network transition"}, "crossing_origins": {"TB1": "derived"}, "crossing_status": "resolved", "evidence_refs": ["EV-REG-001"], "knowledge_status": "documented"},
+    {"id": "F2", "display_id": "F2", "source_id": "P1", "target_id": "E1", "name": "Status registrasi", "data_object_ids": ["DO2"], "protocol": "HTTPS", "interaction_kind": "response", "boundary_crossings": ["TB1"], "crossing_rationales": {"TB1": "Application to customer organizational/network transition"}, "crossing_origins": {"TB1": "derived"}, "crossing_status": "resolved", "evidence_refs": ["EV-REG-001"], "knowledge_status": "documented"},
+    {"id": "F3", "display_id": "F3", "source_id": "P1", "target_id": "D1", "name": "Record customer", "data_object_ids": ["DO3"], "protocol": "Database protocol unknown", "interaction_kind": "write", "boundary_crossings": ["TB2"], "crossing_rationales": {"TB2": "Application process enters restricted-data zone"}, "crossing_origins": {"TB2": "derived"}, "crossing_status": "resolved", "evidence_refs": ["EV-REG-001"], "knowledge_status": "documented"},
+    {"id": "F4", "display_id": "F4", "source_id": "P1", "target_id": "P2", "name": "Email dan referensi aktivasi", "data_object_ids": ["DO4"], "protocol": "Internal channel unknown", "interaction_kind": "event", "boundary_crossings": ["TB3"], "crossing_rationales": {"TB3": "Reviewer-added privilege transition within application zone"}, "crossing_origins": {"TB3": "reviewer"}, "crossing_status": "resolved", "evidence_refs": ["EV-REG-001"], "knowledge_status": "documented"},
+    {"id": "F5", "display_id": "F5", "source_id": "P2", "target_id": "E2", "name": "Penerima dan pesan aktivasi", "data_object_ids": ["DO5"], "protocol": "HTTPS", "interaction_kind": "request", "boundary_crossings": ["TB4"], "crossing_rationales": {"TB4": "Organization to vendor transition"}, "crossing_origins": {"TB4": "derived"}, "crossing_status": "resolved", "evidence_refs": ["EV-REG-001"], "knowledge_status": "documented"},
+    {"id": "F6", "display_id": "F6", "source_id": "E2", "target_id": "P2", "name": "Status penerimaan pesan", "data_object_ids": ["DO6"], "protocol": "HTTPS", "interaction_kind": "response", "boundary_crossings": ["TB4"], "crossing_rationales": {"TB4": "Vendor to organization transition"}, "crossing_origins": {"TB4": "derived"}, "crossing_status": "resolved", "evidence_refs": ["EV-REG-001"], "knowledge_status": "documented"}
+  ],
+  "stores": {
+    "D1": {"data_object_ids": ["DO3"], "readers": ["P1"], "writers": ["P1"], "retention": "unknown", "deletion": "unknown", "backup": "unknown", "protection_controls": []}
+  },
+  "zones": [
+    {"id": "zone-customer", "display_id": "Z1", "name": "Customer-controlled", "knowledge_status": "documented"},
+    {"id": "zone-organization", "display_id": "Z2", "name": "Organization", "ownership_group_id": "org-group", "knowledge_status": "documented"},
+    {"id": "zone-application", "display_id": "Z3", "name": "Application", "parent_zone_id": "zone-organization", "ownership_group_id": "org-group", "knowledge_status": "documented"},
+    {"id": "zone-restricted-data", "display_id": "Z4", "name": "Restricted data", "parent_zone_id": "zone-organization", "ownership_group_id": "org-group", "knowledge_status": "documented"},
+    {"id": "zone-vendor", "display_id": "Z5", "name": "Vendor", "knowledge_status": "documented"}
+  ],
+  "boundaries": [
+    {"id": "TB1", "display_id": "TB1", "name": "Customer ↔ Organization", "types": ["network", "organization"], "rationale": "Customer-controlled client crosses into organization application", "source_zone_ids": ["zone-customer"], "target_zone_ids": ["zone-organization"], "crossing_flow_ids": ["F1", "F2"], "transition_scope": "zone", "status": "confirmed", "derived": true},
+    {"id": "TB2", "display_id": "TB2", "name": "Application ↔ Restricted data", "types": ["privilege"], "rationale": "Application process accesses restricted data", "source_zone_ids": ["zone-application"], "target_zone_ids": ["zone-restricted-data"], "crossing_flow_ids": ["F3"], "transition_scope": "zone", "status": "confirmed", "derived": true},
+    {"id": "TB3", "display_id": "TB3", "name": "Application privilege boundary", "types": ["privilege"], "rationale": "Reviewer recorded a logical privilege transition in the same application zone", "source_zone_ids": ["zone-application"], "target_zone_ids": ["zone-application"], "crossing_flow_ids": ["F4"], "transition_scope": "logical", "status": "confirmed", "derived": false},
+    {"id": "TB4", "display_id": "TB4", "name": "Organization ↔ Vendor", "types": ["organization", "network"], "rationale": "Notification provider is vendor-controlled", "source_zone_ids": ["zone-organization"], "target_zone_ids": ["zone-vendor"], "crossing_flow_ids": ["F5", "F6"], "transition_scope": "zone", "status": "confirmed", "derived": true}
+  ],
+  "views": [
+    {"id": "view-context", "kind": "context", "element_refs": ["E1", "P1", "E2", "F1", "F2", "F5", "F6"], "projection_mappings": {"P1": ["P1"], "F1": ["F1"], "F2": ["F2"], "F5": ["F5"], "F6": ["F6"]}},
+    {"id": "view-system", "kind": "system", "element_refs": ["E1", "P1", "P2", "D1", "E2", "F1", "F2", "F3", "F4", "F5", "F6"], "projection_mappings": {}},
+    {"id": "view-feature-registration", "kind": "feature", "parent_process_id": "P1", "element_refs": ["E1", "P1", "D1", "F1", "F2", "F3"], "projection_mappings": {"P1": ["P1"], "F1": ["F1"], "F2": ["F2"], "F3": ["F3"]}, "input_flow_ids": ["F1"], "output_flow_ids": ["F2", "F3"], "port_mappings": {"input": ["F1"], "output": ["F2", "F3"]}}
+  ],
+  "questions": [
+    {"id": "Q1", "affected_refs": ["E2", "DO5", "D1"], "question": "What retention and deletion controls apply to vendor email data and stored customer records?", "reason": "Lifecycle metadata is not documented in the synthetic source.", "source_refs": ["EV-REG-001"], "status": "open"}
+  ]
+}

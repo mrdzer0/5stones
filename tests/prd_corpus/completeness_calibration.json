@@ -1,0 +1,48 @@
+{
+  "schema_version": "completeness-calibration-v1",
+  "purpose": "Synthetic evidence vectors used only to verify ordering of completeness bands.",
+  "cases": [
+    {
+      "id": "calibration-complete",
+      "band": "complete",
+      "project": {
+        "actors": ["Customer", "Admin"],
+        "roles": ["Customer", "Admin"],
+        "data_involved": ["Account profile", "Payment token"],
+        "data_classification": ["PII", "Financial"],
+        "extracted_data_flows": [{"source": "Customer", "destination": "API", "data": ["Payment token"]}],
+        "entry_points": ["POST /payments"],
+        "zone_metadata": [{"id": "public"}, {"id": "internal"}],
+        "external_systems": ["Payment provider"],
+        "auth_method": "OAuth 2.0",
+        "authorization_model": "RBAC by account and role",
+        "lifecycle": "Retain transaction records for seven years",
+        "deletion_policy": "Delete account data after approved request",
+        "failure_modes": ["Provider timeout and duplicate delivery"],
+        "abuse_cases": ["Replay and payment tampering"],
+        "owner": "Payments Platform",
+        "regulatory_constraints": ["PCI DSS and GDPR"],
+        "artifact_sources": [{"artifact_id": "a-complete", "artifact_type": "prd", "active": true, "revision": 1, "content_hash": "hash-complete", "coverage_manifest": {"status": "complete", "total_characters": 100, "chunks": [{"chunk_id": "c1", "char_count": 100, "status": "processed"}]}}],
+        "artifact_evidence": [{"artifact_id": "a-complete", "filename": "complete.md", "snippet": "OAuth and payment token are retained with audit evidence.", "locator": "Security", "topics": ["authentication", "evidence"]}]
+      }
+    },
+    {
+      "id": "calibration-half",
+      "band": "half",
+      "project": {
+        "actors": ["Customer"],
+        "data_involved": ["Order"],
+        "entry_points": ["Checkout"],
+        "external_systems": ["Payment provider"],
+        "auth_method": "Unknown"
+      }
+    },
+    {
+      "id": "calibration-incomplete",
+      "band": "incomplete",
+      "project": {
+        "actors": ["User"]
+      }
+    }
+  ]
+}

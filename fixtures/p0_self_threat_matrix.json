@@ -1,0 +1,73 @@
+{
+  "schema_version": "p0-self-threat-matrix-v1",
+  "target": "5STONES application and its pre-release threat-modeling workflow",
+  "runtime_profile_observed": {
+    "app_env": "local_dev",
+    "auth_mode": "disabled",
+    "enterprise_auth_dependency_entries": 42,
+    "enterprise_auth_enforced_entries": 42
+  },
+  "classification_note": {
+    "default_handling": "Treat uploaded PRDs, API specifications, DFDs, reports, and prompts as confidential architecture data that may contain personal or regulated information until the data owner classifies them.",
+    "qualification_data": "The nine CR8 regression PRDs are synthetic test data.",
+    "remote_provider_rule": "Do not send production project material to a remote provider until the organization approves the provider, contract/retention terms, data policy, and egress route. Do not include credentials or live secrets in prompts."
+  },
+  "scenarios": [
+    {
+      "id": "STM-01",
+      "threat": "A user reads or modifies another workspace's project, report, DFD, export, provider configuration, or audit records.",
+      "controls": ["OIDC/JWT identity is verified server-side and supplies workspace and roles.", "Project routes check workspace ownership; settings and audit are stored and read per workspace.", "Cross-workspace project access returns not found.", "Every non-public API route is classified in the route matrix."],
+      "local_evidence": ["tests/test_access_control.py::test_cross_workspace_project_is_hidden", "tests/test_access_control.py::test_workspace_provider_settings_and_audit_are_isolated", "tests/test_enterprise_api_access.py::test_provider_settings_and_audit_are_workspace_scoped", "artifacts/p0/2026-10-04/p0_route_permission_matrix.json"],
+      "result": "OIDC/workspace negative tests pass under explicit auth-enabled test configuration; the currently observed local_dev runtime has AUTH_MODE=disabled, so its route dependencies do not enforce identity.",
+      "residual_blockers": ["Do not expose the observed AUTH_MODE=disabled local runtime as a shared service.", "Browser OIDC login/session adapter is not implemented.", "Legacy project-to-workspace migration is not executed.", "Static frontend routes require IdP/front-door or reverse-proxy protection in enterprise deployment."]
+    },
+    {
+      "id": "STM-02",
+      "threat": "A provider endpoint is redirected to an attacker-controlled host or a provider credential leaks through URL, UI, audit, or qualification artifacts.",
+      "controls": ["Outbound provider hosts pass the endpoint allowlist policy.", "Provider/settings operations require Admin role and are workspace scoped.", "Credentials are stored encrypted and API responses use masked credential metadata.", "The live harness mutates only its temporary settings copy and stores provider name/model/host without the credential."],
+      "local_evidence": ["tests/test_enterprise_api_access.py::test_provider_settings_and_audit_are_workspace_scoped", "Provider-policy preflight for ai.sumopod.com passed.", "One controlled live pass used synthetic PRDs with a temporary settings/data copy; artifacts/p0/2026-10-04/cr8_live_sumopod_deepseek-v4-flash_retry1/cr8_qualification.json records configured Sumopod/deepseek-v4-flash.", "Exact-value credential scan of run artifacts found no credential match."],
+      "result": "One synthetic-data provider pass was attempted; qualification failed at 8/9 cases and per-response model provenance is incomplete. No key-rotation fault injection has passed.",
+      "residual_blockers": ["Provider host/key rotation needs a managed secret store and operational runbook.", "Deployment egress controls and provider contractual approval are not verified."]
+    },
+    {
+      "id": "STM-03",
+      "threat": "An Analyst or caller forges a reviewer identity or creates a release approval for a different or stale artifact.",
+      "controls": ["Sign-off requires Reviewer or Admin role and actor identity comes from the verified principal.", "The release gate verifies artifact hash, HMAC, run binding, two distinct reviewer subjects, roles, and approval age.", "Any qualification or evidence integrity failure remains NOT_READY."],
+      "local_evidence": ["tests/test_enterprise_api_access.py::test_admin_only_settings_and_reviewer_only_signoff", "npm run test:release-gate (9 synthetic contract tests: valid gate, tamper, reviewer signature/freshness/identity, clean candidate, corpus identity, DFD readiness, provider provenance, fallback, and fixture rejection).", "artifacts/p0/2026-10-04/cr8_live_sumopod_deepseek-v4-flash_retry1/reviewer_evidence_pending.json has no approvals or signature; external release decision is NOT_READY with 11 blockers."],
+      "result": "Local authorization and gate contract checked; no organization approval has been created.",
+      "residual_blockers": ["No AppSec and Product/Engineering human reviews are bound to a passing qualification hash.", "No production HMAC secret or reviewer identity integration is configured."]
+    },
+    {
+      "id": "STM-04",
+      "threat": "A privileged user or host operator changes audit history or falsifies the actor on a review event.",
+      "controls": ["Audit actor and workspace are taken from the verified request principal, not client payload.", "Audit reads are workspace scoped.", "Sensitive API calls and reviewer changes emit audit events."],
+      "local_evidence": ["tests/test_access_control.py::test_workspace_provider_settings_and_audit_are_isolated", "tests/test_enterprise_api_access.py::test_provider_settings_and_audit_are_workspace_scoped"],
+      "result": "Actor attribution and tenant filtering are tested.",
+      "residual_blockers": ["Audit remains a local append file and can be altered by a host administrator.", "Immutable/central audit retention, tamper detection, and restore are not implemented or staged-tested."]
+    },
+    {
+      "id": "STM-05",
+      "threat": "A malicious or sensitive uploaded document abuses parser resources or exposes source text to an unapproved remote provider.",
+      "controls": ["File type and 5 MiB upload limits are enforced; extracted text and AI chunk/runtime budgets are bounded.", "Sensitive strings are redacted before generic provider parsing.", "local_only projects reject cloud endpoints.", "Qualification uses only synthetic PRDs and no production project data."],
+      "local_evidence": ["tests/test_ingestion_coverage.py includes truncation, chunk budget, tail coverage, and deferred extraction cases.", "backend/services/provider_policy.py::validate_provider_url enforces endpoint/data-policy rules.", "Live qualification artifact identifies the synthetic corpus and has no persisted project data."],
+      "result": "Parser/resource controls and synthetic-data boundary are present; production-data egress is not qualified.",
+      "residual_blockers": ["No organization-approved data classification, provider retention terms, DLP, or production egress approval is recorded.", "No PDF/DOCX adversarial parser fault campaign is recorded in this P0 run."]
+    },
+    {
+      "id": "STM-06",
+      "threat": "A DFD or project changes while analysis/review is running, causing stale findings or a stale signed release decision to appear current.",
+      "controls": ["Analysis publication rejects a newer canonical DFD revision.", "DFD/source/report revisions and hashes are stored with current analysis/provenance.", "Writes after a signed report supersede the old signed revision; the release gate binds approvals to an artifact hash."],
+      "local_evidence": ["tests/test_ri0_recovery.py::test_publish_rejects_a_newer_canonical_dfd_revision", "backend/utils/storage.py::save_report supersedes a signed revision on subsequent writes", "Tampered qualification hash is rejected by tools/cr8_release_gate.js."],
+      "result": "Stale-result and signed-revision protections have local contract evidence.",
+      "residual_blockers": ["JSON file storage has no general compare-and-swap or transactional multi-writer guarantee.", "Concurrent editor, backup/restore, and signed revision recovery have not been staging-tested."]
+    },
+    {
+      "id": "STM-07",
+      "threat": "Prompt, model response, API credential, or source document content is exposed by logs or qualification output.",
+      "controls": ["Provider metadata is filtered to safe fields; parser redaction runs before provider use.", "Provider selection evidence records name, model, host, timeout, and retry count only.", "The temporary provider settings copy is deleted at the end of the run; the artifact tree was scanned for the current credential values."],
+      "local_evidence": ["tests/test_ri1_generation_progress.py::test_manifest_records_attempt_budget_and_safe_provider_metadata", "Exact-value credential scan of the latest run artifacts found no matches.", "The latest synthetic live run measured 8/9 cases; configured provider/model metadata is present, but stage response metadata omits actual model name and one case timed out during upload."],
+      "result": "The scanned qualification artifacts are secret-clean; response-level provider/model provenance is incomplete, and no claim is made about organization-wide logging/retention.",
+      "residual_blockers": ["Production log pipeline, provider retention, deletion, access, and incident controls are not tested.", "Browser session still uses sessionStorage in the current frontend." ]
+    }
+  ]
+}

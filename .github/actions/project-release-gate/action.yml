@@ -1,0 +1,53 @@
+name: 5STONES Project Release Gate
+description: Blocks a pipeline unless the project's current 5STONES release decision is ready.
+
+inputs:
+  project_id:
+    description: The exact 5STONES project identifier.
+    required: true
+  qualification_path:
+    description: Path to the CR8 provider qualification JSON in the caller workspace.
+    required: true
+  reviewer_evidence_path:
+    description: Path to the run-bound, signed CR8 reviewer evidence JSON in the caller workspace.
+    required: true
+  review_evidence_hmac_key:
+    description: Protected HMAC key used to verify CR8 reviewer evidence.
+    required: true
+  decision_url:
+    description: HTTPS URL for this project's release-decision API.
+    required: true
+  release_api_token:
+    description: Short-lived workspace-scoped OIDC/JWT for the release-decision API.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Require Node.js 18 or newer
+      shell: bash
+      run: |
+        node -e 'if (Number(process.versions.node.split(".")[0]) < 18) { console.error("Node.js 18 or newer is required"); process.exit(1); }'
+    - name: Require passing provider and reviewer qualification
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        QUALIFICATION_PATH: ${{ inputs.qualification_path }}
+        REVIEWER_EVIDENCE_PATH: ${{ inputs.reviewer_evidence_path }}
+        CR8_REVIEW_EVIDENCE_HMAC_KEY: ${{ inputs.review_evidence_hmac_key }}
+      run: |
+        node "$ACTION_PATH/../../../tools/cr8_release_gate.js" \
+          --qualification "$QUALIFICATION_PATH" \
+          --reviewer-evidence "$REVIEWER_EVIDENCE_PATH" \
+          --output "$RUNNER_TEMP/cr8_release_decision.json"
+    - name: Check current project release decision
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        PROJECT_ID: ${{ inputs.project_id }}
+        DECISION_URL: ${{ inputs.decision_url }}
+        CR8_PROJECT_RELEASE_TOKEN: ${{ inputs.release_api_token }}
+      run: |
+        node "$ACTION_PATH/../../../tools/project_release_consumer.js" \
+          --decision-url "$DECISION_URL" \
+          --project-id "$PROJECT_ID"

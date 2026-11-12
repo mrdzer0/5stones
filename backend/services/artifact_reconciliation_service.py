@@ -26,6 +26,8 @@ def project_client_view(project: dict) -> dict:
     for source in view.get("artifact_sources") or []:
         if isinstance(source, dict):
             source.pop("contribution", None)
+            if isinstance(source.get("coverage_manifest"), dict):
+                source["coverage_manifest"].pop("checkpoints", None)
     view["canonical_operations"] = [
         {
             key: operation.get(key)
@@ -270,9 +272,24 @@ def _merge_operations(sources: list[dict]) -> tuple[list[dict], list[dict]]:
             "tags": unique_strings(tag for _, op in assertions for tag in (op.get("tags") or [])),
             "security_status": security_status,
             "auth_methods": canonical_auth_methods(method for _, op in assertions for method in (op.get("auth_methods") or [])),
+            "auth_sources": unique_strings(
+                source
+                for _, op in assertions
+                for source in (op.get("auth_sources") or [])
+            ),
             "parameters": _unique_dicts(item for _, op in assertions for item in (op.get("parameters") or [])),
             "request_fields": unique_strings(field for _, op in assertions for field in (op.get("request_fields") or [])),
             "response_fields": unique_strings(field for _, op in assertions for field in (op.get("response_fields") or [])),
+            "saved_response_examples": _unique_dicts(
+                example
+                for _, op in assertions
+                for example in (op.get("saved_response_examples") or [])
+            ),
+            "unresolved_variable_refs": unique_strings(
+                value
+                for _, op in assertions
+                for value in (op.get("unresolved_variable_refs") or [])
+            ),
             "content_types": unique_strings(value for _, op in assertions for value in (op.get("content_types") or [])),
             "scenarios": _scenarios_with_sources(assertions),
             "coverage": coverage,
@@ -332,10 +349,17 @@ def _merge_flows(sources: list[dict]) -> list[dict]:
                 "protocol": key[2],
                 "data": [],
                 "artifact_ids": [],
+                "evidence_refs": [],
                 "evidence_type": "derived",
                 "basis": flow.get("basis") or "Derived from active artifact operations.",
                 "confidence": flow.get("confidence") or "Medium",
             })
             existing["data"] = unique_strings([*existing["data"], *(flow.get("data") or [])])[:24]
             existing["artifact_ids"] = unique_strings([*existing["artifact_ids"], source.get("artifact_id")])
+            existing["evidence_refs"] = unique_strings([*existing["evidence_refs"], *(flow.get("evidence_refs") or [])])
+            if flow.get("evidence_type") == "direct":
+                existing["evidence_type"] = "direct"
+                existing["basis"] = flow.get("basis") or existing.get("basis")
+            elif existing.get("evidence_type") != "direct" and flow.get("evidence_type"):
+                existing["evidence_type"] = flow.get("evidence_type")
     return [grouped[key] for key in sorted(grouped)]

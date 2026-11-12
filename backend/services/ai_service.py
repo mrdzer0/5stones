@@ -2,19 +2,30 @@
 from __future__ import annotations
 import os
 import json
-from typing import Optional
+from dataclasses import dataclass
+from typing import Any, Optional
 from urllib.parse import urlparse
 from openai import AsyncOpenAI
 from cryptography.fernet import Fernet
 import base64
+from backend.services.provider_policy import (
+    validate_provider_url,
+    normalize_max_tokens,
+    normalize_timeout_seconds,
+    normalize_max_retries,
+)
 
 
 def _get_client(base_url: Optional[str] = None, api_key: Optional[str] = None) -> AsyncOpenAI:
-    timeout_seconds = float(os.getenv("LLM_TIMEOUT_SECONDS", "180"))
-    max_retries = int(os.getenv("LLM_MAX_RETRIES", "0"))
+    timeout_seconds = normalize_timeout_seconds(os.getenv("LLM_TIMEOUT_SECONDS", "180"))
+    # Bounded transport retries let the provider honor Retry-After for transient
+    # rate limits and server errors. Re-running an analysis remains user-driven.
+    max_retries = normalize_max_retries(os.getenv("LLM_MAX_RETRIES", "1"))
+    resolved_base_url = base_url or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    validate_provider_url(resolved_base_url)
     return AsyncOpenAI(
         api_key=api_key or os.getenv("OPENAI_API_KEY", "ollama"),
-        base_url=base_url or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        base_url=resolved_base_url,
         timeout=timeout_seconds,
         max_retries=max_retries,
     )
@@ -26,6 +37,46 @@ def _get_model() -> str:
 
 class AnalysisResponseError(ValueError):
     """Raised when an analysis provider responds without usable structured data."""
+
+    def __init__(self, message: str, *, code: str = "provider_response_error", metadata: dict | None = None):
+        super().__init__(message)
+        self.code = code
+        self.response_metadata = dict(metadata or {})
+
+
+@dataclass
+class ChatCompletionResult:
+    """Provider text plus the response facts needed for stage auditability."""
+
+    content: str
+    metadata: dict
+
+
+@dataclass
+class StructuredJSONResult:
+    """Parsed provider payload and its parsing/provider metadata."""
+
+    payload: dict | list
+    metadata: dict
+
+
+class StageGenerationResult(list):
+    """List-compatible stage result with explicit validation/provenance state."""
+
+    def __init__(
+        self,
+        items=None,
+        *,
+        assessment_status: str = "complete",
+        response_shape: str = "object",
+        warnings: list[str] | None = None,
+        response_metadata: dict | None = None,
+    ):
+        super().__init__(items or [])
+        self.assessment_status = assessment_status
+        self.response_shape = response_shape
+        self.generation_warnings = list(warnings or [])
+        self.response_metadata = dict(response_metadata or {})
 
 
 def _get_fernet() -> Fernet:
@@ -50,7 +101,8 @@ async def chat_complete(
     max_tokens: int = 4096,
     response_format: Optional[str] = None,
     use_json_format: bool = False,
-) -> str:
+    return_metadata: bool = False,
+) -> str | ChatCompletionResult:
     """Send a chat completion request and return the response text."""
     client = _get_client(base_url=base_url, api_key=api_key)
     resolved_model = model or _get_model()
@@ -73,7 +125,9 @@ async def chat_complete(
     if "deepseek" in resolved_model.lower():
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
 
+    provider_attempts = 0
     while True:
+        provider_attempts += 1
         try:
             response = await client.chat.completions.create(**kwargs)
             break
@@ -88,10 +142,30 @@ async def chat_complete(
                 continue
             raise
 
-    if not response.choices:
-        raise AnalysisResponseError("Analysis engine returned no completion choices")
+    reported_model = getattr(response, "model", None)
+    reported_model = reported_model.strip() if isinstance(reported_model, str) and reported_model.strip() else None
+    response_metadata = {
+        "provider_attempts": provider_attempts,
+        # Keep the compatibility field used by existing report code, while
+        # recording whether the model name came from the provider response.
+        "model": reported_model or resolved_model,
+        "configured_model": resolved_model,
+        "response_model": reported_model,
+        "model_source": "provider_response" if reported_model else "configured_fallback",
+        "finish_reason": None,
+        "usage": _serialize_usage(getattr(response, "usage", None)),
+    }
 
-    message = response.choices[0].message
+    if not response.choices:
+        raise AnalysisResponseError(
+            "Analysis engine returned no completion choices",
+            code="empty_choices",
+            metadata=response_metadata,
+        )
+
+    choice = response.choices[0]
+    response_metadata["finish_reason"] = getattr(choice, "finish_reason", None)
+    message = choice.message
     content = message.content
     candidates = []
     if isinstance(content, str) and content.strip():
@@ -121,11 +195,34 @@ async def chat_complete(
     # gateways return prose in `content` and the useful payload in an extension.
     for candidate in candidates:
         if "{" in candidate or "[" in candidate:
-            return candidate
+            return ChatCompletionResult(candidate, response_metadata) if return_metadata else candidate
     if candidates:
-        return candidates[0]
+        return ChatCompletionResult(candidates[0], response_metadata) if return_metadata else candidates[0]
 
-    raise AnalysisResponseError("Analysis engine returned an empty response")
+    raise AnalysisResponseError(
+        "Analysis engine returned an empty response",
+        code="empty_response",
+        metadata=response_metadata,
+    )
+
+
+def _serialize_usage(usage: Any) -> dict:
+    """Convert OpenAI-compatible usage objects into JSON-safe audit metadata."""
+    if usage is None:
+        return {}
+    if isinstance(usage, dict):
+        return {str(key): value for key, value in usage.items()}
+    model_dump = getattr(usage, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return {str(key): value for key, value in model_dump().items()}
+        except Exception:
+            pass
+    return {
+        key: getattr(usage, key)
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+        if getattr(usage, key, None) is not None
+    }
 
 
 def _is_cloud_provider(base_url: Optional[str]) -> bool:
@@ -243,25 +340,46 @@ async def chat_complete_json(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
     max_tokens: int = 4096,
-) -> dict | list:
+    return_metadata: bool = False,
+    max_format_retries: int = 2,
+) -> dict | list | StructuredJSONResult:
     """Chat complete and parse JSON from response. Works with local and cloud LLMs."""
     last_error = None
     retry_context = ""
-    for attempt in range(2):
+    metadata = {
+        "format_retry_count": 0,
+        "retry_reasons": [],
+        "parse_status": "not_attempted",
+        "response_shape": None,
+        "finish_reason": None,
+        "usage": {},
+        "provider_attempts": 0,
+    }
+    retry_limit = max(0, min(int(max_format_retries), 2))
+    for attempt in range(retry_limit + 1):
+        metadata["format_retry_count"] = attempt
         attempt_system = system_prompt
         attempt_user = user_prompt
         if attempt:
-            attempt_system = (
-                f"{system_prompt}\nYour previous response was not valid JSON. "
-                "Return exactly one valid JSON object, with no markdown, reasoning, commentary, or code fences."
-            )
-            attempt_user = (
-                f"{user_prompt}\n\nThe previous response could not be parsed. "
-                f"Correct it and return only the required JSON object. Previous response excerpt:\n{retry_context}"
-            )
+            if metadata.get("parse_status") in {"truncated_json", "truncated_response"}:
+                attempt_system = (
+                    f"{system_prompt}\nYour previous response reached the output limit. "
+                    "Return one shorter but complete JSON object. Prioritize the highest-value items, "
+                    "keep explanations concise, and preserve every required field."
+                )
+                attempt_user = f"{user_prompt}\n\nOutput limit reached previously. Return a concise complete JSON object."
+            else:
+                attempt_system = (
+                    f"{system_prompt}\nYour previous response was not valid JSON. "
+                    "Return exactly one valid JSON object, with no markdown, reasoning, commentary, or code fences."
+                )
+                attempt_user = (
+                    f"{user_prompt}\n\nThe previous response could not be parsed. "
+                    f"Correct it and return only the required JSON object. Previous response excerpt:\n{retry_context}"
+                )
 
         try:
-            raw = await chat_complete(
+            raw_result = await chat_complete(
                 system_prompt=attempt_system,
                 user_prompt=attempt_user,
                 model=model,
@@ -269,47 +387,154 @@ async def chat_complete_json(
                 api_key=api_key,
                 max_tokens=max_tokens,
                 use_json_format=True,
+                return_metadata=return_metadata,
             )
         except AnalysisResponseError as exc:
             last_error = exc
+            metadata.update(exc.response_metadata)
+            metadata["retry_reasons"].append(exc.code)
             retry_context = "(empty response)"
             continue
-        repaired = clean_and_repair_json(raw)
-        retry_context = raw[:3000]
+        if isinstance(raw_result, ChatCompletionResult):
+            raw = raw_result.content
+            metadata.update(raw_result.metadata)
+        else:
+            raw = raw_result
+        raw_text = str(raw or "")
+        if metadata.get("finish_reason") == "length":
+            reason = "truncated_json" if _looks_truncated_json(raw_text) else "truncated_response"
+            metadata["retry_reasons"].append(reason)
+            metadata["parse_status"] = reason
+            last_error = AnalysisResponseError(
+                "Analysis engine stopped at its output limit before the assessment could be verified",
+                code=reason,
+                metadata=metadata,
+            )
+            retry_context = "(output limit reached)"
+            continue
+        repaired = clean_and_repair_json(raw_text)
+        retry_context = raw_text[:3000]
         if not repaired or repaired[0] not in ("{", "["):
-            last_error = AnalysisResponseError("Analysis engine returned text instead of structured JSON")
+            reason = "non_json_response"
+            metadata["retry_reasons"].append(reason)
+            metadata["parse_status"] = reason
+            last_error = AnalysisResponseError(
+                "Analysis engine returned text instead of structured JSON",
+                code=reason,
+                metadata=metadata,
+            )
+            continue
+        if _looks_truncated_json(raw_text):
+            reason = "truncated_json"
+            metadata["retry_reasons"].append(reason)
+            metadata["parse_status"] = reason
+            last_error = AnalysisResponseError(
+                "Analysis engine response appears truncated before structured JSON completed",
+                code=reason,
+                metadata=metadata,
+            )
             continue
         try:
-            return json.loads(repaired)
+            payload = json.loads(repaired)
+            repair_applied = repaired.strip() != raw_text.strip()
+            metadata["repair_applied"] = repair_applied
+            metadata["parse_status"] = "valid_repaired" if repair_applied else "valid"
+            if repair_applied:
+                metadata["retry_reasons"].append("json_repair_applied")
+            metadata["response_shape"] = "object" if isinstance(payload, dict) else "array"
+            metadata["truncation_suspected"] = False
+            if return_metadata:
+                return StructuredJSONResult(payload, dict(metadata))
+            return payload
         except json.JSONDecodeError as exc:
+            reason = "truncated_json" if _looks_truncated_json(raw_text) else "malformed_json"
+            metadata["retry_reasons"].append(reason)
+            metadata["parse_status"] = reason
             last_error = exc
 
     raise AnalysisResponseError(
-        "Analysis engine could not produce valid structured data after one formatting retry. Baseline results are available."
+        f"Analysis engine could not produce valid structured data after {retry_limit} formatting retries.",
+        code=metadata.get("parse_status") or "structured_output_invalid",
+        metadata=metadata,
     ) from last_error
 
 
-def get_active_provider_config() -> dict:
+def _looks_truncated_json(raw_text: str) -> bool:
+    """Classify an unclosed JSON container separately from a malformed payload."""
+    text = str(raw_text or "").strip()
+    start = next((index for index, char in enumerate(text) if char in "[{"), None)
+    if start is None:
+        return False
+    stack = []
+    in_quote = False
+    escaped = False
+    pairs = {"{": "}", "[": "]"}
+    for char in text[start:]:
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == '"':
+            in_quote = not in_quote
+            continue
+        if in_quote:
+            continue
+        if char in pairs:
+            stack.append(pairs[char])
+        elif char in "]}" and stack:
+            if char != stack[-1]:
+                return False
+            stack.pop()
+    return bool(stack or in_quote)
+
+
+def get_active_provider_config(data_policy: str | None = None, workspace_id: str | None = None) -> dict:
     """Read active provider from settings or env vars."""
     from backend.utils.storage import get_settings
-    settings = get_settings()
+    settings = get_settings(workspace_id)
+    if data_policy == "local_only":
+        if settings.get("local_llm_endpoint") and settings.get("local_llm_model"):
+            config = {
+                "base_url": settings.get("local_llm_endpoint"),
+                "model": settings.get("local_llm_model"),
+                "api_key": os.getenv("LOCAL_LLM_API_KEY", "ollama"),
+                "is_local": True,
+                "max_tokens": normalize_max_tokens(os.getenv("LLM_MAX_TOKENS", "4096")),
+            }
+            validate_provider_url(config["base_url"], is_local=True, data_policy=data_policy)
+            return config
+        raise ValueError("local_only project requires a configured local LLM provider")
     active_id = settings.get("active_provider_id")
     if active_id:
         for p in settings.get("providers", []):
             if p.get("provider_id") == active_id:
-                return {
+                config = {
                     "base_url": p.get("base_url"),
                     "model": p.get("model"),
                     "api_key": _decrypt(p.get("_api_key", "")),
+                    "is_local": bool(p.get("is_local") or p.get("provider_type") == "local"),
+                    "max_tokens": normalize_max_tokens(p.get("max_tokens", 4096)),
                 }
+                validate_provider_url(config["base_url"], is_local=config["is_local"], data_policy=data_policy)
+                return config
     if settings.get("local_llm_endpoint") and settings.get("local_llm_model"):
-        return {
+        config = {
             "base_url": settings.get("local_llm_endpoint"),
             "model": settings.get("local_llm_model"),
             "api_key": os.getenv("LOCAL_LLM_API_KEY", "ollama"),
+            "is_local": True,
+            "max_tokens": normalize_max_tokens(os.getenv("LLM_MAX_TOKENS", "4096")),
         }
-    return {
+        validate_provider_url(config["base_url"], is_local=True, data_policy=data_policy)
+        return config
+    config = {
         "base_url": os.getenv("OPENAI_BASE_URL"),
         "model": os.getenv("OPENAI_MODEL", "gpt-4o"),
         "api_key": os.getenv("OPENAI_API_KEY"),
+        "is_local": False,
+        "max_tokens": normalize_max_tokens(os.getenv("LLM_MAX_TOKENS", "4096")),
     }
+    validate_provider_url(config["base_url"] or "https://api.openai.com/v1", data_policy=data_policy)
+    return config

@@ -14,6 +14,7 @@ const PROVIDER_PRESETS = {
 };
 
 document.addEventListener('DOMContentLoaded', async () => {
+  setupAnonymousTelemetryPreference();
   await loadSettings();
   await loadAuditLog();
 
@@ -46,6 +47,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   });
 });
+
+function setupAnonymousTelemetryPreference() {
+  const toggle = document.getElementById('ux-telemetry-enabled');
+  const status = document.getElementById('ux-telemetry-status');
+  if (!toggle || !window.UXTelemetry) return;
+  toggle.checked = UXTelemetry.enabled();
+  const updateStatus = () => {
+    UXTelemetry.setEnabled(toggle.checked);
+    if (status) status.textContent = toggle.checked
+      ? 'Anonymous task-completion telemetry is enabled on this browser.'
+      : 'Anonymous task-completion telemetry is disabled on this browser.';
+  };
+  updateStatus();
+  toggle.addEventListener('change', updateStatus);
+}
 
 let settings = {};
 
